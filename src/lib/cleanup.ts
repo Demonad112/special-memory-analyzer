@@ -382,6 +382,8 @@ export interface ItemResult {
 export interface DeleteManyResult {
   results: ItemResult[]
   overview: Overview
+  /** Set when the deletes happened but the deletion log could not be written. */
+  logError?: string | null
 }
 
 /** Suggested junk on the scanned tree; nothing is ticked for the user. */
@@ -401,6 +403,9 @@ export function previewDelete(ids: number[]): Promise<DeletePreview> {
 export async function removeMany(ids: number[], permanent: boolean): Promise<ItemResult[]> {
   const done = await invoke<DeleteManyResult>('cleanup_delete_many', { ids, permanent })
   cleanupJob.overview = done.overview
+  if (done.logError) {
+    cleanupJob.notice = done.logError
+  }
   cleanupJob.trail = [done.overview.root, ...cleanupJob.trail.slice(1)]
   const shown = cleanupJob.trail.at(-1)
   if (shown) {

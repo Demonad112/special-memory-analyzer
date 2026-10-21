@@ -293,6 +293,8 @@ pub fn cleanup_delete_preview(
 pub struct DeleteManyResult {
     results: Vec<ItemResult>,
     overview: Overview,
+    /// Set when the deletes happened but `deletions.jsonl` could not be written.
+    log_error: Option<String>,
 }
 
 /// Recycles (or, when `permanent`, deletes) the items one by one and reports each result.
@@ -356,8 +358,13 @@ pub async fn cleanup_delete_many(
             detail: result.message.clone(),
         })
         .collect();
-    // The deletes happened; a log that can't be written is not worth failing the call.
-    let _ = log::append(&report_core::logs_root(), &entries);
+    // The deletes happened, so a log that can't be written doesn't fail the call; the page shows it.
+    let log_error = log::append(&report_core::logs_root(), &entries)
+        .err()
+        .map(|err| format!("The deletion log could not be written: {err}"));
+    if let Some(message) = &log_error {
+        eprintln!("{message}");
+    }
 
     let mut guard = lock(&state.tree)?;
     let tree = guard.as_mut().ok_or(NO_RESULT)?;
@@ -382,6 +389,7 @@ pub async fn cleanup_delete_many(
     Ok(DeleteManyResult {
         results,
         overview: cleanup_core::overview(tree),
+        log_error,
     })
 }
 

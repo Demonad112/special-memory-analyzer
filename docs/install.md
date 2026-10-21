@@ -4,14 +4,18 @@ Windows 10/11 and Windows Server 2016+ (Desktop Experience), 64-bit.
 
 ## Files
 
-| File                                             | Use it for                                                       |
-| ------------------------------------------------ | ---------------------------------------------------------------- |
-| `Deep Server Analyzer_<v>_x64-setup.exe`         | PCs with internet access (downloads WebView2 if it's missing)    |
-| `Deep Server Analyzer_<v>_x64-offline-setup.exe` | Offline PCs and servers (WebView2 runtime included, bigger file) |
+| Variant | Use it for                                                       |
+| ------- | ---------------------------------------------------------------- |
+| Online  | PCs with internet access (downloads WebView2 if it's missing)    |
+| Offline | Offline PCs and servers (WebView2 runtime included, bigger file) |
 
 Build the online installer with `corepack pnpm tauri build`. Build the offline one with
 `corepack pnpm tauri build --config src-tauri/tauri.offline.conf.json`. Both land in
 `src-tauri/target/release/bundle/nsis/`.
+
+Both builds write the same file name, `Deep Server Analyzer_<v>_x64-setup.exe`, so the second build
+overwrites the first. Build one variant at a time and rename or move the file before building the
+other. The offline file is about 210 MiB; the online one is about 2.7 MiB.
 
 Silent install: `"Deep Server Analyzer_<v>_x64-setup.exe" /S`. Installs per machine into
 `C:\Program Files\Deep Server Analyzer`. Silent uninstall:

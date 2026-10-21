@@ -746,4 +746,64 @@ mod tests {
             b"secret"
         );
     }
+
+    /// `mklink` through cmd; `flag` is `/J` (junction, no privilege) or `/D` (directory symlink,
+    /// needs admin or Developer Mode). Returns whether the link was made.
+    #[cfg(windows)]
+    fn make_link(flag: &str, link: &std::path::Path, target: &std::path::Path) -> bool {
+        // mklink rejects forward slashes, and `join("a/b")` leaves them in the path.
+        let backslashed = |path: &std::path::Path| path.to_string_lossy().replace('/', "\\");
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", flag])
+            .arg(backslashed(link))
+            .arg(backslashed(target))
+            .output()
+            .expect("cmd should run")
+            .status
+            .success()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junctions_and_directory_symlinks_in_the_source_are_not_followed_or_copied() {
+        let dir = TempDir::new("run-reparse");
+        dir.write("src/real.txt", b"real");
+        dir.write("outside/secret.txt", b"secret");
+        let junction = dir.path("src/jlink");
+        assert!(
+            make_link("/J", &junction, &dir.path("outside")),
+            "mklink /J failed"
+        );
+        // A directory symlink needs a privilege the runner or PC may not grant.
+        let symlink = dir.path("src/slink");
+        let symlinked = make_link("/D", &symlink, &dir.path("outside"));
+        if !symlinked {
+            eprintln!("mklink /D not permitted here; checking the junction only");
+        }
+        let id = prepared(&dir);
+
+        let summary = run_copy(
+            &dir.path("runs"),
+            &id,
+            None,
+            &CancelToken::default(),
+            &mut NullSink,
+        );
+        // Unlink first so a failed assertion cannot make the temp cleanup walk into `outside`.
+        let _ = fs::remove_dir(&junction);
+        if symlinked {
+            let _ = fs::remove_dir(&symlink);
+        }
+        let summary = summary.unwrap();
+
+        assert_eq!(summary.state, RunState::Completed);
+        assert_eq!(summary.totals.excluded, if symlinked { 2 } else { 1 });
+        assert_eq!((summary.totals.copied, summary.totals.not_copied), (1, 0));
+        assert_eq!(fs::read(dir.path("dst/real.txt")).unwrap(), b"real");
+        assert!(!dir.path("dst/jlink").exists());
+        assert!(!dir.path("dst/slink").exists());
+        assert!(!dir.path("dst/secret.txt").exists());
+        // The link targets are untouched.
+        assert_eq!(fs::read(dir.path("outside/secret.txt")).unwrap(), b"secret");
+    }
 }
