@@ -198,6 +198,9 @@ pub struct RecordOptions {
     /// Client, ticket and technician for the report.
     #[serde(default)]
     job: report_core::JobInfo,
+    /// What to do with a different file already at the destination; Skip when missing.
+    #[serde(default)]
+    conflict: Option<ConflictPolicy>,
 }
 
 /// Lists the source, then copies it or watches the destination. Returns when the record ends:
@@ -220,7 +223,10 @@ pub async fn record_start(
         destination: destination.display().to_string(),
         mode,
         verify,
-        conflict: ConflictPolicy::Skip,
+        conflict: match mode {
+            TransferMode::Copy => options.conflict.unwrap_or(ConflictPolicy::Skip),
+            _ => ConflictPolicy::Skip,
+        },
         ignore_junk: options.ignore_junk,
         download_cloud: options.download_cloud,
         preserve: options.preserve,

@@ -12,12 +12,14 @@ import {
   cancelRecord,
   finishRecord,
   formatTimeLeft,
+  conflictChoices,
   defaultPreserve,
   isCancelled,
   listRecords,
   recordJob,
   startRecord,
   timeLeftMs,
+  type ConflictChoice,
   type PreserveOptions,
   type RecordMode,
   type RecordProgress,
@@ -29,6 +31,8 @@ const paths = reactive(loadPaths())
 const mode = ref<RecordMode>('watch')
 const hash = ref(false)
 const downloadCloud = ref(false)
+// Not remembered between runs: replacing files is a choice to make each time.
+const conflict = ref<ConflictChoice>('skip')
 const keep = reactive<PreserveOptions>({ ...defaultPreserve })
 const keepChoices: { key: keyof PreserveOptions; label: string }[] = [
   { key: 'timestamps', label: 'Keep dates (created, modified, accessed; folders too)' },
@@ -112,6 +116,7 @@ async function start(): Promise<void> {
         ignoreJunk: ignoreJunk.value,
         downloadCloud: mode.value === 'copy' && downloadCloud.value,
         preserve: { ...keep },
+        conflict: mode.value === 'copy' ? conflict.value : undefined,
       },
       (progress: RecordProgress) => {
         // "Done" closes each step (listing, then the copy); the next step's progress follows.
@@ -315,6 +320,24 @@ function when(ms: number): string {
           class="size-4 accent-accent"
         />
         Download OneDrive online-only files (off: they are listed as not copied)
+      </label>
+      <label
+        v-if="mode === 'copy'"
+        class="mt-2 flex w-fit items-center gap-2 text-[13px]"
+      >
+        If a different file is already at the destination:
+        <select
+          v-model="conflict"
+          class="h-8 rounded-md border border-stroke border-b-stroke-strong bg-card px-2 text-[13px] outline-none focus:border-b-2 focus:border-b-accent"
+        >
+          <option
+            v-for="choice in conflictChoices"
+            :key="choice.value"
+            :value="choice.value"
+          >
+            {{ choice.label }}
+          </option>
+        </select>
       </label>
       <template v-if="mode === 'copy'">
         <label

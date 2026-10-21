@@ -86,6 +86,26 @@ describe('record commands', () => {
     expect(seen).toEqual([{ phase: 'watching', filesDone: 3 }])
   })
 
+  it('passes the conflict choice to the copy', async () => {
+    core.invoke.mockResolvedValue({ summary: { id: 'r2' } })
+
+    await startRecord(
+      'C:\\src',
+      'D:\\dst',
+      'copy',
+      'sizeAndTime',
+      { ignoreJunk: true, downloadCloud: false, preserve: defaultPreserve, conflict: 'keepBoth' },
+      () => undefined,
+    )
+
+    expect(core.invoke).toHaveBeenLastCalledWith(
+      'record_start',
+      expect.objectContaining({
+        options: expect.objectContaining({ conflict: 'keepBoth' }),
+      }),
+    )
+  })
+
   it('retries by reason, by path, or everything', async () => {
     core.invoke.mockResolvedValue({})
 

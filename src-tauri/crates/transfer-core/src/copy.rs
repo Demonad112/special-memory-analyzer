@@ -43,6 +43,38 @@ pub enum ConflictPolicy {
     OverwriteIfNewer,
     /// Replace it (used when the user retries a conflict).
     Overwrite,
+    /// Leave it and save the source beside it as `name (2).ext`, `name (3).ext`, ...
+    KeepBoth,
+}
+
+/// Where a kept-both copy goes: the first `name (n).ext` that does not exist yet. A copy kept
+/// by an earlier run (same size and date as the source) is reported instead, so a rerun does
+/// not pile up duplicates.
+fn keep_both_target(
+    destination: &Path,
+    source_size: u64,
+    source_time: Option<SystemTime>,
+) -> Result<PathBuf, ()> {
+    let stem = destination.file_stem().unwrap_or_default().to_string_lossy();
+    let extension = destination
+        .extension()
+        .map(|ext| format!(".{}", ext.to_string_lossy()))
+        .unwrap_or_default();
+    for number in 2..10_000 {
+        let candidate = destination.with_file_name(format!("{stem} ({number}){extension}"));
+        match fs::metadata(&candidate) {
+            Err(_) => return Ok(candidate),
+            Ok(existing)
+                if existing.is_file()
+                    && existing.len() == source_size
+                    && times_match(source_time, existing.modified().ok()) =>
+            {
+                return Err(());
+            }
+            Ok(_) => {}
+        }
+    }
+    Ok(destination.with_file_name(format!("{stem} (kept){extension}")))
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +227,7 @@ pub fn copy_file(
     let source_time = source_meta.modified().ok();
     let wanted_meta = meta::read(source).ok();
 
+    let mut kept_as: Option<PathBuf> = None;
     match fs::metadata(destination) {
         Ok(existing) if existing.is_dir() => {
             return Err(CopyFailure::new(
@@ -217,6 +250,12 @@ pub fn copy_file(
             match options.conflict {
                 ConflictPolicy::Overwrite => {}
                 ConflictPolicy::OverwriteIfNewer if source_newer => {}
+                ConflictPolicy::KeepBoth => {
+                    match keep_both_target(destination, source_size, source_time) {
+                        Ok(target) => kept_as = Some(target),
+                        Err(()) => return Ok(CopyOutcome::SkippedIdentical),
+                    }
+                }
                 _ => {
                     return Err(CopyFailure::new(
                         FailureReason::TargetExistsDifferent,
@@ -228,6 +267,7 @@ pub fn copy_file(
         }
         Err(_) => {}
     }
+    let destination = kept_as.as_deref().unwrap_or(destination);
 
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent).map_err(|error| CopyFailure::io(&error, Side::Destination))?;
@@ -267,9 +307,15 @@ pub fn copy_file(
     }
 
     verify(destination, bytes, source_time, hash.as_deref())?;
-    let warnings = wanted_meta
+    let mut warnings = wanted_meta
         .map(|wanted| meta::apply(source, destination, &wanted, &options.preserve))
         .unwrap_or_default();
+    if kept_as.is_some() {
+        let name = destination.file_name().unwrap_or_default().to_string_lossy();
+        warnings.push(format!(
+            "A different file was already there, so both were kept: saved as \"{name}\"."
+        ));
+    }
     Ok(CopyOutcome::Copied {
         bytes,
         hash,
@@ -612,6 +658,65 @@ mod tests {
             Ok(CopyOutcome::Copied { .. })
         ));
         assert_eq!(fs::read(&destination).unwrap(), b"new content");
+    }
+
+    #[test]
+    fn keep_both_saves_beside_the_existing_file() {
+        let dir = TempDir::new("copy-keep-both");
+        let source = dir.write("a.txt", b"source");
+        let destination = dir.write("out/a.txt", b"different");
+        let options = CopyOptions {
+            conflict: ConflictPolicy::KeepBoth,
+            ..no_retry()
+        };
+
+        let Ok(CopyOutcome::Copied { warnings, .. }) = copy(&source, &destination, &options)
+        else {
+            panic!("keep both should copy");
+        };
+        assert_eq!(fs::read(&destination).unwrap(), b"different");
+        assert_eq!(fs::read(dir.path("out/a (2).txt")).unwrap(), b"source");
+        assert!(warnings.iter().any(|note| note.contains("a (2).txt")));
+    }
+
+    #[test]
+    fn keep_both_takes_the_next_free_number_and_does_not_repeat_on_a_rerun() {
+        let dir = TempDir::new("copy-keep-both-rerun");
+        let source = dir.write("a.txt", b"source");
+        let destination = dir.write("out/a.txt", b"different");
+        dir.write("out/a (2).txt", b"someone else's");
+        let options = CopyOptions {
+            conflict: ConflictPolicy::KeepBoth,
+            ..no_retry()
+        };
+
+        assert!(matches!(
+            copy(&source, &destination, &options),
+            Ok(CopyOutcome::Copied { .. })
+        ));
+        assert_eq!(fs::read(dir.path("out/a (2).txt")).unwrap(), b"someone else's");
+        assert_eq!(fs::read(dir.path("out/a (3).txt")).unwrap(), b"source");
+
+        // Same size and date as the source: the earlier run's copy, not a new conflict.
+        assert_eq!(
+            copy(&source, &destination, &options).unwrap(),
+            CopyOutcome::SkippedIdentical
+        );
+        assert!(!dir.path("out/a (4).txt").exists());
+    }
+
+    #[test]
+    fn keep_both_handles_names_without_an_extension() {
+        let dir = TempDir::new("copy-keep-both-bare");
+        let source = dir.write("README", b"source");
+        let destination = dir.write("out/README", b"different");
+        let options = CopyOptions {
+            conflict: ConflictPolicy::KeepBoth,
+            ..no_retry()
+        };
+
+        assert!(copy(&source, &destination, &options).is_ok());
+        assert_eq!(fs::read(dir.path("out/README (2)")).unwrap(), b"source");
     }
 
     #[test]
