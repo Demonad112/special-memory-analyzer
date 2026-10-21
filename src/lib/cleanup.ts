@@ -431,6 +431,70 @@ export function loadJunk(): Promise<JunkGroup[]> {
   return invoke<JunkGroup[]>('cleanup_junk')
 }
 
+/** Tiers in the order the list shows them. */
+export const TIERS: Tier[] = ['safe', 'review', 'never']
+
+export const TIER_TITLES: Record<Tier, string> = {
+  safe: 'Safe',
+  review: 'Review',
+  never: 'Never listed',
+}
+
+/** A line under the tier's heading; empty when there is nothing to add. */
+export const TIER_HINTS: Record<Tier, string> = {
+  safe: '',
+  review: 'Check each one before removing it.',
+  never: 'Shown for information only. Never offered for deletion.',
+}
+
+/** Badge text and colour per confidence; colours are `--app-*` tokens via the theme. */
+export const CONFIDENCE_BADGES: Record<Confidence, { label: string; tone: string }> = {
+  regenerates: { label: 'Regenerates', tone: 'border-success/40 text-success' },
+  redownloads: { label: 'Re-downloads', tone: 'border-accent/40 text-accent' },
+  user_data: { label: 'Your data', tone: 'border-warning/40 text-warning' },
+}
+
+/** The groups in one tier, in the order they came. */
+export function groupsIn(groups: JunkGroup[], tier: Tier): JunkGroup[] {
+  return groups.filter((group) => group.tier === tier)
+}
+
+/** The rows in a tier that can be ticked. A `never` row has no ids, so it never can. */
+export function offeredItems(groups: JunkGroup[], tier: Tier): JunkItem[] {
+  return groupsIn(groups, tier).flatMap((group) =>
+    group.items.filter((item) => item.ids.length > 0),
+  )
+}
+
+/** Whether every offered row in a tier is ticked; false when the tier offers none. */
+export function allTicked(groups: JunkGroup[], tier: Tier, ticked: ReadonlySet<number>): boolean {
+  const items = offeredItems(groups, tier)
+  return items.length > 0 && items.every((item) => ticked.has(item.id))
+}
+
+/** "Select all" for a tier: ticks its offered rows, or clears them when they are all ticked. */
+export function toggleTier(
+  groups: JunkGroup[],
+  tier: Tier,
+  ticked: ReadonlySet<number>,
+): Set<number> {
+  const clear = allTicked(groups, tier, ticked)
+  const next = new Set(ticked)
+  for (const item of offeredItems(groups, tier)) {
+    if (clear) {
+      next.delete(item.id)
+    } else {
+      next.add(item.id)
+    }
+  }
+  return next
+}
+
+/** The junk row behind each node id, so the dry run can show why each node is there. */
+export function rowsByNode(items: JunkItem[]): Map<number, JunkItem> {
+  return new Map(items.flatMap((item) => item.ids.map((id) => [id, item] as const)))
+}
+
 /** Dry run: what a delete of these items would do. Removes nothing. */
 export function previewDelete(ids: number[]): Promise<DeletePreview> {
   return invoke<DeletePreview>('cleanup_delete_preview', { ids })

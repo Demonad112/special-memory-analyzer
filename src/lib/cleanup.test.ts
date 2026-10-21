@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createApp, type Component } from 'vue'
+import JunkPanel from '@/components/JunkPanel.vue'
+import QuickWins from '@/components/QuickWins.vue'
 
 const core = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -20,9 +23,12 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 import {
   cleanupJob,
   driveFor,
+  groupsIn,
+  offeredItems,
   openFolder,
   openTrail,
   removeItem,
+  rowsByNode,
   runScan,
   scanPercent,
   canClean,
@@ -41,11 +47,16 @@ import {
   shownBytes,
   sizeMode,
   summarize,
+  toggleTier,
   type ItemResult,
+  type JunkGroup,
+  type JunkItem,
+  type JunkKind,
   type QuickWin,
   type CleanupRow,
   type Drive,
   type Overview,
+  type Tier,
 } from './cleanup'
 
 function row(id: number, name: string, size: number): CleanupRow {
@@ -304,5 +315,247 @@ describe('size mode', () => {
     expect(localStorage.getItem('analyzer-cleanup-size-mode')).toBe('logical')
     setSizeMode('disk')
     expect(sizeMode.value).toBe('disk')
+  })
+})
+
+describe('suggested cleanups by tier', () => {
+  function junk(id: number, tier: Tier, overrides: Partial<JunkItem> = {}): JunkItem {
+    return {
+      id,
+      ids: [id],
+      name: `item ${String(id)}`,
+      path: `C:\\junk\\${String(id)}`,
+      size: 10,
+      files: 1,
+      isFolder: true,
+      modifiedMs: null,
+      cloudBytes: 0,
+      tier,
+      confidence: 'regenerates',
+      why: 'Rebuilt on demand.',
+      restore: null,
+      ...overrides,
+    }
+  }
+
+  function group(kind: JunkKind, tier: Tier, items: JunkItem[]): JunkGroup {
+    return {
+      kind,
+      tier,
+      confidence: 'regenerates',
+      title: kind,
+      description: '',
+      why: 'Why suggested.',
+      size: items.reduce((sum, item) => sum + item.size, 0),
+      count: items.length,
+      cloudBytes: 0,
+      items,
+    }
+  }
+
+  const safeRows = [junk(1, 'safe'), junk(2, 'safe')]
+  const reviewRow = junk(3, 'review', {
+    confidence: 'user_data',
+    restore: 'Re-download from the vendor.',
+  })
+  const neverRow = junk(4, 'never', { ids: [] })
+  const groups: JunkGroup[] = [
+    group('tempFiles', 'safe', safeRows),
+    group('installers', 'review', [reviewRow]),
+    group('unidentified', 'never', [neverRow]),
+  ]
+
+  it('keeps the groups of each tier together, in the order they came', () => {
+    expect(groupsIn(groups, 'safe').map((g) => g.kind)).toEqual(['tempFiles'])
+    expect(groupsIn(groups, 'review').map((g) => g.kind)).toEqual(['installers'])
+    expect(groupsIn(groups, 'never').map((g) => g.kind)).toEqual(['unidentified'])
+  })
+
+  it('offers only rows that have something to delete', () => {
+    expect(offeredItems(groups, 'safe').map((item) => item.id)).toEqual([1, 2])
+    expect(offeredItems(groups, 'never')).toEqual([])
+  })
+
+  it('select all ticks only the rows in its own tier', () => {
+    expect([...toggleTier(groups, 'safe', new Set())]).toEqual([1, 2])
+    expect([...toggleTier(groups, 'safe', new Set([3]))].sort()).toEqual([1, 2, 3])
+  })
+
+  it('select all clears its tier once every row there is ticked', () => {
+    expect([...toggleTier(groups, 'safe', new Set([1, 2, 3]))]).toEqual([3])
+  })
+
+  it('maps every node a collapsed row stands for back to that row', () => {
+    const folders = junk(5, 'safe', { ids: [5, 6, 7] })
+    const map = rowsByNode([folders])
+    expect(map.get(6)).toBe(folders)
+    expect(map.get(7)).toBe(folders)
+    expect(map.has(8)).toBe(false)
+  })
+})
+
+describe('suggested cleanups on screen', () => {
+  const junkGroups: JunkGroup[] = [
+    {
+      kind: 'tempFiles',
+      tier: 'safe',
+      confidence: 'regenerates',
+      title: 'Temp files',
+      description: 'Scratch files.',
+      why: 'Temp folder contents.',
+      size: 10,
+      count: 1,
+      cloudBytes: 0,
+      items: [
+        {
+          id: 1,
+          ids: [1],
+          name: 'Temp',
+          path: 'C:\\Temp',
+          size: 10,
+          files: 1,
+          isFolder: true,
+          modifiedMs: null,
+          cloudBytes: 0,
+          tier: 'safe',
+          confidence: 'regenerates',
+          why: 'Temp folder contents.',
+          restore: null,
+        },
+      ],
+    },
+    {
+      kind: 'installers',
+      tier: 'review',
+      confidence: 'user_data',
+      title: 'Old installers',
+      description: 'Setup files.',
+      why: 'Older than 90 days.',
+      size: 20,
+      count: 1,
+      cloudBytes: 0,
+      items: [
+        {
+          id: 2,
+          ids: [2],
+          name: 'setup.exe',
+          path: 'C:\\Downloads\\setup.exe',
+          size: 20,
+          files: 1,
+          isFolder: false,
+          modifiedMs: null,
+          cloudBytes: 0,
+          tier: 'review',
+          confidence: 'user_data',
+          why: 'Older than 90 days.',
+          restore: 'Download it again from the vendor.',
+        },
+      ],
+    },
+    {
+      kind: 'unidentified',
+      tier: 'never',
+      confidence: 'user_data',
+      title: 'Unidentified',
+      description: 'Reported only.',
+      why: 'Not recognised.',
+      size: 30,
+      count: 1,
+      cloudBytes: 0,
+      items: [
+        {
+          id: 3,
+          ids: [],
+          name: 'Stuff',
+          path: 'C:\\Stuff',
+          size: 30,
+          files: 1,
+          isFolder: true,
+          modifiedMs: null,
+          cloudBytes: 0,
+          tier: 'never',
+          confidence: 'user_data',
+          why: 'Not recognised.',
+          restore: null,
+        },
+      ],
+    },
+  ]
+
+  async function mount(component: Component): Promise<HTMLElement> {
+    const host = document.createElement('div')
+    document.body.append(host)
+    createApp(component).mount(host)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    return host
+  }
+
+  afterEach(() => {
+    core.invoke.mockReset()
+    document.body.innerHTML = ''
+  })
+
+  it('shows Safe, Review and Never listed in that order with nothing ticked', async () => {
+    core.invoke.mockImplementation((command: string) =>
+      command === 'cleanup_junk' ? Promise.resolve(junkGroups) : Promise.reject(new Error(command)),
+    )
+    const host = await mount(JunkPanel)
+
+    const headings = [...host.querySelectorAll('h3')].map((h) => h.textContent?.trim())
+    expect(headings).toEqual(['Safe', 'Review', 'Never listed'])
+    expect(host.querySelectorAll('input[type="checkbox"]:checked')).toHaveLength(0)
+    const review = host.querySelector('section[aria-labelledby="junk-review"]')
+    expect(review?.textContent).toContain('Restore: Download it again from the vendor.')
+    const never = host.querySelector('section[aria-labelledby="junk-never"]')
+    expect(never?.querySelector('input[type="checkbox"]')).toBeNull()
+  })
+
+  it('offers select all only in the Safe section', async () => {
+    core.invoke.mockImplementation((command: string) =>
+      command === 'cleanup_junk' ? Promise.resolve(junkGroups) : Promise.reject(new Error(command)),
+    )
+    const host = await mount(JunkPanel)
+
+    expect(host.querySelector('section[aria-labelledby="junk-safe"]')?.textContent).toContain(
+      'Select all',
+    )
+    expect(host.querySelector('section[aria-labelledby="junk-review"]')?.textContent).not.toContain(
+      'Select all',
+    )
+    expect(host.querySelector('section[aria-labelledby="junk-never"]')?.textContent).not.toContain(
+      'Select all',
+    )
+  })
+
+  it('ticks nothing in the quick cleanups, caches included', async () => {
+    core.invoke.mockImplementation((command: string) =>
+      command === 'cleanup_quick_list'
+        ? Promise.resolve({
+            elevated: true,
+            items: [
+              {
+                id: 'userTemp',
+                title: 'User temporary files',
+                description: '',
+                needsAdmin: false,
+                size: 10,
+                files: 1,
+              },
+              {
+                id: 'recycleBin',
+                title: 'Recycle Bin',
+                description: '',
+                needsAdmin: false,
+                size: 5,
+                files: 1,
+              },
+            ],
+          })
+        : Promise.reject(new Error(command)),
+    )
+    const host = await mount(QuickWins)
+
+    expect(host.querySelectorAll('input[type="checkbox"]')).toHaveLength(2)
+    expect(host.querySelectorAll('input[type="checkbox"]:checked')).toHaveLength(0)
   })
 })

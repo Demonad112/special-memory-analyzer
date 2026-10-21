@@ -20,8 +20,6 @@ const list = ref<QuickList | null>(null)
 const loading = ref(false)
 const cleaning = ref(false)
 const chosen = ref(new Set<QuickId>())
-/** Not ticked by default: they hold things the user put there. */
-const personal = new Set<QuickId>(['recycleBin', 'oldInstallers'])
 const result = ref<QuickResult | null>(null)
 const error = ref('')
 
@@ -48,12 +46,8 @@ async function refresh(): Promise<void> {
   try {
     const loaded = await loadQuickWins()
     list.value = loaded
-    // Tick the throw-away caches; the Recycle Bin and Downloads are the user's to choose.
-    chosen.value = new Set(
-      loaded.items
-        .filter((item) => canClean(item, loaded.elevated) && !personal.has(item.id))
-        .map((item) => item.id),
-    )
+    // Nothing is ticked: the user picks every cleanup, including after a refresh.
+    chosen.value = new Set()
   } catch (err) {
     error.value = errorMessage(err)
   } finally {
