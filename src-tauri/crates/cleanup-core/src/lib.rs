@@ -2,6 +2,7 @@
 //! space by file type), which paths may never be deleted, and the drive list and delete calls.
 
 pub mod bulk;
+pub mod catalog;
 pub mod junk;
 pub mod log;
 mod os;

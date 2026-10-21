@@ -255,7 +255,16 @@ export function scanPercent(bytes: number, drive: Drive | undefined): number | n
 }
 
 export type QuickId =
-  'userTemp' | 'windowsTemp' | 'browserCache' | 'updateCache' | 'recycleBin' | 'oldInstallers'
+  | 'userTemp'
+  | 'windowsTemp'
+  | 'browserCache'
+  | 'updateCache'
+  | 'recycleBin'
+  | 'oldInstallers'
+  | 'internetCache'
+  | 'crashReports'
+  | 'shaderCaches'
+  | 'playwright'
 
 /** A quick cleanup card. */
 export interface QuickWin {
@@ -331,7 +340,10 @@ export type JunkKind =
   | 'emptyFolders'
 
 export interface JunkItem {
+  /** Keys the row. For a collapsed row, the first of `ids`. */
   id: number
+  /** Every node deleting this row removes: `[id]`, or each `__pycache__` folder of a project. */
+  ids: number[]
   name: string
   path: string
   size: number

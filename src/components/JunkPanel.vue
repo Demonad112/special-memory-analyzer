@@ -13,6 +13,14 @@ const error = ref('')
 /** Nothing is ticked until the user ticks it. */
 const ticked = ref(new Set<number>())
 
+/** The nodes behind the ticked rows. */
+const tickedIds = computed(() =>
+  groups.value
+    .flatMap((group) => group.items)
+    .filter((item) => ticked.value.has(item.id))
+    .flatMap((item) => item.ids),
+)
+
 const sizeTicked = computed(() =>
   groups.value
     .flatMap((group) => group.items)
@@ -59,9 +67,18 @@ function toggleGroup(group: JunkGroup): void {
 function forget(ids: number[]): void {
   const gone = new Set(ids)
   groups.value = groups.value
-    .map((group) => ({ ...group, items: group.items.filter((item) => !gone.has(item.id)) }))
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !item.ids.every((id) => gone.has(id))),
+    }))
     .filter((group) => group.items.length > 0)
-  ticked.value = new Set([...ticked.value].filter((id) => !gone.has(id)))
+  const left = new Set(groups.value.flatMap((group) => group.items.map((item) => item.id)))
+  ticked.value = new Set([...ticked.value].filter((id) => left.has(id)))
+}
+
+/** Matches not on a row: a collapsed row stands for several. */
+function unlisted(group: JunkGroup): number {
+  return group.count - group.items.reduce((sum, item) => sum + item.ids.length, 0)
 }
 
 async function reload(): Promise<void> {
@@ -97,7 +114,7 @@ defineExpose({ forget, reload })
         type="button"
         class="ml-auto h-8 rounded-md bg-accent px-3 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
         :disabled="ticked.size === 0"
-        @click="emit('review', [...ticked])"
+        @click="emit('review', tickedIds)"
       >
         Review {{ plural(ticked.size, 'item')
         }}<template v-if="ticked.size > 0"> · {{ formatBytes(sizeTicked) }}</template>
@@ -159,6 +176,12 @@ defineExpose({ forget, reload })
               :title="item.path"
             >
               {{ item.path }}
+              <span
+                v-if="item.ids.length > 1"
+                class="text-muted"
+              >
+                · {{ plural(item.ids.length, 'folder') }}
+              </span>
             </span>
             <span class="shrink-0 text-xs text-muted tabular-nums">
               {{ formatBytes(item.size) }}
@@ -167,10 +190,10 @@ defineExpose({ forget, reload })
         </li>
       </ul>
       <p
-        v-if="group.count > group.items.length"
+        v-if="unlisted(group) > 0"
         class="ml-6 text-xs text-muted"
       >
-        and {{ group.count - group.items.length }} more not listed.
+        and {{ unlisted(group) }} more not listed.
       </p>
     </div>
   </section>

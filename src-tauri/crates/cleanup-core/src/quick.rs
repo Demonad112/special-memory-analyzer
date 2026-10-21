@@ -16,15 +16,23 @@ pub enum QuickId {
     UpdateCache,
     RecycleBin,
     OldInstallers,
+    InternetCache,
+    CrashReports,
+    ShaderCaches,
+    Playwright,
 }
 
-pub const ALL: [QuickId; 6] = [
+pub const ALL: [QuickId; 10] = [
     QuickId::UserTemp,
     QuickId::BrowserCache,
     QuickId::RecycleBin,
     QuickId::OldInstallers,
     QuickId::WindowsTemp,
     QuickId::UpdateCache,
+    QuickId::InternetCache,
+    QuickId::CrashReports,
+    QuickId::ShaderCaches,
+    QuickId::Playwright,
 ];
 
 /// A quick cleanup card: what it is and how much it would free now.
@@ -92,6 +100,26 @@ impl Places {
                 .collect(),
             QuickId::OldInstallers => join(&self.profile, &["Downloads"]).into_iter().collect(),
             QuickId::RecycleBin => Vec::new(),
+            QuickId::InternetCache => {
+                join(&self.local_app_data, &["Microsoft", "Windows", "INetCache"])
+                    .into_iter()
+                    .collect()
+            }
+            QuickId::CrashReports => [&["Microsoft", "Windows", "WER"][..], &["CrashDumps"]]
+                .into_iter()
+                .filter_map(|tail| join(&self.local_app_data, tail))
+                .collect(),
+            QuickId::ShaderCaches => [
+                &["D3DSCache"][..],
+                &["NVIDIA", "DXCache"],
+                &["NVIDIA", "GLCache"],
+            ]
+            .into_iter()
+            .filter_map(|tail| join(&self.local_app_data, tail))
+            .collect(),
+            QuickId::Playwright => join(&self.local_app_data, &["ms-playwright"])
+                .into_iter()
+                .collect(),
             QuickId::BrowserCache => {
                 let mut caches = Vec::new();
                 for browser in [
@@ -151,6 +179,10 @@ impl QuickId {
             QuickId::UpdateCache => "Windows Update downloads",
             QuickId::RecycleBin => "Recycle Bin",
             QuickId::OldInstallers => "Old setup files in Downloads",
+            QuickId::InternetCache => "Internet cache",
+            QuickId::CrashReports => "Crash reports and dumps",
+            QuickId::ShaderCaches => "GPU shader caches",
+            QuickId::Playwright => "Playwright browsers",
         }
     }
 
@@ -164,9 +196,22 @@ impl QuickId {
             QuickId::UpdateCache => {
                 "Updates Windows already downloaded. It fetches them again if needed."
             }
-            QuickId::RecycleBin => "Everything in the Recycle Bin on every drive, for good.",
+            QuickId::RecycleBin => {
+                "Everything in the Recycle Bin on every drive, for good. Check what's inside \
+                 before emptying."
+            }
             QuickId::OldInstallers => {
                 ".exe and .msi files over 90 days old. They go to the Recycle Bin."
+            }
+            QuickId::InternetCache => "Windows' internet cache. Windows rebuilds it as pages load.",
+            QuickId::CrashReports => {
+                "Windows error reports and crash dumps. New ones appear when an app crashes."
+            }
+            QuickId::ShaderCaches => {
+                "Compiled GPU shaders. Rebuilt on the next launch, so the first load may stutter."
+            }
+            QuickId::Playwright => {
+                "Browsers downloaded by Playwright. Run `npx playwright install` to get them back."
             }
         }
     }

@@ -26,6 +26,15 @@ const SYSTEM_NAMES: [&str; 5] = [
 const KEPT: &str =
     "Windows or an installed app needs this, so Deep Server Analyzer won't delete it.";
 
+const WINDOWS_OLD: &str = "Windows keeps this so you can roll back. Remove it from Windows' own \
+    Storage settings (Temporary files) or Disk Cleanup, not here.";
+
+/// Folders in the profile that hold tool settings and toolchains. Always kept as folders, even
+/// when they are not on disk to list.
+const HOME_DOT_FOLDERS: [&str; 7] = [
+    ".cache", ".cargo", ".rustup", ".claude", ".npm", ".config", ".ssh",
+];
+
 impl Protected {
     pub fn new(inside: &[&str], exact: &[&str], children_of: &[&str]) -> Self {
         let normal = |list: &[&str]| list.iter().map(|path| normalize(path)).collect();
@@ -38,13 +47,18 @@ impl Protected {
 
     /// The protected folders on this PC, from the environment.
     pub fn for_this_pc() -> Self {
-        let var = |name: &str| env::var(name).ok().filter(|value| !value.is_empty());
+        Self::from_env(&|name| env::var(name).ok().filter(|value| !value.is_empty()))
+    }
+
+    /// [`Self::for_this_pc`] with the environment passed in, so tests don't touch the real one.
+    fn from_env(var: &dyn Fn(&str) -> Option<String>) -> Self {
         let join = |base: Option<String>, tail: &str| base.map(|base| format!("{base}\\{tail}"));
         let drive = var("SystemDrive").or_else(|| Some("C:".into()));
         let profile = var("USERPROFILE");
+        let local = var("LOCALAPPDATA");
 
         let portable = scan_core::portable_data_dir().map(|dir| dir.to_string_lossy().into_owned());
-        let inside = [
+        let mut inside = vec![
             portable,
             var("SystemRoot"),
             var("ProgramFiles"),
@@ -53,14 +67,25 @@ impl Protected {
             join(drive.clone(), "Recovery"),
             join(drive.clone(), "Boot"),
             // Record reports are client proof.
-            join(var("LOCALAPPDATA"), "Deep Server Analyzer"),
+            join(local.clone(), "Deep Server Analyzer"),
+            // Runtimes and app data other programs depend on. Their caches are not listed as
+            // junk either, so nothing here is ever a cleanup target.
+            join(var("APPDATA"), "Local"),
+            join(local.clone(), "Packages"),
+            join(local.clone(), "node"),
+            join(local.clone(), "Python"),
+            join(local.clone(), "Microsoft\\OneDrive"),
+            join(local.clone(), "Google\\DriveFS"),
         ];
+        // The sync folders hold the user's own files, and deleting there deletes them in the cloud.
+        for name in ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"] {
+            inside.push(var(name));
+        }
         let mut exact = vec![
             var("ProgramData"),
             var("PUBLIC"),
             var("APPDATA"),
-            var("LOCALAPPDATA"),
-            var("OneDrive"),
+            local,
             profile.clone(),
         ];
         for folder in [
@@ -73,6 +98,13 @@ impl Protected {
             "Videos",
         ] {
             exact.push(join(profile.clone(), folder));
+        }
+        // Tool settings and toolchains in the profile: the folder stays, what is inside may go.
+        for folder in HOME_DOT_FOLDERS {
+            exact.push(join(profile.clone(), folder));
+        }
+        for folder in dot_folders_in(profile.as_deref()) {
+            exact.push(join(profile.clone(), &folder));
         }
         let children_of = [join(drive, "Users")];
 
@@ -96,6 +128,9 @@ impl Protected {
         if path == root || !within(&path, &root) {
             return Err("Only items inside the scanned folder can be deleted.".into());
         }
+        if path.split('\\').any(|part| part == "windows.old") {
+            return Err(WINDOWS_OLD.into());
+        }
         let name = path.rsplit('\\').next().unwrap_or_default();
         let system_folder = path
             .split('\\')
@@ -114,6 +149,19 @@ impl Protected {
         }
         Ok(())
     }
+}
+
+/// Names of the folders in the profile that start with a dot.
+fn dot_folders_in(profile: Option<&str>) -> Vec<String> {
+    let Some(entries) = profile.and_then(|profile| std::fs::read_dir(profile).ok()) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with('.'))
+        .collect()
 }
 
 /// Lowercase, backslashes, no trailing backslash, no `\\?\` prefix.
@@ -155,7 +203,7 @@ mod tests {
         assert!(check(r"C:\Users\Sam\Downloads\setup.exe", r"C:\").is_ok());
         assert!(check(r"C:\Users\Sam\Documents\old", r"C:\Users").is_ok());
         assert!(check(r"D:\Backups\2019", r"D:\").is_ok());
-        assert!(check(r"C:\Windows.old", r"C:\").is_ok());
+        assert!(check(r"C:\Windows.old", r"C:\").is_err());
         assert!(check(r"c:/temp/a.log", r"C:\TEMP").is_ok());
     }
 
@@ -249,5 +297,139 @@ mod tests {
         let this_pc = Protected::for_this_pc();
         assert!(!this_pc.children_of.is_empty());
         assert!(this_pc.exact.iter().any(|path| path.ends_with("\\users")));
+    }
+
+    #[test]
+    fn this_pc_keeps_app_roots_onedrive_and_home_dot_folders_but_not_their_caches() {
+        // Driven through the environment, so the real list in `for_this_pc` is what gets tested.
+        let set = [
+            ("USERPROFILE", r"C:\Users\Sam"),
+            ("APPDATA", r"C:\Users\Sam\AppData\Roaming"),
+            ("LOCALAPPDATA", r"C:\Users\Sam\AppData\Local"),
+            ("OneDrive", r"C:\Users\Sam\OneDrive"),
+        ];
+        let before: Vec<_> = set
+            .iter()
+            .map(|(name, _)| (*name, env::var_os(name)))
+            .collect();
+        for (name, value) in set {
+            env::set_var(name, value);
+        }
+        let this_pc = Protected::for_this_pc();
+        for (name, value) in before {
+            match value {
+                Some(value) => env::set_var(name, value),
+                None => env::remove_var(name),
+            }
+        }
+
+        let root = Path::new(r"C:\");
+        for path in [
+            r"C:\Users\Sam\AppData\Roaming\Local\lightning-services\x",
+            r"C:\Users\Sam\AppData\Local\Packages\Claude_x\LocalCache\y",
+            r"C:\Users\Sam\AppData\Local\node\corepack\z",
+            r"C:\Users\Sam\AppData\Local\Microsoft\OneDrive\settings\a.dat",
+            r"C:\Users\Sam\AppData\Local\Google\DriveFS\x",
+            r"C:\Users\Sam\OneDrive\Docs\a.docx",
+            r"C:\Users\Sam\.cache",
+            r"C:\Users\Sam\.cargo",
+            r"C:\Users\Sam\.rustup",
+            r"C:\Users\Sam\.claude",
+            r"C:\Users\Sam\.npm",
+            r"C:\Users\Sam\.config",
+            r"C:\Users\Sam\.ssh",
+        ] {
+            assert!(
+                this_pc.check(Path::new(path), root).is_err(),
+                "{path} should be kept"
+            );
+        }
+        // Sub-folders of a home dot-folder are what cleanup is for.
+        for path in [
+            r"C:\Users\Sam\AppData\Local\Temp\x.tmp",
+            r"C:\Users\Sam\.cache\pip",
+            r"C:\Users\Sam\.npm\_cacache\x",
+        ] {
+            assert!(
+                this_pc.check(Path::new(path), root).is_ok(),
+                "{path} should be deletable"
+            );
+        }
+    }
+
+    fn sam(name: &str) -> Option<String> {
+        let value = match name {
+            "USERPROFILE" => r"C:\Users\Sam",
+            "APPDATA" => r"C:\Users\Sam\AppData\Roaming",
+            "LOCALAPPDATA" => r"C:\Users\Sam\AppData\Local",
+            "OneDrive" => r"C:\Users\Sam\OneDrive",
+            _ => return None,
+        };
+        Some(value.into())
+    }
+
+    #[test]
+    fn nothing_the_catalog_offers_is_kept_and_its_protected_neighbours_still_are() {
+        use crate::catalog::{Base, Entry, REVIEW, SAFE};
+        let this_pc = Protected::from_env(&sam);
+        let root = Path::new(r"C:\");
+        let resolve = |entry: &Entry| {
+            let base = match entry.base {
+                Base::LocalAppData => r"C:\Users\Sam\AppData\Local",
+                Base::AppData => r"C:\Users\Sam\AppData\Roaming",
+                Base::UserProfile => r"C:\Users\Sam",
+                Base::SystemDrive => r"C:",
+            };
+            let parts: Vec<&str> = entry
+                .path
+                .iter()
+                .map(|part| if *part == "*" { "Default" } else { part })
+                .collect();
+            format!(r"{base}\{}", parts.join(r"\"))
+        };
+        for entry in SAFE.iter().chain(REVIEW) {
+            let path = resolve(entry);
+            assert!(
+                this_pc.check(Path::new(&path), root).is_ok(),
+                "{path} is in the catalog, so it must stay deletable"
+            );
+            // What is inside an offered folder is offered with it.
+            assert!(
+                this_pc
+                    .check(Path::new(&format!(r"{path}\x\y.bin")), root)
+                    .is_ok(),
+                "{path}"
+            );
+        }
+        for path in [
+            r"C:\Users\Sam\AppData\Local\Microsoft\OneDrive\Cache",
+            r"C:\Users\Sam\AppData\Local\Packages",
+            r"C:\Users\Sam\AppData\Local\Python\pythoncore\Lib",
+            r"C:\Users\Sam\AppData\Roaming\Local",
+            r"C:\Users\Sam\OneDrive",
+            r"C:\Users\Sam\.cargo",
+        ] {
+            assert!(this_pc.check(Path::new(path), root).is_err(), "{path}");
+        }
+        // Sharing a prefix with a protected folder is not being inside it.
+        assert!(this_pc
+            .check(Path::new(r"C:\Users\Sam\AppData\Local\Packages2\x"), root)
+            .is_ok());
+        assert!(this_pc
+            .check(Path::new(r"C:\Users\Sam\OneDrive Old\x"), root)
+            .is_ok());
+    }
+
+    #[test]
+    fn windows_old_is_handed_off_wherever_it_is() {
+        for path in [
+            r"C:\Windows.old",
+            r"C:\windows.OLD\Users\x",
+            r"D:\Windows.old",
+        ] {
+            let reason = check(path, path.get(..3).unwrap_or(r"C:\")).unwrap_err();
+            assert!(reason.contains("Storage settings"), "{path}: {reason}");
+        }
+        assert!(check(r"C:\Windows.older\x", r"C:\").is_ok());
     }
 }
