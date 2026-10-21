@@ -43,6 +43,7 @@ Run quality and tests before opening a PR. Scope tests to the touched files when
 
 - Windows desktop: the shell may be Git Bash or PowerShell. Heredocs in Bash halve backslashes, so write files containing backslashes with the file tools.
 - Cloud (web/mobile) sessions start with an empty container: install dependencies first. The app crate needs Windows (or WebKitGTK), so check Rust there with `--target x86_64-pc-windows-msvc`.
+- Run `rust:test` on Windows under pwsh, not Git Bash: see `docs/windows-testing.md`.
 
 ## Gotchas
 
