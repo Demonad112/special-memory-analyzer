@@ -198,6 +198,9 @@ pub struct RecordOptions {
     /// Client, ticket and technician for the report.
     #[serde(default)]
     job: report_core::JobInfo,
+    /// What to do with a different file already at the destination; Skip when missing.
+    #[serde(default)]
+    conflict: Option<ConflictPolicy>,
 }
 
 /// Lists the source, then copies it or watches the destination. Returns when the record ends:
@@ -220,7 +223,10 @@ pub async fn record_start(
         destination: destination.display().to_string(),
         mode,
         verify,
-        conflict: ConflictPolicy::Skip,
+        conflict: match mode {
+            TransferMode::Copy => options.conflict.unwrap_or(ConflictPolicy::Skip),
+            _ => ConflictPolicy::Skip,
+        },
         ignore_junk: options.ignore_junk,
         download_cloud: options.download_cloud,
         preserve: options.preserve,
@@ -408,6 +414,25 @@ pub async fn record_list() -> Result<Vec<RunSummary>, String> {
     tauri::async_runtime::spawn_blocking(|| store::list_runs(&transfer_core::records_root()))
         .await
         .map_err(to_text)
+}
+
+/// Signs in to the network share a UNC path is on, with an account the user types. Returns the
+/// share (`\\server\share`). The password is passed to Windows for this call and not stored.
+#[tauri::command]
+pub async fn share_connect(
+    path: String,
+    username: String,
+    password: String,
+) -> Result<String, String> {
+    let share = transfer_core::share::share_root(&path)
+        .ok_or_else(|| "That is not a network path (\\\\server\\share).".to_string())?;
+    let target = share.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        transfer_core::share::connect(&target, &username, &password)
+    })
+    .await
+    .map_err(to_text)??;
+    Ok(share)
 }
 
 /// Opens Explorer at a file or folder (a source file, the recovery folder).

@@ -8,6 +8,16 @@ import { currentJob, type JobInfo } from './job'
 export type RecordMode = 'copy' | 'watch'
 export type VerifyLevel = 'sizeAndTime' | 'hash'
 /** What a copy keeps besides the bytes. */
+/** What a copy does when a different file is already at the destination. */
+export type ConflictChoice = 'skip' | 'overwriteIfNewer' | 'overwrite' | 'keepBoth'
+
+export const conflictChoices: { value: ConflictChoice; label: string }[] = [
+  { value: 'skip', label: 'Leave it and list the file as not copied' },
+  { value: 'overwriteIfNewer', label: 'Replace it only if the source is newer' },
+  { value: 'overwrite', label: 'Replace it' },
+  { value: 'keepBoth', label: 'Keep both (save the source as "name (2).ext")' },
+]
+
 export interface PreserveOptions {
   timestamps: boolean
   attributes: boolean
@@ -170,7 +180,12 @@ export function startRecord(
   destination: string,
   mode: RecordMode,
   verify: VerifyLevel,
-  options: { ignoreJunk: boolean; downloadCloud: boolean; preserve: PreserveOptions },
+  options: {
+    ignoreJunk: boolean
+    downloadCloud: boolean
+    preserve: PreserveOptions
+    conflict?: ConflictChoice
+  },
   onProgress: (progress: RecordProgress) => void,
 ): Promise<RunDetails> {
   return trackJob(() =>
@@ -234,6 +249,17 @@ export function loadRecord(runId: string): Promise<RunDetails> {
 /** Stored records, newest first. */
 export function listRecords(): Promise<RunSummary[]> {
   return invoke<RunSummary[]>('record_list')
+}
+
+/** The `\\server\share` part of a network path, or null for a local path. */
+export function shareOf(path: string): string | null {
+  const match = /^[\\/]{2}(?:\?[\\/]UNC[\\/])?([^\\/?.][^\\/]*)[\\/]+([^\\/]+)/.exec(path.trim())
+  return match ? `\\\\${match[1]}\\${match[2]}` : null
+}
+
+/** Signs in to the share a network path is on; resolves with the share. */
+export function connectShare(path: string, username: string, password: string): Promise<string> {
+  return invoke<string>('share_connect', { path, username, password })
 }
 
 export function revealPath(path: string): Promise<void> {
