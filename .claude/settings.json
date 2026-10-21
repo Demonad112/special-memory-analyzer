@@ -16,19 +16,15 @@
       "Bash(corepack pnpm test:*)",
       "Bash(corepack pnpm quality)",
       "Bash(corepack pnpm rust:test)",
-      "Bash(corepack pnpm lint:*)",
       "Bash(corepack pnpm exec vitest:*)",
       "Bash(corepack pnpm exec tsc:*)",
       "Bash(corepack pnpm exec vue-tsc:*)",
       "Bash(corepack pnpm exec prettier:*)",
       "Bash(corepack pnpm exec eslint:*)",
-      "Bash(npm test:*)",
-      "Bash(npm run lint:*)",
       "Bash(cargo build:*)",
       "Bash(cargo test:*)",
       "Bash(cargo fmt:*)",
-      "Bash(cargo clippy:*)",
-      "Bash(pytest:*)"
+      "Bash(cargo clippy:*)"
     ],
     "deny": [
       "Bash(git push --force:*)",
