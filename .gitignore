@@ -1,0 +1,5 @@
+.claude/settings.local.json
+.claude/worktrees/
+CLAUDE.local.md
+node_modules/
+.env
