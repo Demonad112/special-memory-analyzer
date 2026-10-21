@@ -3,3 +3,6 @@
 CLAUDE.local.md
 node_modules/
 .env
+dist/
+target/
+src-tauri/gen/

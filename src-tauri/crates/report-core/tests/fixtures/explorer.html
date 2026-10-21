@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-gKvAmINkqxqYkYn+Cdd8kRsWrG1OVBF8xqC8mpEXrkc=' 'sha256-V/F/TwbXs0xEsJ99CkyXNDZdc/FQWMEyrwhmcEAGiVM='; img-src data:">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disk usage - Fixture</title>
+<style>
+:root{color-scheme:light dark;--page:#f3f5f8;--surface:#fff;--text:#14181f;--muted:#5b6472;--line:#e3e7ee;--zebra:#f8fafc;--accent:#0b5cad;--accent-2:#2f86e0;--good:#0f7b3f;--good-bg:#e6f6ec;--warn:#9a5b00;--warn-bg:#fff4dc;--bad:#c42b1c;--bad-bg:#fdecea;--bad-line:#f3b9b2}
+@media (prefers-color-scheme:dark){:root{--page:#0f1319;--surface:#181e27;--text:#e8ecf2;--muted:#9aa5b5;--line:#2a3340;--zebra:#1c232d;--accent:#7ab6f5;--accent-2:#4a98ea;--good:#58c98a;--good-bg:#12301f;--warn:#f0b64a;--warn-bg:#33270f;--bad:#ff8a7d;--bad-bg:#35181a;--bad-line:#6b2c2c}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--page);color:var(--text);font:14px/1.5 'Segoe UI Variable Text','Segoe UI',system-ui,sans-serif;overflow-wrap:anywhere}
+main{max-width:1000px;margin:0 auto;padding:24px 16px 40px}
+header{background:linear-gradient(135deg,#0b3d75,#1a73c8);color:#fff;border-radius:14px;padding:24px 28px;margin-bottom:16px;box-shadow:0 6px 24px rgba(11,61,117,.25)}
+.top{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.brand{margin:0;font-weight:600;letter-spacing:.08em;text-transform:uppercase;font-size:12px;opacity:.85}
+.pill{border-radius:999px;padding:3px 12px;font-size:12px;font-weight:600;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.45)}
+.pill.good{background:#d7f5e3;color:#0b5a2d;border-color:#d7f5e3}.pill.bad{background:#ffe0dc;color:#9c1f12;border-color:#ffe0dc}
+h1{margin:10px 0 0;font:600 30px/1.15 'Segoe UI Variable Display','Segoe UI',system-ui,sans-serif}
+.subtitle{margin:6px 0 0;opacity:.9;font-size:15px}
+dl{display:flex;flex-wrap:wrap;gap:6px 28px;margin:16px 0 0;padding-top:14px;border-top:1px solid rgba(255,255,255,.25)}
+dl div{display:flex;flex-direction:column}dt{font-size:11px;text-transform:uppercase;letter-spacing:.06em;opacity:.75}dd{margin:0;font-weight:600}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}
+.tile{background:var(--surface);border:1px solid var(--line);border-top:4px solid var(--accent-2);border-radius:10px;padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.tile p{margin:0}.label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em}.detail{color:var(--muted);font-size:12px}
+.value{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;margin:2px 0}
+.tile.good{border-top-color:var(--good)}.tile.good .value{color:var(--good)}
+.tile.warn{border-top-color:var(--warn)}.tile.warn .value{color:var(--warn)}
+.tile.bad{border-top-color:var(--bad);background:var(--bad-bg);border-color:var(--bad-line)}.tile.bad .value{color:var(--bad)}
+.share{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin-bottom:16px}
+.share .head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px}.share .head span{color:var(--muted)}
+.bar{height:12px;border-radius:999px;background:var(--line);overflow:hidden}.bar i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--accent-2))}
+.share.good .bar i{background:var(--good)}.share.bad .bar i{background:var(--bad)}
+.note{color:var(--muted);font-size:13px;margin:8px 4px}.empty{color:var(--muted);padding:8px 0}.printonly{display:none}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 16px 12px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+h2{font-size:16px;margin:10px 0;display:flex;align-items:center;gap:10px}
+.count{font-size:12px;font-weight:600;color:var(--accent);background:var(--page);border-radius:999px;padding:1px 10px}
+details.fold>summary{cursor:pointer;font-size:16px;font-weight:600;padding:8px 0;border-radius:6px}
+details.fold>summary:focus-visible,button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--accent-2);outline-offset:2px}
+.tools{display:flex;gap:8px;align-items:center;margin:6px 0;color:var(--muted);font-size:12px}
+input[type=search]{flex:1;max-width:320px;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--text);font:inherit}
+button{padding:6px 14px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--text);font:inherit;cursor:pointer}
+button:hover{border-color:var(--accent-2)}
+.code textarea{width:100%;font:12px/1.4 Consolas,'Cascadia Mono',monospace;background:var(--zebra);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px;resize:vertical;white-space:pre;overflow-wrap:normal}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{position:sticky;top:0;background:var(--surface);text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid var(--line);padding:8px}
+td{border-bottom:1px solid var(--line);padding:6px 8px;vertical-align:top}
+tbody tr:nth-child(even){background:var(--zebra)}
+.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+tr.bad td{color:var(--bad)}tr.bad td:first-child{border-left:3px solid var(--bad)}
+tr.warn td{color:var(--warn)}tr.warn td:first-child{border-left:3px solid var(--warn)}
+tr.good td:first-child{border-left:3px solid var(--good)}
+footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:24px;color:var(--muted);font-size:12px}
+@media (max-width:560px){header{padding:18px}h1{font-size:24px}.value{font-size:20px}}
+@media print{:root{--page:#fff}body{background:#fff}main{padding:0}header{box-shadow:none;-webkit-print-color-adjust:exact;print-color-adjust:exact}.tile,.card,tr{break-inside:avoid;box-shadow:none}th{position:static}.tools,.code button{display:none}table.long tbody tr:nth-child(n+201){display:none}.printonly{display:block}details.fold:not([open])>*:not(summary){display:block}}
+</style>
+<style>
+.explorer h3{font-size:14px;margin:12px 0 6px}.explorer h4{font-size:12px;margin:12px 0 4px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.explorer button{font:inherit}
+.xc{display:flex;flex-wrap:wrap;align-items:center;gap:2px;margin:4px 0 8px}
+.xc .sep{color:var(--muted)}.xc .cr{border:0;background:none;padding:2px 6px;color:var(--accent);border-radius:6px}
+.xc .cr[aria-current=true]{font-weight:600;color:var(--text)}
+.xcols{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:20px}
+.xt,.xt ul,.xl{list-style:none;margin:0;padding:0}.xt ul{padding-left:20px}
+.xr{display:flex;align-items:center;gap:8px;padding:2px 0;width:100%;text-align:left}
+button.xr{border:0;background:none;color:var(--text);cursor:pointer;border-radius:6px;padding:3px 4px}
+button.xr:hover,.xr .nm:hover{background:var(--zebra)}
+button.xr[aria-pressed=true]{background:var(--zebra);box-shadow:inset 3px 0 0 var(--accent)}
+.xr .tg{flex:none;width:22px;border:0;background:none;padding:0;color:var(--muted);cursor:pointer}
+.xr .nm{flex:1;min-width:0;border:0;background:none;text-align:left;padding:2px 4px;border-radius:6px;color:var(--text);overflow-wrap:anywhere}
+.xr button.nm{cursor:pointer}.xr .nm[aria-current=true]{font-weight:600;box-shadow:inset 3px 0 0 var(--accent)}
+.xr .nm.more{color:var(--muted);font-style:italic}
+.xs{flex:none;min-width:64px;text-align:right;font-variant-numeric:tabular-nums}
+.xp{flex:none;width:46px;text-align:right;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.xf{flex:none;min-width:70px;text-align:right;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.xb{flex:none;width:64px;height:6px;border-radius:999px;background:var(--line);overflow:hidden}
+.xb i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2))}
+.explorer .chip{margin:0 0 8px;border-radius:999px;padding:3px 12px;color:var(--accent)}
+.explorer .more{margin-top:6px}
+.explorer button:focus-visible{outline:2px solid var(--accent-2);outline-offset:2px}
+@media (max-width:760px){.xcols{grid-template-columns:minmax(0,1fr)}.xb,.xp{display:none}}
+@media print{.explorer{display:none!important}}
+</style>
+</head>
+<body>
+<main>
+<header><div class="top"><p class="brand">Fixture</p></div><h1>Disk usage</h1><p class="subtitle">C:\</p><dl><div><dt>Client</dt><dd>Acme</dd></div><div><dt>Ticket</dt><dd>T-42</dd></div><div><dt>Date</dt><dd>1970-01-01 00:00:00 (UTC+00:00)</dd></div><div><dt>Computer</dt><dd>PC1</dd></div><div><dt>Windows user</dt><dd>sam</dd></div></dl></header>
+<section class="tiles"><div class="tile "><p class="label">Used</p><p class="value">1000 bytes</p><p class="detail">10 files · 4 folders</p></div><div class="tile "><p class="label">Removed</p><p class="value">0 bytes</p><p class="detail">0 items</p></div></section>
+<section class="card explorer" id="x" data-js hidden></section>
+<section class="card"><h2>Largest files<span class="count">0</span></h2><p class="empty">Nothing to list.</p></section>
+<section class="card"><h2>Biggest folders<span class="count">0</span></h2><p class="empty">Nothing to list.</p></section>
+<section class="card"><h2>File types<span class="count">0</span></h2><p class="empty">Nothing to list.</p></section>
+<script type="application/json" id="d">{"x":{"cats":["Video","Music and audio","Pictures","Documents and email","Archives, disk images and backups","Programs and system files","Other files"],"items":4000,"nodes":[{"d":1000,"f":10,"k":0,"n":"C:\\","p":0},{"d":600,"f":6,"k":0,"n":"Users","p":0},{"d":300,"f":3,"k":0,"n":"Windows","p":0},{"d":90,"f":1,"k":1,"n":"pagefile.sys","p":0},{"d":10,"f":2,"k":2,"n":"(2 smaller items)","p":0},{"d":500,"f":5,"k":0,"n":"Alice","p":1},{"d":100,"f":1,"k":1,"n":"\u003c/script\u003e\u003cb\u003ex\u003c/b\u003e.txt","p":1},{"d":400,"f":1,"k":0,"n":"Movies","p":5},{"d":100,"f":1,"k":1,"n":"notes.txt","p":5},{"d":400,"f":1,"k":1,"n":"clip.mp4","p":7},{"d":300,"f":1,"k":1,"n":"system.dll","p":2}],"perType":200,"root":"C:\\","tf":{"dll":[["Windows\\system.dll",300]],"mp4":[["Users\\Alice\\Movies\\clip.mp4",400]],"sys":[["pagefile.sys",90]],"txt":[["Users\\\u003c/script\u003e\u003cb\u003ex\u003c/b\u003e.txt",100],["Users\\Alice\\notes.txt",100]]},"types":[["mp4",400,1,0],["dll",300,1,5],["txt",200,2,3],["sys",90,1,5]],"typesMore":0}}</script>
+<footer><span>Made with Deep Server Analyzer</span><span>fixed date</span></footer>
+</main>
+<script>
+(function(){
+var q=function(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))};
+q('[data-js]').forEach(function(e){e.hidden=false});
+q('input[data-filter]').forEach(function(i){
+var t=document.getElementById(i.getAttribute('data-filter')),c=document.getElementById(t.id+'n');
+i.addEventListener('input',function(){
+var v=i.value.toLowerCase(),n=0;
+q('tbody tr',t).forEach(function(r){var h=v!==''&&r.textContent.toLowerCase().indexOf(v)<0;r.hidden=h;if(!h)n++});
+c.textContent=v===''?'':n+' shown'})});
+q('button[data-copy]').forEach(function(b){b.addEventListener('click',function(){
+var t=document.getElementById(b.getAttribute('data-copy'));t.select();
+var done=function(){b.textContent='Copied'};
+if(navigator.clipboard){navigator.clipboard.writeText(t.value).then(done,function(){document.execCommand('copy');done()})}
+else{document.execCommand('copy');done()}})});
+q('button[data-save]').forEach(function(b){b.addEventListener('click',function(){
+var t=document.getElementById(b.getAttribute('data-save')),a=document.createElement('a');
+a.href=URL.createObjectURL(new Blob([t.value],{type:'text/plain'}));a.download=b.getAttribute('data-name');
+document.body.appendChild(a);a.click();a.remove()})});
+})();
+</script>
+<script>
+(function(){
+var host=document.getElementById('x'),isl=document.getElementById('d');
+if(!host||!isl)return;
+var D;try{D=JSON.parse(isl.textContent).x}catch(e){return}
+if(!D||!D.nodes||!D.nodes.length)return;
+var N=D.nodes,K=N.map(function(){return[]}),TF=D.tf||{},CAT={},SEP='\\';
+N.forEach(function(n,i){if(i>0)K[n.p].push(i)});
+D.types.forEach(function(t){CAT[t[0]]=t[3]});
+var sel=0,flt=null,open={0:true},all=false;
+function h(t,a,c){var e=document.createElement(t),k;
+if(a)for(k in a){if(k==='class')e.className=a[k];else e.setAttribute(k,String(a[k]))}
+if(c!==undefined&&c!==null)[].concat(c).forEach(function(x){if(x!==null&&x!==undefined)e.appendChild(typeof x==='string'?document.createTextNode(x):x)});
+return e}
+function fb(b){if(b<1024)return b+(b===1?' byte':' bytes');var u=['KB','MB','GB','TB','PB'],i=-1,v=b;do{v/=1024;i++}while(v>=1024&&i<4);return v.toFixed(v>=100?0:v>=10?1:2)+' '+u[i]}
+function fc(n){return n.toLocaleString('en-US')}
+function share(a,b){if(!b)return'';var p=a*100/b;return p<0.1&&a>0?'<0.1%':p.toFixed(1)+'%'}
+function pct(a,b){return b?Math.min(100,a*100/b):0}
+function pathOf(i){var p=[];while(i>0){p.push(N[i].n);i=N[i].p}return p.reverse()}
+function rel(i){return pathOf(i).join(SEP)}
+function full(r){return r?D.root.replace(/\\+$/,'')+SEP+r:D.root}
+function extName(e){return e===''?'No extension':'.'+e}
+function crumbs(){var nav=h('nav',{'class':'xc','aria-label':'Selected folder'}),chain=[],i=sel;
+for(;;){chain.push(i);if(i===0)break;i=N[i].p}
+chain.reverse().forEach(function(i,j){
+if(j>0)nav.appendChild(h('span',{'class':'sep','aria-hidden':'true'},'\u203a'));
+var b=h('button',{type:'button','class':'cr','data-a':'go','data-v':i,'data-k':'c'+i},i===0?D.root:N[i].n);
+if(i===sel)b.setAttribute('aria-current','true');nav.appendChild(b)});
+return nav}
+function row(c,par){
+var n=N[c],li=h('li'),r=h('div',{'class':'xr'}),dir=n.k===0,has=dir&&K[c].length>0;
+if(has)r.appendChild(h('button',{type:'button','class':'tg','data-a':'tg','data-v':c,'data-k':'t'+c,'aria-expanded':open[c]?'true':'false','aria-label':(open[c]?'Collapse ':'Expand ')+n.n},open[c]?'\u25be':'\u25b8'));
+else r.appendChild(h('span',{'class':'tg'}));
+if(dir){var b=h('button',{type:'button','class':'nm','data-a':'go','data-v':c,'data-k':'s'+c},n.n);
+if(c===sel)b.setAttribute('aria-current','true');r.appendChild(b)}
+else r.appendChild(h('span',{'class':n.k===2?'nm more':'nm'},n.n));
+r.appendChild(h('span',{'class':'xs'},fb(n.d)));
+var bar=h('span',{'class':'xb','aria-hidden':'true'},h('i'));bar.firstChild.style.width=pct(n.d,N[par].d)+'%';r.appendChild(bar);
+r.appendChild(h('span',{'class':'xp'},share(n.d,N[par].d)));
+r.appendChild(h('span',{'class':'xf'},dir||n.k===2?fc(n.f)+(n.f===1?' file':' files'):''));
+li.appendChild(r);
+if(has&&open[c]){var ul=h('ul');K[c].forEach(function(d){ul.appendChild(row(d,c))});li.appendChild(ul)}
+return li}
+function treeBox(){
+var box=h('div',{'class':'xtree'}),ul=h('ul',{'class':'xt'});
+box.appendChild(h('h3',0,'Folders'));
+K[0].forEach(function(c){ul.appendChild(row(c,0))});
+if(!K[0].length)box.appendChild(h('p',{'class':'empty'},'Nothing to explore here.'));
+else box.appendChild(ul);
+box.appendChild(h('p',{'class':'note'},'Shows the scan as it was. Showing the biggest items ('+fc(N.length)+' of '+fc(D.items)+'); the rest of each folder is added up in its \u201csmaller items\u201d row.'));
+return box}
+function typeRows(){
+if(sel===0)return D.types;
+var pre=rel(sel)+SEP,out=[];
+Object.keys(TF).forEach(function(e){var s=0,n=0;
+TF[e].forEach(function(f){if(f[0].indexOf(pre)===0){s+=f[1];n++}});
+if(n)out.push([e,s,n,CAT[e]])});
+out.sort(function(a,b){return b[1]-a[1]});
+return out}
+function typeBox(){
+var box=h('div',{'class':'xtypes'}),rows=typeRows(),cs=D.cats.map(function(){return[0,0]}),tot=0;
+box.appendChild(h('h3',0,sel===0?'By file type':'By file type in this folder'));
+rows.forEach(function(r){cs[r[3]][0]+=r[1];cs[r[3]][1]+=r[2];tot+=r[1]});
+var ul=h('ul',{'class':'xl'});
+cs.forEach(function(c,i){if(!c[1])return;
+var li=h('li'),b=h('button',{type:'button','class':'xr','data-a':'cat','data-v':i,'data-k':'g'+i,'aria-pressed':flt&&flt.t==='cat'&&flt.v===i?'true':'false'});
+b.appendChild(h('span',{'class':'nm'},D.cats[i]));
+b.appendChild(h('span',{'class':'xs'},fb(c[0])));
+var bar=h('span',{'class':'xb','aria-hidden':'true'},h('i'));bar.firstChild.style.width=pct(c[0],tot)+'%';b.appendChild(bar);
+b.appendChild(h('span',{'class':'xf'},fc(c[1])+(c[1]===1?' file':' files')));
+li.appendChild(b);ul.appendChild(li)});
+box.appendChild(ul);
+var shown=rows.filter(function(r){return!(flt&&flt.t==='cat')||r[3]===flt.v});
+var lim=all?shown.length:15,el=h('ul',{'class':'xl'});
+shown.slice(0,lim).forEach(function(r){
+var li=h('li'),b=h('button',{type:'button','class':'xr','data-a':'ext','data-v':r[0],'data-k':'e:'+r[0],'aria-pressed':flt&&flt.t==='ext'&&flt.v===r[0]?'true':'false'});
+b.appendChild(h('span',{'class':'nm'},extName(r[0])));
+b.appendChild(h('span',{'class':'xs'},fb(r[1])));
+var bar=h('span',{'class':'xb','aria-hidden':'true'},h('i'));bar.firstChild.style.width=pct(r[1],tot)+'%';b.appendChild(bar);
+b.appendChild(h('span',{'class':'xf'},fc(r[2])+(r[2]===1?' file':' files')));
+li.appendChild(b);el.appendChild(li)});
+box.appendChild(h('h4',0,flt&&flt.t==='cat'?D.cats[flt.v]:'Biggest types'));
+box.appendChild(el);
+if(shown.length>15)box.appendChild(h('button',{type:'button','class':'more','data-a':'all','data-k':'all'},all?'Show fewer':'Show all '+fc(shown.length)+' types'));
+if(sel!==0)box.appendChild(h('p',{'class':'note'},'Counts the biggest files kept in this report (top '+D.perType+' per type), not every file in the folder.'));
+else if(D.typesMore>0)box.appendChild(h('p',{'class':'note'},fc(D.typesMore)+' rarer types are not listed.'));
+return box}
+function fileBox(){
+var box=h('div',{'class':'xfiles'}),pre=sel===0?'':rel(sel)+SEP,src=[];
+Object.keys(TF).forEach(function(e){
+if(flt&&flt.t==='ext'&&flt.v!==e)return;
+if(flt&&flt.t==='cat'&&CAT[e]!==flt.v)return;
+TF[e].forEach(function(f){if(f[0].indexOf(pre)===0)src.push(f)})});
+src.sort(function(a,b){return b[1]-a[1]});
+var what=!flt?'':flt.t==='ext'?extName(flt.v):D.cats[flt.v],head=h('h3',0,'Largest files'+(what?': '+what:'')+(sel?' in '+full(rel(sel)):''));
+box.appendChild(head);
+if(flt)box.appendChild(h('button',{type:'button','class':'chip','data-a':'clear','data-k':'clear'},'Showing '+what+' \u2014 clear'));
+if(!src.length){box.appendChild(h('p',{'class':'empty'},'No files to list here.'));}
+else{
+var t=h('table'),hd=h('tr');hd.appendChild(h('th',0,'File'));hd.appendChild(h('th',{'class':'num'},'Size'));
+t.appendChild(h('thead',0,hd));
+var tb=h('tbody');src.slice(0,100).forEach(function(f){var tr=h('tr');tr.appendChild(h('td',0,full(f[0])));tr.appendChild(h('td',{'class':'num'},fb(f[1])));tb.appendChild(tr)});
+t.appendChild(tb);box.appendChild(h('div',{'class':'scroll'},t));
+if(src.length>100)box.appendChild(h('p',{'class':'note'},'Showing the biggest 100 of '+fc(src.length)+' files kept.'))}
+box.appendChild(h('p',{'class':'note'},'Each type keeps its '+D.perType+' biggest files in this report, so smaller files are not listed.'));
+return box}
+function draw(focus){
+host.textContent='';
+host.appendChild(h('h2',0,'Explore this scan'));
+host.appendChild(crumbs());
+var cols=h('div',{'class':'xcols'});cols.appendChild(treeBox());cols.appendChild(typeBox());
+host.appendChild(cols);host.appendChild(fileBox());
+if(focus){var t=[].filter.call(host.querySelectorAll('[data-k]'),function(e){return e.getAttribute('data-k')===focus})[0];if(t)t.focus()}}
+host.addEventListener('click',function(ev){
+var b=ev.target.closest?ev.target.closest('button'):null;
+if(!b||!host.contains(b))return;
+var a=b.getAttribute('data-a'),v=b.getAttribute('data-v');
+if(a==='go'){sel=+v;open[sel]=true}
+else if(a==='tg'){open[v]=!open[v]}
+else if(a==='cat'){flt=flt&&flt.t==='cat'&&flt.v===+v?null:{t:'cat',v:+v}}
+else if(a==='ext'){flt=flt&&flt.t==='ext'&&flt.v===v?null:{t:'ext',v:v}}
+else if(a==='clear'){flt=null}
+else if(a==='all'){all=!all}
+else return;
+draw(b.getAttribute('data-k'))});
+draw();
+})();
+</script>
+</body>
+</html>

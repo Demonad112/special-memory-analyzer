@@ -1,0 +1,49 @@
+{
+  "name": "deep-server-analyzer",
+  "version": "1.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run",
+    "format": "prettier . --write",
+    "format:check": "prettier . --check",
+    "rust:fmt:check": "cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check",
+    "rust:clippy": "cargo clippy --workspace --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings",
+    "rust:test": "cargo test --workspace --manifest-path src-tauri/Cargo.toml",
+    "quality": "corepack pnpm format:check && corepack pnpm typecheck && corepack pnpm rust:fmt:check && corepack pnpm rust:clippy",
+    "tauri": "tauri"
+  },
+  "lint-staged": {
+    "*.{ts,vue,js,json,md,css,html}": [
+      "prettier --write"
+    ],
+    "*.rs": [
+      "rustfmt --edition 2021"
+    ]
+  },
+  "dependencies": {
+    "@lucide/vue": "1.52.0",
+    "@tauri-apps/api": "2.12.1",
+    "@tauri-apps/plugin-dialog": "2.8.1",
+    "vue": "3.5.43",
+    "vue-router": "5.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@tauri-apps/cli": "2.12.1",
+    "@types/node": "26.6.4",
+    "@vitejs/plugin-vue": "6.0.9",
+    "jsdom": "30.1.2",
+    "prettier": "3.9.9",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "8.3.2",
+    "vitest": "5.0.3",
+    "vue-tsc": "3.3.12"
+  }
+}

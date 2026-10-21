@@ -1,0 +1,137 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens. Windows 11 (Fluent) values: neutral layers, one accent, status colours.
+ * Every colour in the app comes from here so light/dark stay in sync; components use the
+ * Tailwind names below (bg-layer, text-muted, border-stroke, text-accent, ...).
+ */
+:root {
+  color-scheme: light;
+  --app-bg: #f3f3f3;
+  --app-layer: rgb(255 255 255 / 0.5);
+  --app-card: rgb(255 255 255 / 0.7);
+  --app-card-hover: rgb(249 249 249 / 0.8);
+  --app-subtle: rgb(0 0 0 / 0.04);
+  --app-subtle-strong: rgb(0 0 0 / 0.06);
+  --app-stroke: rgb(0 0 0 / 0.08);
+  --app-stroke-strong: rgb(0 0 0 / 0.14);
+  --app-text: #1b1b1b;
+  --app-muted: #5d5d5d;
+  --app-faint: #8a8a8a;
+  --app-accent: #005fb8;
+  --app-accent-hover: #1a6fc0;
+  --app-on-accent: #ffffff;
+  --app-success: #0f7b0f;
+  --app-warning: #9d5d00;
+  --app-danger: #c42b1c;
+  --app-danger-bg: #fde7e9;
+  --app-close-hover: #c42b1c;
+  /* Disk Cleanup file-type colours (treemap tiles, legend). */
+  --app-type-folder: #b7791f;
+  --app-type-video: #b4009e;
+  --app-type-audio: #744da9;
+  --app-type-image: #00866e;
+  --app-type-document: #0063b1;
+  --app-type-archive: #c43e00;
+  --app-type-program: #4a5bc4;
+  --app-type-other: #6b6b6b;
+  --app-type-text: #ffffff;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --app-bg: #202020;
+  --app-layer: rgb(58 58 58 / 0.3);
+  --app-card: rgb(255 255 255 / 0.05);
+  --app-card-hover: rgb(255 255 255 / 0.08);
+  --app-subtle: rgb(255 255 255 / 0.06);
+  --app-subtle-strong: rgb(255 255 255 / 0.09);
+  --app-stroke: rgb(255 255 255 / 0.07);
+  --app-stroke-strong: rgb(255 255 255 / 0.12);
+  --app-text: #ffffff;
+  --app-muted: #c8c8c8;
+  --app-faint: #9a9a9a;
+  --app-accent: #60cdff;
+  --app-accent-hover: #5abce9;
+  --app-on-accent: #000000;
+  --app-success: #6ccb5f;
+  --app-warning: #fce100;
+  --app-danger: #ff99a4;
+  --app-danger-bg: #442726;
+  --app-type-folder: #e8b84a;
+  --app-type-video: #e58fdc;
+  --app-type-audio: #b9a2e8;
+  --app-type-image: #4fd1b5;
+  --app-type-document: #6cb8f0;
+  --app-type-archive: #f39a68;
+  --app-type-program: #97a6f7;
+  --app-type-other: #b3b0ad;
+  --app-type-text: #000000;
+}
+
+@theme inline {
+  --font-sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+  --color-app: var(--app-bg);
+  --color-layer: var(--app-layer);
+  --color-card: var(--app-card);
+  --color-card-hover: var(--app-card-hover);
+  --color-subtle: var(--app-subtle);
+  --color-subtle-strong: var(--app-subtle-strong);
+  --color-stroke: var(--app-stroke);
+  --color-stroke-strong: var(--app-stroke-strong);
+  --color-fg: var(--app-text);
+  --color-muted: var(--app-muted);
+  --color-faint: var(--app-faint);
+  --color-accent: var(--app-accent);
+  --color-accent-hover: var(--app-accent-hover);
+  --color-on-accent: var(--app-on-accent);
+  --color-success: var(--app-success);
+  --color-warning: var(--app-warning);
+  --color-danger: var(--app-danger);
+  --color-danger-bg: var(--app-danger-bg);
+  --color-close-hover: var(--app-close-hover);
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--app-bg);
+  color: var(--app-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* Windows 11: the window is transparent and Mica shows through the chrome. */
+html.mica body {
+  background: transparent;
+}
+
+input,
+textarea {
+  user-select: text;
+}
+
+:focus-visible {
+  outline: 2px solid var(--app-text);
+  outline-offset: 1px;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 4px solid transparent;
+  border-radius: 999px;
+  background: var(--app-stroke-strong) padding-box;
+}

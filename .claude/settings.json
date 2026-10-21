@@ -14,6 +14,8 @@
       "Bash(gh run view:*)",
       "Bash(corepack pnpm install)",
       "Bash(corepack pnpm test:*)",
+      "Bash(corepack pnpm quality)",
+      "Bash(corepack pnpm rust:test)",
       "Bash(corepack pnpm lint:*)",
       "Bash(corepack pnpm exec vitest:*)",
       "Bash(corepack pnpm exec tsc:*)",

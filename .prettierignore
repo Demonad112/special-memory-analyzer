@@ -1,0 +1,9 @@
+dist
+src-tauri/target
+src-tauri/gen
+pnpm-lock.yaml
+*.ico
+target
+src-tauri/crates/report-core/tests/fixtures
+.claude
+.github

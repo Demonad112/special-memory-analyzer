@@ -1,0 +1,12 @@
+import tailwindcss from '@tailwindcss/vite'
+import vue from '@vitejs/plugin-vue'
+import { fileURLToPath, URL } from 'node:url'
+import { defineConfig } from 'vitest/config'
+
+export default defineConfig({
+  plugins: [vue(), tailwindcss()],
+  resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
+  clearScreen: false,
+  server: { port: 1430, strictPort: true, watch: { ignored: ['**/src-tauri/**'] } },
+  test: { environment: 'jsdom', include: ['src/**/*.test.ts'] },
+})
