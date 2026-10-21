@@ -48,8 +48,9 @@ function Get-StoreCount {
 function Invoke-KitScript {
     param([string]$ScriptPath, [string[]]$Arguments = @())
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath) + $Arguments
-    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -Wait -PassThru
-    return $proc.ExitCode
+    # Runs in this console so the script's output shows in the CI log.
+    & powershell.exe @argList | Out-Host
+    return $LASTEXITCODE
 }
 
 Write-Host 'Unit checks'
@@ -134,7 +135,12 @@ try {
             $remove = Join-Path $stage 'Remove-Trust.ps1'
             $installArgs = @('-NoPrompt', '-SkipInstall', '-TrustHours', '0.01')
 
-            Assert-True 'install exits 0' ((Invoke-KitScript $install $installArgs) -eq 0)
+            $installCode = Invoke-KitScript $install $installArgs
+            if ($installCode -ne 0) {
+                Write-Host '--- trust.log ---'
+                Get-Content -LiteralPath (Join-Path (Get-DsaDataDir) 'trust.log') -Tail 40 -ErrorAction SilentlyContinue | Out-Host
+            }
+            Assert-True 'install exits 0' ($installCode -eq 0)
             Assert-True 'certificate in LocalMachine Root' ((Get-StoreCount $thumb 'Root') -eq 1)
             Assert-True 'certificate in LocalMachine TrustedPublisher' ((Get-StoreCount $thumb 'TrustedPublisher') -eq 1)
             Assert-True 'DSA-TrustExpiry task exists' ($null -ne (Get-ScheduledTask -TaskName 'DSA-TrustExpiry' -ErrorAction SilentlyContinue))
@@ -143,7 +149,7 @@ try {
 
             Assert-True 'second install exits 0' ((Invoke-KitScript $install $installArgs) -eq 0)
             Assert-True 'second install keeps one Root copy' ((Get-StoreCount $thumb 'Root') -eq 1)
-            Assert-True 'second install keeps one task' (@(Get-ScheduledTask -TaskName 'DSA-TrustExpiry').Count -eq 1)
+            Assert-True 'second install keeps one task' (@(Get-ScheduledTask -TaskName 'DSA-TrustExpiry' -ErrorAction SilentlyContinue).Count -eq 1)
 
             Assert-True 'startup check before expiry leaves trust' ((Invoke-KitScript $remove @('-FromTask')) -eq 0)
             Assert-True 'trust still present after early check' ((Get-StoreCount $thumb 'Root') -eq 1)
