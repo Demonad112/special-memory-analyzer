@@ -1,0 +1,217 @@
+name: Verify migration (temporary)
+
+# Temporary: lives on the verification branch only. Never merge to main.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - claude/festive-cannon-q82nrl
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Quality and tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: corepack enable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+          cache-workspaces: src-tauri
+
+      - run: corepack pnpm install --frozen-lockfile
+      - name: quality
+        run: corepack pnpm quality
+      - name: vitest
+        run: corepack pnpm test
+      - name: rust tests (workspace)
+        shell: bash
+        run: |
+          set -o pipefail
+          corepack pnpm rust:test 2>&1 | tee rust-test.log
+          echo "VERIFY: rust test result lines"
+          grep -E '^test result:|^running [0-9]+ tests' rust-test.log
+          echo "VERIFY: total passed = $(grep -E '^test result:' rust-test.log | sed -E 's/.* ([0-9]+) passed.*/\1/' | paste -sd+ - | bc)"
+          echo "VERIFY: failed/ignored lines"
+          grep -E ' FAILED$| ignored$' rust-test.log || echo "none"
+      - name: named behaviour tests
+        shell: bash
+        run: |
+          cd src-tauri
+          for t in symlinks_are_listed_but_not_followed a_junction_in_the_selection_is_refused_and_its_target_survives a_locked_file_is_listed_and_retry_copies_it_once_released a_locked_source_is_retried_and_reported_as_in_use a_locked_file_is_reported_as_in_use_and_stays recycle_moves_a_file_out_and_drives_include_the_system_drive a_full_log_is_rotated_and_the_new_entry_lands_in_a_fresh_file explorer_fixture_matches_what_the_page_renders defaults_keep_everything_and_old_records_load; do
+            echo "VERIFY-TEST $t"
+            cargo test --workspace "$t" 2>&1 | grep -E "^test .*(ok|FAILED)$|test result: .* [1-9][0-9]* passed|running 0 tests" | grep -v 'running 0 tests' || echo "VERIFY-NOT-FOUND $t"
+          done
+      - name: explorer fixture regeneration produces no diff
+        shell: bash
+        run: |
+          cd src-tauri
+          UPDATE_FIXTURES=1 cargo test -p report-core explorer_fixture
+          cd ..
+          git status --porcelain
+          git diff --exit-code && echo "VERIFY: fixture diff empty"
+      - name: dependency licences
+        shell: bash
+        run: |
+          cd src-tauri
+          echo "VERIFY: Rust licences (windows target, normal+build deps)"
+          cargo metadata --format-version 1 --filter-platform x86_64-pc-windows-msvc \
+            | jq -r '.packages[] | "\(.license // "NONE")\t\(.name) \(.version)"' | sort > ../rust-licenses.txt
+          cut -f1 ../rust-licenses.txt | sort | uniq -c | sort -rn
+          echo "VERIFY: Rust packages with copyleft/unusual terms"
+          grep -i -E 'GPL|LGPL|AGPL|MPL|EPL|CDDL|NONE|Unlicense|CC-BY|SSPL|BUSL' ../rust-licenses.txt || echo "none"
+          cd ..
+          echo "VERIFY: JS prod licences"
+          corepack pnpm licenses list --prod 2>&1 | tail -40
+          echo "VERIFY: JS all licences summary"
+          corepack pnpm licenses list --json 2>/dev/null | jq -r 'keys[]' || true
+
+  build-smoke:
+    name: Build installers and smoke test (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: corepack enable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache-workspaces: src-tauri
+      - run: corepack pnpm install --frozen-lockfile
+
+      - name: Build online installer
+        run: corepack pnpm tauri build
+      - name: Build offline installer
+        run: corepack pnpm tauri build --config src-tauri/tauri.offline.conf.json
+
+      - name: Installer files, sizes, hashes
+        shell: pwsh
+        run: |
+          $dir = 'src-tauri/target/release/bundle/nsis'
+          Get-ChildItem $dir | ForEach-Object { "VERIFY-FILE {0} | {1} bytes | sha256 {2}" -f $_.Name, $_.Length, (Get-FileHash $_.FullName -Algorithm SHA256).Hash }
+          $want = 'Deep Server Analyzer_1.0.0_x64-setup.exe'
+          if (Test-Path (Join-Path $dir $want)) { "VERIFY: exact online name present" } else { "VERIFY-FAIL: $want missing"; exit 1 }
+          Get-ChildItem 'src-tauri/target/release' -Filter *.exe -File | ForEach-Object { "VERIFY-EXE {0} {1}" -f $_.Name, $_.Length }
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: verify-installers
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+      - name: Smoke test install, launch, uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $setup = (Resolve-Path 'src-tauri/target/release/bundle/nsis/Deep Server Analyzer_1.0.0_x64-setup.exe').Path
+          $p = Start-Process -FilePath $setup -ArgumentList '/S' -Wait -PassThru
+          "VERIFY: install exit code $($p.ExitCode)"
+          $dir = 'C:\Program Files\Deep Server Analyzer'
+          "VERIFY: install dir exists = $(Test-Path $dir)"
+          Get-ChildItem $dir -Force | ForEach-Object { "VERIFY-INSTALLED {0} {1}" -f $_.Name, $_.Length }
+
+          $roots = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall','HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+          foreach ($r in $roots) {
+            Get-ChildItem $r -ErrorAction SilentlyContinue | ForEach-Object {
+              $d = Get-ItemProperty $_.PSPath
+              if ($d.DisplayName -match 'Deep Server|DeepServer|Analyzer|OpenDiff|open-diff|WinDirStat') { "VERIFY-UNINSTALL-ENTRY {0} | {1} | {2} | {3} | {4}" -f $_.PSPath, $d.DisplayName, $d.DisplayVersion, $d.Publisher, $d.UninstallString }
+            }
+          }
+          foreach ($m in 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs', "$env:APPDATA\Microsoft\Windows\Start Menu\Programs") {
+            Get-ChildItem $m -Recurse -Filter *.lnk -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Deep|Analyzer|Diff|WinDir' } | ForEach-Object { "VERIFY-STARTMENU $($_.FullName)" }
+          }
+          "VERIFY: old-name scan of install dir"
+          Get-ChildItem $dir -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'deepserver|open-?diff|windirstat' } | ForEach-Object { "VERIFY-OLDNAME $($_.FullName)" }
+
+          $exe = Join-Path $dir 'Deep Server Analyzer.exe'
+          "VERIFY: exe exists = $(Test-Path $exe)"
+          if (Test-Path $exe) {
+            (Get-Item $exe).VersionInfo | Format-List ProductName, FileDescription, ProductVersion, FileVersion, CompanyName, LegalCopyright, OriginalFilename, InternalName | Out-String | Write-Output
+            $app = Start-Process -FilePath $exe -PassThru
+            Start-Sleep -Seconds 12
+            $app.Refresh()
+            "VERIFY: app HasExited = $($app.HasExited)"
+            if ($app.HasExited) { "VERIFY: app exit code $($app.ExitCode)" } else { "VERIFY: app running, title '$($app.MainWindowTitle)', responding = $($app.Responding)" }
+            try {
+              Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+              $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+              $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+              [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+              $bmp.Save("$env:RUNNER_TEMP\app.png"); "VERIFY: screenshot saved"
+            } catch { "VERIFY: screenshot failed: $_" }
+            Get-Process | Where-Object { $_.ProcessName -match 'Deep Server|msedgewebview2' } | Select-Object ProcessName, Id | Out-String | Write-Output
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+            Start-Sleep 2
+            "VERIFY: local data dir after launch: $(Test-Path "$env:LOCALAPPDATA\Deep Server Analyzer")"
+          }
+          Copy-Item "$env:RUNNER_TEMP\app.png" "$env:GITHUB_WORKSPACE\app.png" -ErrorAction SilentlyContinue
+
+          $u = Join-Path $dir 'uninstall.exe'
+          "VERIFY: uninstall.exe exists = $(Test-Path $u)"
+          $q = Start-Process -FilePath $u -ArgumentList '/S' -Wait -PassThru
+          "VERIFY: uninstall exit code $($q.ExitCode)"
+          Start-Sleep 3
+          "VERIFY: install dir after uninstall exists = $(Test-Path $dir)"
+          if (Test-Path $dir) { Get-ChildItem $dir -Force | ForEach-Object { "VERIFY-LEFTOVER $($_.Name)" } }
+          foreach ($r in $roots) {
+            Get-ChildItem $r -ErrorAction SilentlyContinue | ForEach-Object {
+              $d = Get-ItemProperty $_.PSPath
+              if ($d.DisplayName -match 'Deep Server|Analyzer') { "VERIFY-UNINSTALL-ENTRY-REMAINS $($_.PSPath)" }
+            }
+          }
+          "VERIFY: done"
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: verify-screenshot
+          path: app.png
+          if-no-files-found: ignore
+
+  tag-guard:
+    name: Release tag guard (fake refs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Extract guard script from release.yml and run it
+        shell: bash
+        run: |
+          yq '.jobs.installer.steps[] | select(.name == "Check tag against version") | .run' .github/workflows/release.yml > "$RUNNER_TEMP/guard.sh"
+          cat "$RUNNER_TEMP/guard.sh"
+          run() { # name ref expect
+            if GITHUB_REF_NAME="$2" bash "$RUNNER_TEMP/guard.sh" >/dev/null 2>"$RUNNER_TEMP/err"; then got=pass; else got=fail; fi
+            echo "VERIFY-GUARD $1 ref=$2 expected=$3 got=$got $( [ "$got" = "$3" ] && echo OK || echo MISMATCH ) $(head -c 200 "$RUNNER_TEMP/err")"
+          }
+          run match v1.0.0 pass
+          run prerelease v1.0.0-rc1 pass
+          run tag_ahead v1.0.1 fail
+          run tag_behind v0.9.0 fail
+          run major v2.0.0 fail
+          cp package.json "$RUNNER_TEMP/package.json.bak"
+          jq '.version="1.0.1"' package.json > p.tmp && mv p.tmp package.json
+          run package_json_mismatch v1.0.0 fail
+          cp "$RUNNER_TEMP/package.json.bak" package.json
+          sed -i '0,/^version = "1.0.0"/s//version = "1.0.1"/' src-tauri/Cargo.toml
+          run cargo_toml_mismatch v1.0.0 fail
+          git checkout src-tauri/Cargo.toml
+          jq '.version="1.0.1"' src-tauri/tauri.conf.json > t.tmp && mv t.tmp src-tauri/tauri.conf.json
+          run tauri_conf_mismatch v1.0.0 fail
+          git checkout src-tauri/tauri.conf.json
+          echo "VERIFY: guard tests complete"
