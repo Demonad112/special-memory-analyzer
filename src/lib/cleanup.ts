@@ -1,5 +1,6 @@
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core'
 import { reactive, ref } from 'vue'
+import { trackJob } from './busy'
 import { errorMessage, type EntryKind, type ScanProgress } from './compare'
 import { currentJob } from './job'
 
@@ -143,7 +144,11 @@ export async function refreshDrives(): Promise<void> {
 }
 
 /** Scans a drive or folder; progress arrives about every 100 ms. */
-export async function runScan(path: string): Promise<void> {
+export function runScan(path: string): Promise<void> {
+  return trackJob(() => scanFolder(path))
+}
+
+async function scanFolder(path: string): Promise<void> {
   if (cleanupJob.running) {
     return
   }
@@ -214,7 +219,7 @@ export async function openTrail(index: number): Promise<void> {
  * folder. Only the trail's names and ids are used, so its other sizes may be stale.
  */
 export async function removeItem(id: number, permanent: boolean): Promise<void> {
-  const overview = await invoke<Overview>('cleanup_delete', { id, permanent })
+  const overview = await trackJob(() => invoke<Overview>('cleanup_delete', { id, permanent }))
   cleanupJob.overview = overview
   cleanupJob.trail = [overview.root, ...cleanupJob.trail.slice(1)]
   const shown = cleanupJob.trail.at(-1)
@@ -303,7 +308,7 @@ export function loadQuickWins(): Promise<QuickList> {
 
 /** Runs the chosen quick cleanups and saves a report of what they freed. */
 export function runQuickClean(ids: QuickId[]): Promise<QuickResult> {
-  return invoke<QuickResult>('cleanup_quick_clean', { ids, job: currentJob() })
+  return trackJob(() => invoke<QuickResult>('cleanup_quick_clean', { ids, job: currentJob() }))
 }
 
 /** Restarts Deep Server Analyzer as administrator; Windows asks first. */
@@ -518,11 +523,9 @@ export async function removeMany(
   permanent: boolean,
   confirmToken?: string,
 ): Promise<ItemResult[]> {
-  const done = await invoke<DeleteManyResult>('cleanup_delete_many', {
-    ids,
-    permanent,
-    confirmToken,
-  })
+  const done = await trackJob(() =>
+    invoke<DeleteManyResult>('cleanup_delete_many', { ids, permanent, confirmToken }),
+  )
   cleanupJob.overview = done.overview
   if (done.logError) {
     cleanupJob.notice = done.logError

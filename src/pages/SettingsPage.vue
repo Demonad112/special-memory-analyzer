@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import { Archive, Building2, Monitor, Moon, Palette, Sun } from '@lucide/vue'
+import { Archive, Building2, Monitor, Moon, Palette, Sun, Timer } from '@lucide/vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { appInfo } from '@/lib/appInfo'
+import { idleChoices, idleMinutes, setIdleMinutes } from '@/lib/idleTimeout'
 import { brand } from '@/lib/job'
 import { retentionChoices, retentionDays } from '@/lib/reports'
 import { setThemeChoice, themeChoice, type ThemeChoice } from '@/lib/theme'
+
+function idleLabel(minutes: number): string {
+  if (minutes === 0) return 'Off'
+  if (minutes === 60) return '1 hour'
+  if (minutes === 120) return '2 hours'
+  return `${minutes} minutes${minutes === 30 ? ' (default)' : ''}`
+}
 
 const themes: { value: ThemeChoice; label: string; icon: typeof Sun }[] = [
   { value: 'light', label: 'Light', icon: Sun },
@@ -93,6 +101,32 @@ const themes: { value: ThemeChoice; label: string; icon: typeof Sun }[] = [
           :value="choice.days"
         >
           {{ choice.label }}
+        </option>
+      </select>
+    </label>
+    <label class="mt-3 flex items-center gap-4 rounded-lg border border-stroke bg-card px-5 py-4">
+      <Timer
+        class="size-5 shrink-0"
+        :stroke-width="1.5"
+      />
+      <span class="flex-1">
+        <span class="block">Close after inactivity</span>
+        <span class="block text-xs text-muted">
+          Closes the app after no mouse, keyboard or touch for this long. A warning appears one
+          minute before. Never closes while a job is running.
+        </span>
+      </span>
+      <select
+        :value="idleMinutes"
+        class="h-8 w-40 rounded-md border border-stroke border-b-stroke-strong bg-card px-2 text-[13px] outline-none focus:border-b-2 focus:border-b-accent"
+        @change="setIdleMinutes(Number(($event.target as HTMLSelectElement).value))"
+      >
+        <option
+          v-for="minutes in idleChoices"
+          :key="minutes"
+          :value="minutes"
+        >
+          {{ idleLabel(minutes) }}
         </option>
       </select>
     </label>

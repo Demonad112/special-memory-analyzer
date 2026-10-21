@@ -1,5 +1,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { reactive } from 'vue'
+import { trackJob } from './busy'
 import { formatBytes, plural } from './format'
 import { currentJob, type JobInfo } from './job'
 
@@ -172,14 +173,16 @@ export function startRecord(
   options: { ignoreJunk: boolean; downloadCloud: boolean; preserve: PreserveOptions },
   onProgress: (progress: RecordProgress) => void,
 ): Promise<RunDetails> {
-  return invoke<RunDetails>('record_start', {
-    source,
-    destination,
-    mode,
-    verify,
-    options: { ...options, job: currentJob() },
-    onEvent: channel(onProgress),
-  })
+  return trackJob(() =>
+    invoke<RunDetails>('record_start', {
+      source,
+      destination,
+      mode,
+      verify,
+      options: { ...options, job: currentJob() },
+      onEvent: channel(onProgress),
+    }),
+  )
 }
 
 /** Compare's "Copy missing files": copies what the last compare found missing, as a record. */
@@ -188,12 +191,14 @@ export function copyMissingRecord(
   onProgress: (progress: RecordProgress) => void,
   preserve: PreserveOptions = defaultPreserve,
 ): Promise<RunDetails> {
-  return invoke<RunDetails>('record_copy_missing', {
-    verify,
-    job: currentJob(),
-    preserve,
-    onEvent: channel(onProgress),
-  })
+  return trackJob(() =>
+    invoke<RunDetails>('record_copy_missing', {
+      verify,
+      job: currentJob(),
+      preserve,
+      onEvent: channel(onProgress),
+    }),
+  )
 }
 
 /** Copies the not-copied files again: `paths` and/or one `reason`, or all of them when neither. */
@@ -203,12 +208,14 @@ export function retryRecord(
   onProgress: (progress: RecordProgress) => void,
   reason: FailureReason | null = null,
 ): Promise<RunDetails> {
-  return invoke<RunDetails>('record_retry', { runId, paths, reason, onEvent: channel(onProgress) })
+  return trackJob(() =>
+    invoke<RunDetails>('record_retry', { runId, paths, reason, onEvent: channel(onProgress) }),
+  )
 }
 
 /** Watch mode: stop watching and check every file that has not arrived. */
 export function finishRecord(): Promise<boolean> {
-  return invoke<boolean>('record_finish')
+  return trackJob(() => invoke<boolean>('record_finish'))
 }
 
 export function cancelRecord(): Promise<boolean> {
