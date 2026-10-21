@@ -129,7 +129,8 @@ try {
             $stream = [System.IO.File]::Open($setupPath, [System.IO.FileMode]::Append)
             try { $stream.Write($tail, 0, $tail.Length) } finally { $stream.Dispose() }
             $signed = Set-AuthenticodeSignature -FilePath $setupPath -Certificate $cert -HashAlgorithm SHA256
-            if ($signed.Status -ne 'Valid') { throw "Re-signing the test setup failed: $($signed.Status) $($signed.StatusMessage)" }
+            # Status is UnknownError until the installer trusts the certificate; only the signer matters here.
+            if ($signed.Status -in 'NotSigned', 'HashMismatch', 'NotSupportedFileFormat') { throw "Re-signing the test setup failed: $($signed.Status) $($signed.StatusMessage)" }
             $actual = (Get-AuthenticodeSignature -LiteralPath $setupPath).SignerCertificate.Thumbprint
             if ($actual -ine $thumb) { throw "Test setup is signed by $actual, not the test certificate $thumb." }
             Set-Content -LiteralPath (Join-Path $stage 'thumbprint.txt') -Value $thumb -Encoding ascii
