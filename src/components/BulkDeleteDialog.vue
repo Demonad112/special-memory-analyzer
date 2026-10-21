@@ -3,15 +3,19 @@ import { CircleCheck, LoaderCircle, ShieldAlert, TriangleAlert } from '@lucide/v
 import { computed, ref } from 'vue'
 import {
   appAdmin,
+  CONFIDENCE_BADGES,
   canDelete,
   deleteSentence,
   outcomeLabel,
   previewDelete,
   removeMany,
   restartAsAdmin,
+  rowsByNode,
   summarize,
   type DeletePreview,
   type ItemResult,
+  type JunkItem,
+  type PreviewItem,
   type PreviewStatus,
 } from '@/lib/cleanup'
 import { errorMessage } from '@/lib/compare'
@@ -21,9 +25,15 @@ const emit = defineEmits<{ finished: [] }>()
 
 type Phase = 'loading' | 'review' | 'running' | 'results'
 
+/** A dry-run row with the suggested-cleanup row it came from, when there is one. */
+interface Row extends PreviewItem {
+  note: JunkItem | undefined
+}
+
 const el = ref<HTMLDialogElement | null>(null)
 const phase = ref<Phase>('loading')
 const preview = ref<DeletePreview | null>(null)
+const notes = ref(new Map<number, JunkItem>())
 const results = ref<ItemResult[]>([])
 const error = ref('')
 
@@ -35,18 +45,25 @@ const STATUS_LABELS: Record<PreviewStatus, string> = {
   inside: 'Inside another picked item',
 }
 
-const going = computed(() => preview.value?.items.filter((item) => item.status === 'go') ?? [])
-const left = computed(() => preview.value?.items.filter((item) => item.status !== 'go') ?? [])
+const rows = computed<Row[]>(
+  () => preview.value?.items.map((item) => ({ ...item, note: notes.value.get(item.id) })) ?? [],
+)
+const going = computed(() => rows.value.filter((item) => item.status === 'go'))
+const left = computed(() => rows.value.filter((item) => item.status !== 'go'))
 const goIds = computed(() => going.value.map((item) => item.id))
 const count = computed(() => preview.value?.goCount ?? 0)
 const allowRecycle = computed(() => canDelete(count.value, false, appAdmin.elevated))
 const allowPermanent = computed(() => canDelete(count.value, true, appAdmin.elevated))
 const summary = computed(() => summarize(results.value))
 
-/** Opens the dialog with a dry run of deleting `ids`; nothing is removed until a button is used. */
-async function show(ids: number[]): Promise<void> {
+/**
+ * Opens the dialog with a dry run of deleting `ids`; nothing is removed until a button is used.
+ * `from` says why each id is listed when it came from the suggested cleanups.
+ */
+async function show(ids: number[], from: ReadonlyMap<number, JunkItem> = new Map()): Promise<void> {
   phase.value = 'loading'
   preview.value = null
+  notes.value = new Map(from)
   results.value = []
   error.value = ''
   el.value?.showModal()
@@ -130,33 +147,73 @@ defineExpose({ show })
         <li
           v-for="item in going"
           :key="item.id"
-          class="flex items-baseline gap-3 border-b border-stroke px-3 py-1.5 last:border-b-0"
+          class="border-b border-stroke px-3 py-1.5 last:border-b-0"
         >
-          <span
-            class="min-w-0 flex-1 truncate"
-            :title="item.path"
+          <div class="flex items-baseline gap-3">
+            <span
+              class="min-w-0 flex-1 truncate"
+              :title="item.path"
+            >
+              {{ item.path }}
+            </span>
+            <span class="shrink-0 text-xs text-muted tabular-nums">
+              <template v-if="item.isFolder">{{ plural(item.files, 'file') }} · </template
+              >{{ formatBytes(item.size) }}
+            </span>
+          </div>
+          <div
+            v-if="item.note"
+            class="mt-0.5 text-xs text-muted"
           >
-            {{ item.path }}
-          </span>
-          <span class="shrink-0 text-xs text-muted tabular-nums">
-            <template v-if="item.isFolder">{{ plural(item.files, 'file') }} · </template
-            >{{ formatBytes(item.size) }}
-          </span>
+            <span
+              class="mr-1.5 rounded border px-1.5"
+              :class="CONFIDENCE_BADGES[item.note.confidence].tone"
+            >
+              {{ CONFIDENCE_BADGES[item.note.confidence].label }}
+            </span>
+            {{ item.note.why }}
+            <p
+              v-if="item.note.tier === 'review' && item.note.restore"
+              class="mt-0.5"
+            >
+              <span class="font-semibold">Restore:</span> {{ item.note.restore }}
+            </p>
+          </div>
         </li>
         <li
           v-for="item in left"
           :key="item.id"
-          class="flex items-baseline gap-3 border-b border-stroke px-3 py-1.5 text-muted last:border-b-0"
+          class="border-b border-stroke px-3 py-1.5 text-muted last:border-b-0"
         >
-          <span
-            class="min-w-0 flex-1 truncate"
-            :title="item.path"
+          <div class="flex items-baseline gap-3">
+            <span
+              class="min-w-0 flex-1 truncate"
+              :title="item.path"
+            >
+              {{ item.path }}
+            </span>
+            <span class="shrink-0 text-xs">
+              Kept: {{ item.reason ?? STATUS_LABELS[item.status] }}
+            </span>
+          </div>
+          <div
+            v-if="item.note"
+            class="mt-0.5 text-xs"
           >
-            {{ item.path }}
-          </span>
-          <span class="shrink-0 text-xs">
-            Kept: {{ item.reason ?? STATUS_LABELS[item.status] }}
-          </span>
+            <span
+              class="mr-1.5 rounded border px-1.5"
+              :class="CONFIDENCE_BADGES[item.note.confidence].tone"
+            >
+              {{ CONFIDENCE_BADGES[item.note.confidence].label }}
+            </span>
+            {{ item.note.why }}
+            <p
+              v-if="item.note.tier === 'review' && item.note.restore"
+              class="mt-0.5"
+            >
+              <span class="font-semibold">Restore:</span> {{ item.note.restore }}
+            </p>
+          </div>
         </li>
       </ul>
 
