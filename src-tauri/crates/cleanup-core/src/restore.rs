@@ -32,9 +32,11 @@ pub fn parse_bin_info(bytes: &[u8]) -> Option<(String, u64)> {
     let deleted_ms = (number(16)? / 10_000).checked_sub(FILETIME_TO_UNIX_MS)?;
     let units: Vec<u16> = bytes
         .get(path_at..)?
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .take(max_units)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .map(|pair| u16::from_le_bytes(*pair))
         .take_while(|&unit| unit != 0)
         .collect();
     if units.is_empty() {

@@ -654,7 +654,9 @@ mod tests {
             false,
             &Protected::default(),
             root,
-        );
+            None,
+        )
+        .unwrap();
         assert_eq!(results[0].outcome, Outcome::Done);
         assert_eq!(results[1].outcome, Outcome::Done);
         assert!(!root.join("old.bin").exists() && !root.join("folder").exists());
