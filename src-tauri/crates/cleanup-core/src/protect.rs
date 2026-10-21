@@ -155,7 +155,7 @@ mod tests {
         assert!(check(r"C:\Users\Sam\Downloads\setup.exe", r"C:\").is_ok());
         assert!(check(r"C:\Users\Sam\Documents\old", r"C:\Users").is_ok());
         assert!(check(r"D:\Backups\2019", r"D:\").is_ok());
-        assert!(check(r"C:\Windows.old", r"C:\").is_ok());
+        assert!(check(r"C:\Windows.old", r"C:\").is_err());
         assert!(check(r"c:/temp/a.log", r"C:\TEMP").is_ok());
     }
 
@@ -249,5 +249,63 @@ mod tests {
         let this_pc = Protected::for_this_pc();
         assert!(!this_pc.children_of.is_empty());
         assert!(this_pc.exact.iter().any(|path| path.ends_with("\\users")));
+    }
+
+    #[test]
+    fn this_pc_keeps_app_roots_onedrive_and_home_dot_folders_but_not_their_caches() {
+        // Driven through the environment, so the real list in `for_this_pc` is what gets tested.
+        let set = [
+            ("USERPROFILE", r"C:\Users\Sam"),
+            ("APPDATA", r"C:\Users\Sam\AppData\Roaming"),
+            ("LOCALAPPDATA", r"C:\Users\Sam\AppData\Local"),
+            ("OneDrive", r"C:\Users\Sam\OneDrive"),
+        ];
+        let before: Vec<_> = set
+            .iter()
+            .map(|(name, _)| (*name, env::var_os(name)))
+            .collect();
+        for (name, value) in set {
+            env::set_var(name, value);
+        }
+        let this_pc = Protected::for_this_pc();
+        for (name, value) in before {
+            match value {
+                Some(value) => env::set_var(name, value),
+                None => env::remove_var(name),
+            }
+        }
+
+        let root = Path::new(r"C:\");
+        for path in [
+            r"C:\Users\Sam\AppData\Roaming\Local\lightning-services\x",
+            r"C:\Users\Sam\AppData\Local\Packages\Claude_x\LocalCache\y",
+            r"C:\Users\Sam\AppData\Local\node\corepack\z",
+            r"C:\Users\Sam\AppData\Local\Microsoft\OneDrive\settings\a.dat",
+            r"C:\Users\Sam\AppData\Local\Google\DriveFS\x",
+            r"C:\Users\Sam\OneDrive\Docs\a.docx",
+            r"C:\Users\Sam\.cache",
+            r"C:\Users\Sam\.cargo",
+            r"C:\Users\Sam\.rustup",
+            r"C:\Users\Sam\.claude",
+            r"C:\Users\Sam\.npm",
+            r"C:\Users\Sam\.config",
+            r"C:\Users\Sam\.ssh",
+        ] {
+            assert!(
+                this_pc.check(Path::new(path), root).is_err(),
+                "{path} should be kept"
+            );
+        }
+        // Sub-folders of a home dot-folder are what cleanup is for.
+        for path in [
+            r"C:\Users\Sam\AppData\Local\Temp\x.tmp",
+            r"C:\Users\Sam\.cache\pip",
+            r"C:\Users\Sam\.npm\_cacache\x",
+        ] {
+            assert!(
+                this_pc.check(Path::new(path), root).is_ok(),
+                "{path} should be deletable"
+            );
+        }
     }
 }

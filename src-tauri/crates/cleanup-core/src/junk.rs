@@ -357,4 +357,99 @@ mod tests {
         );
         assert_eq!(classify_file("setup.msi", Some(100), false), None);
     }
+
+    fn dev_cache_paths(groups: &[JunkGroup]) -> Vec<String> {
+        groups
+            .iter()
+            .filter(|group| group.kind == JunkKind::DevCaches)
+            .flat_map(|group| group.items.iter().map(|item| item.path.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn caches_inside_runtimes_and_package_stores_are_not_flagged() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join(".cache/pip/http/x"), 400);
+        write(&root.join(".cargo/registry/index/x/.cache/y"), 400);
+        write(
+            &root.join(
+                "AppData/Roaming/Local/lightning-services/php-8.2.27+1/node_modules/pkg/index.js",
+            ),
+            400,
+        );
+        write(
+            &root.join("AppData/Local/Packages/Claude_x/LocalCache/proj/node_modules/pkg/index.js"),
+            400,
+        );
+        write(
+            &root.join("AppData/Local/node/corepack/v1/proj/node_modules/pkg/index.js"),
+            400,
+        );
+        write(
+            &root.join("AppData/Local/Python/venv/lib/__pycache__/m.pyc"),
+            400,
+        );
+        let tree = scan(root, &ScanState::default()).unwrap();
+        let groups = find(&tree, &Protected::default(), now());
+        let paths = dev_cache_paths(&groups);
+
+        assert!(
+            !paths.iter().any(|path| path.ends_with(".cache")),
+            "whole .cache folders are never flagged: {paths:?}"
+        );
+        for owner in ["lightning-services", "Packages", "corepack", "Python"] {
+            assert!(
+                !paths.iter().any(|path| path.contains(owner)),
+                "{owner} is a runtime owner, not a project: {paths:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn node_modules_is_flagged_only_when_its_project_is_stale() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        // A project untouched for 400 days.
+        write(&root.join("stale-app/package.json"), 400);
+        write(&root.join("stale-app/package-lock.json"), 400);
+        write(&root.join("stale-app/node_modules/pkg/index.js"), 400);
+        // node_modules is old, but the project's own files were touched 2 days ago.
+        write(&root.join("live-app/package.json"), 2);
+        write(&root.join("live-app/package-lock.json"), 400);
+        write(&root.join("live-app/src/main.js"), 2);
+        write(&root.join("live-app/node_modules/pkg/index.js"), 400);
+        let tree = scan(root, &ScanState::default()).unwrap();
+        let groups = find(&tree, &Protected::default(), now());
+        let paths = dev_cache_paths(&groups);
+
+        assert!(
+            paths.iter().any(|path| path.contains("stale-app")),
+            "{paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|path| path.contains("live-app")),
+            "{paths:?}"
+        );
+    }
+
+    #[test]
+    fn pycache_folders_in_one_venv_are_one_row() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for n in 0..360 {
+            write(&root.join(format!("venv/lib/pkg{n}/__pycache__/m.pyc")), 0);
+        }
+        let tree = scan(root, &ScanState::default()).unwrap();
+        let groups = find(&tree, &Protected::default(), now());
+        let group = groups
+            .iter()
+            .find(|group| group.kind == JunkKind::DevCaches)
+            .unwrap();
+
+        assert_eq!(group.count, 360);
+        assert_eq!(group.items.len(), 1, "one row for the venv");
+        let summed: u64 = group.items.iter().map(|item| item.size).sum();
+        assert_eq!(summed, group.size);
+    }
 }
