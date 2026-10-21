@@ -1,22 +1,31 @@
-# Project template
+# Deep Server Analyzer
 
-Starter for new projects that use Claude Code, on the desktop app and in cloud (web/mobile) sessions.
+A Windows 10/11 desktop app for checking, copying and cleaning up folders and disks.
 
-## Use it
+- **Compare**: pick a left and a right folder and compare them by size. See what is only on one side, what differs, and what matches.
+- **Record**: copy files from one folder to another with live progress, verify the result, and get a report that lists every missed or failed file in red, with the reason.
+- **Disk Cleanup**: an in-app disk space analyzer with a treemap, the biggest folders and files, file types and a cleanup list. Deletes go to the Recycle Bin by default, and every deletion is logged.
+- **Reports and Settings**: reports are saved as JSON in the app data folder and can be exported to standalone HTML or CSV. Settings cover theme and report retention.
 
-1. Click **Use this template** on GitHub and create the new repo.
-2. Fill in `CLAUDE.md` (commands, layout, gotchas). Keep it short.
-3. Install the Claude GitHub app on the new repo so cloud sessions can push and open PRs.
+Folder walks never follow symlinks or junctions, and OneDrive online-only files are flagged and never read.
 
-Cloud sessions start with an empty container. If your project needs dependencies installed, ask Claude to install them at the start of the session (or to add a setup hook if you want it automatic).
+## Install
 
-## What is here
+Download the installer from the releases page, or build it yourself (below). See [docs/install.md](docs/install.md) for silent install, portable mode and data folders. Builds are unsigned, so SmartScreen may warn.
 
-| Path | Purpose |
-|---|---|
-| `CLAUDE.md` | Project notes Claude reads every session |
-| `.claude/settings.json` | Allow-list for read-only git/gh and common test/lint/build commands; force-push deny |
-| `.github/pull_request_template.md` | Default PR body |
-| `.gitignore` | Ignores local Claude settings and worktrees |
+## Build
 
-Personal preferences belong in `~/.claude/` or `CLAUDE.local.md`, not in the repo.
+Needs Node.js 22+, Rust (stable, MSVC toolchain) and the WebView2 runtime.
+
+```bash
+corepack pnpm install
+corepack pnpm tauri dev      # run the app
+corepack pnpm quality        # prettier, vue-tsc, rustfmt, clippy
+corepack pnpm test           # vitest
+corepack pnpm rust:test      # cargo tests
+corepack pnpm tauri build    # installer in src-tauri/target/release/bundle/nsis/
+```
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

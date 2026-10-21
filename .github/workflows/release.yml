@@ -1,0 +1,56 @@
+name: Build installer
+
+# Builds the NSIS installer when a v* tag is pushed and keeps it as a workflow artifact.
+# The tag must match the version in package.json, src-tauri/tauri.conf.json and src-tauri/Cargo.toml.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check tag against version
+        shell: bash
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          want="${want%%-*}"
+          tauri=$(jq -r .version src-tauri/tauri.conf.json)
+          pkg=$(jq -r .version package.json)
+          cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)
+          if [ "$tauri" != "$want" ] || [ "$pkg" != "$want" ] || [ "$cargo" != "$want" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME needs version $want, but tauri.conf.json has $tauri, package.json has $pkg and Cargo.toml has $cargo."
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - run: corepack enable
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache-workspaces: src-tauri
+
+      - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm tauri build
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: Deep-Server-Analyzer-windows
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

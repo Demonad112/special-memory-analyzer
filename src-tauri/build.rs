@@ -1,0 +1,7 @@
+fn main() {
+    // The manifest opts the app into paths over 260 characters (`longPathAware`).
+    let windows =
+        tauri_build::WindowsAttributes::new().app_manifest(include_str!("windows/app.manifest"));
+    tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
+        .expect("failed to run the Tauri build script");
+}

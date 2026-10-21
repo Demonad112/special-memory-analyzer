@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Quality and tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - run: corepack enable
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+          cache-workspaces: src-tauri
+
+      - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm quality
+      - run: corepack pnpm test
+      - run: corepack pnpm rust:test

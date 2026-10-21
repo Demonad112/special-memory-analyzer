@@ -1,0 +1,23 @@
+[package]
+name = "transfer-core"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Record a copy (Deep Server Analyzer copies, or watches another tool copy) and list every file that did not make it."
+
+[dependencies]
+blake3 = "1.8"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+notify = "8"
+scan-core = { path = "../scan-core" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Threading",
+] }

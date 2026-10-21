@@ -1,0 +1,17 @@
+[package]
+name = "report-core"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Saved Compare, Record and Disk Cleanup reports for Deep Server Analyzer, with HTML and CSV export."
+
+[dependencies]
+base64 = "0.22"
+scan-core = { path = "../scan-core" }
+serde = { version = "1.0.228", features = ["derive"] }
+sha2 = "0.10"
+serde_json = "1"
+transfer-core = { path = "../transfer-core" }
+
+[dev-dependencies]
+tempfile = "3.27"

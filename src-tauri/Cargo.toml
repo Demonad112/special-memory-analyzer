@@ -1,0 +1,35 @@
+[workspace]
+members = [".", "crates/cleanup-core", "crates/report-core", "crates/scan-core", "crates/transfer-core"]
+resolver = "2"
+
+[package]
+name = "deep-server-analyzer"
+version = "1.0.0"
+edition = "2021"
+authors = ["Demonad112"]
+license = "Apache-2.0"
+default-run = "deep-server-analyzer"
+
+[lib]
+name = "deep_server_analyzer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "deep-server-analyzer"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+cleanup-core = { path = "crates/cleanup-core" }
+report-core = { path = "crates/report-core" }
+scan-core = { path = "crates/scan-core" }
+serde = { version = "1.0.228", features = ["derive"] }
+transfer-core = { path = "crates/transfer-core" }
+tauri = { version = "2.11.3", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-version = "0.1"

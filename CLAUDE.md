@@ -1,33 +1,18 @@
-# <Project name>
+# Deep Server Analyzer
 
-<One sentence: what this project is and its stack. Optional.>
+Windows desktop app with three tools: Compare two folders by size, Record a copy with a report of every missed file, and Disk Cleanup (in-app disk analyzer). Tauri 2 + Rust workspace, Vue 3 + TypeScript + Vite, Tailwind CSS v4.
 
 ## Commands
 
-Keep the lines for this project's stack and delete the rest.
-
 ```bash
-# JavaScript / TypeScript (pnpm via corepack; swap for npm or yarn)
 corepack pnpm install
-corepack pnpm dev
+corepack pnpm quality         # prettier check, vue-tsc, rustfmt check, clippy -D warnings
 corepack pnpm test            # vitest; scope with: corepack pnpm exec vitest run <file>
-corepack pnpm lint
-corepack pnpm exec vue-tsc --noEmit     # or: corepack pnpm exec tsc --noEmit
-corepack pnpm exec prettier --check .
-
-# Rust
-cargo build
-cargo test
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
+corepack pnpm rust:test       # cargo test --workspace --manifest-path src-tauri/Cargo.toml
 
 # Tauri
-corepack pnpm tauri dev
-corepack pnpm tauri build
-
-# Python
-pip install -r requirements.txt
-pytest
+corepack pnpm tauri dev       # dev server on port 1430
+corepack pnpm tauri build     # NSIS installer in src-tauri/target/release/bundle/nsis/
 
 # GitHub
 gh pr create --fill
@@ -36,13 +21,14 @@ gh run list --limit 5
 gh run view <id> --log-failed
 ```
 
-Run lint, typecheck and tests before opening a PR. Scope tests to the touched files when the full suite is slow.
+Run quality and tests before opening a PR. Scope tests to the touched files when the full suite is slow.
 
 ## Layout
 
-- `src/`: application code
-- `tests/`: tests, mirroring `src/`
-- `docs/`: notes that outlive a session
+- `src/`: Vue app. `pages/` one per screen, `components/`, `lib/` plain TS helpers with a `*.test.ts` beside each, `router.ts`, `styles.css`.
+- `src-tauri/src/`: Tauri commands, one file per area (`compare.rs`, `record.rs`, `cleanup.rs`, `reports.rs`).
+- `src-tauri/crates/`: `scan-core` (folder walker and size compare), `transfer-core` (Record), `cleanup-core` (Disk Cleanup, Recycle Bin, deletion log), `report-core` (saved reports, HTML and CSV export).
+- `docs/`: notes that outlive a session (`install.md`).
 
 ## Conventions
 
@@ -56,8 +42,15 @@ Run lint, typecheck and tests before opening a PR. Scope tests to the touched fi
 ## Environment notes
 
 - Windows desktop: the shell may be Git Bash or PowerShell. Heredocs in Bash halve backslashes, so write files containing backslashes with the file tools.
-- Cloud (web/mobile) sessions start with an empty container: install dependencies first.
+- Cloud (web/mobile) sessions start with an empty container: install dependencies first. The app crate needs Windows (or WebKitGTK), so check Rust there with `--target x86_64-pc-windows-msvc`.
 
 ## Gotchas
 
-- <Only things that can't be learned from reading the code: required env vars, quirks, traps. Add a line when something trips Claude twice.>
+- Every colour is a `--app-*` token in `src/styles.css`. No raw hex or Tailwind palette colours in components.
+- Folder walks never follow reparse points (symlinks, junctions). OneDrive online-only files are flagged and never read.
+- Long jobs are `async` + `spawn_blocking`, stream progress about every 100 ms, and keep big results in managed state. The UI loads one folder level at a time.
+- Every new saved-report field needs `#[serde(default)]`.
+- Disk Cleanup deletes go to the Recycle Bin by default, and every deletion is appended to `Logs\deletions.jsonl`.
+- Apache-2.0 only: never copy source from GPL tools such as WinDirStat.
+- Data lives in `%LOCALAPPDATA%\Deep Server Analyzer`. Overrides: `DEEP_SERVER_ANALYZER_RECORDS_DIR`, `_REPORTS_DIR`, `_LOGS_DIR`.
+- Refresh the report explorer fixture with `UPDATE_FIXTURES=1 cargo test -p report-core explorer_fixture`.
