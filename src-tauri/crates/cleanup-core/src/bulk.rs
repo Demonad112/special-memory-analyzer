@@ -631,6 +631,38 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn a_recycle_delete_takes_the_file_and_folder_out_and_leaves_the_rest() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("old.bin"));
+        write(&root.join("folder/inner.bin"));
+        write(&root.join("keep.bin"));
+
+        let results = run(
+            &[
+                Target {
+                    id: 1,
+                    path: root.join("old.bin"),
+                    size: 1,
+                },
+                Target {
+                    id: 2,
+                    path: root.join("folder"),
+                    size: 1,
+                },
+            ],
+            false,
+            &Protected::default(),
+            root,
+        );
+        assert_eq!(results[0].outcome, Outcome::Done);
+        assert_eq!(results[1].outcome, Outcome::Done);
+        assert!(!root.join("old.bin").exists() && !root.join("folder").exists());
+        assert!(root.join("keep.bin").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn a_locked_file_is_reported_as_in_use_and_stays() {
         use std::os::windows::fs::OpenOptionsExt;
         let temp = tempfile::tempdir().unwrap();
