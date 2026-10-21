@@ -41,7 +41,10 @@ import {
   outcomeLabel,
   previewDelete,
   refreshElevated,
+  loadLastRun,
   removeMany,
+  restoreLast,
+  restoreSentence,
   rowsFor,
   setSizeMode,
   shownBytes,
@@ -49,6 +52,7 @@ import {
   summarize,
   toggleTier,
   type ItemResult,
+  type RestoreResult,
   type JunkGroup,
   type JunkItem,
   type JunkKind,
@@ -246,6 +250,21 @@ describe('bulk delete calls', () => {
     expect(got).toEqual(results)
     expect(cleanupJob.overview?.root.size).toBe(40)
     expect(cleanupJob.rows.map((item) => item.name)).toEqual(['Public'])
+  })
+
+  it('hands the confirmation token from the dry run to the delete', async () => {
+    cleanupJob.trail = [row(0, 'C:\\', 100)]
+    core.invoke
+      .mockResolvedValueOnce({ results: [result(2, 'done', 60)], overview: overview(40) })
+      .mockResolvedValueOnce([])
+
+    await removeMany([2], false, 'tok')
+
+    expect(core.invoke).toHaveBeenNthCalledWith(1, 'cleanup_delete_many', {
+      ids: [2],
+      permanent: false,
+      confirmToken: 'tok',
+    })
   })
 
   it('shows a notice when the deletion log could not be written', async () => {
@@ -557,5 +576,32 @@ describe('suggested cleanups on screen', () => {
 
     expect(host.querySelectorAll('input[type="checkbox"]')).toHaveLength(2)
     expect(host.querySelectorAll('input[type="checkbox"]:checked')).toHaveLength(0)
+  })
+})
+
+describe('restore the last cleanup', () => {
+  beforeEach(() => core.invoke.mockReset())
+
+  it('reads the last run and restores it through the matching commands', async () => {
+    core.invoke.mockResolvedValueOnce({ time: 't', items: 3, recycled: 2 })
+    expect(await loadLastRun()).toEqual({ time: 't', items: 3, recycled: 2 })
+    expect(core.invoke).toHaveBeenLastCalledWith('cleanup_last_run')
+
+    core.invoke.mockResolvedValueOnce([])
+    await restoreLast()
+    expect(core.invoke).toHaveBeenLastCalledWith('cleanup_restore_last')
+  })
+
+  it('says how many came back and how many did not', () => {
+    const item = (outcome: RestoreResult['outcome']): RestoreResult => ({
+      path: 'C:\\x',
+      size: 1,
+      outcome,
+      message: null,
+    })
+    expect(restoreSentence([item('restored'), item('restored')])).toBe('2 of 2 restored.')
+    expect(restoreSentence([item('restored'), item('exists'), item('notInBin')])).toBe(
+      '1 of 3 restored; 2 could not be put back.',
+    )
   })
 })

@@ -65,6 +65,8 @@ pub fn run() {
             cleanup::cleanup_delete,
             cleanup::cleanup_delete_preview,
             cleanup::cleanup_delete_many,
+            cleanup::cleanup_last_run,
+            cleanup::cleanup_restore_last,
             cleanup::cleanup_junk,
             cleanup::app_elevated,
             cleanup::cleanup_quick_list,

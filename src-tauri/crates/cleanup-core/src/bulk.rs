@@ -5,9 +5,19 @@
 use crate::{delete_permanently, recycle, Protected};
 use scan_core::{Kind, NodeId, Tree};
 use serde::Serialize;
+use std::collections::hash_map::RandomState;
 use std::collections::HashSet;
 use std::fs;
+use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// A run over more items than this needs the confirmation token from [`preview`].
+pub const BRAKE_ITEMS: u64 = 200;
+/// A run over more space than this (1 GiB) needs the confirmation token too.
+pub const BRAKE_BYTES: u64 = 1 << 30;
+/// Items named in the second confirmation.
+const BRAKE_BIGGEST: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +55,35 @@ pub struct Preview {
     pub go_count: u64,
     /// Space on disk those items take.
     pub go_size: u64,
+    /// Set when the run is big enough that [`run`] refuses without the token inside.
+    pub brake: Option<Brake>,
+}
+
+/// The second confirmation for a big run.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Brake {
+    /// Handed back to [`run`] to show the second confirmation was answered.
+    pub token: String,
+    /// The largest items that will go, biggest first.
+    pub biggest: Vec<PreviewItem>,
+}
+
+/// True when `count` items or `size` bytes are enough to need the second confirmation.
+pub fn needs_brake(count: u64, size: u64) -> bool {
+    count > BRAKE_ITEMS || size > BRAKE_BYTES
+}
+
+/// A token for exactly this set of targets. It changes with the secret of each app run, so one
+/// from an earlier run, or for a different selection, does not match.
+fn token_for(targets: impl IntoIterator<Item = (NodeId, String)>) -> String {
+    static SECRET: OnceLock<RandomState> = OnceLock::new();
+    let mut targets: Vec<(NodeId, String)> = targets.into_iter().collect();
+    targets.sort();
+    format!(
+        "{:016x}",
+        SECRET.get_or_init(RandomState::new).hash_one(&targets)
+    )
 }
 
 /// What a delete of `ids` would do. Repeated ids are listed once, in the order given.
@@ -116,9 +155,21 @@ pub fn preview(tree: &Tree, protected: &Protected, ids: &[NodeId]) -> Preview {
     }
 
     let go = items.iter().filter(|item| item.status == PreviewStatus::Go);
+    let go_count = go.clone().count() as u64;
+    let go_size: u64 = go.clone().map(|item| item.size).sum();
+    let brake = needs_brake(go_count, go_size).then(|| {
+        let mut biggest: Vec<PreviewItem> = go.clone().cloned().collect();
+        biggest.sort_by_key(|item| std::cmp::Reverse(item.size));
+        biggest.truncate(BRAKE_BIGGEST);
+        Brake {
+            token: token_for(go.map(|item| (item.id, item.path.clone()))),
+            biggest,
+        }
+    });
     Preview {
-        go_count: go.clone().count() as u64,
-        go_size: go.map(|item| item.size).sum(),
+        go_count,
+        go_size,
+        brake,
         items,
     }
 }
@@ -169,13 +220,31 @@ pub struct ItemResult {
 
 /// Deletes each target in turn. The protected list is checked again here, and a path that is
 /// now a link (or no longer there) is not touched, whatever the preview said.
+///
+/// A run over [`BRAKE_ITEMS`] items or [`BRAKE_BYTES`] bytes is refused, before anything is
+/// touched, unless `token` is the one [`preview`] issued for these same targets.
 pub fn run(
     targets: &[Target],
     permanent: bool,
     protected: &Protected,
     scan_root: &Path,
-) -> Vec<ItemResult> {
-    targets
+    token: Option<&str>,
+) -> Result<Vec<ItemResult>, String> {
+    let size = targets.iter().map(|target| target.size).sum();
+    if needs_brake(targets.len() as u64, size) {
+        let expected = token_for(
+            targets
+                .iter()
+                .map(|target| (target.id, target.path.display().to_string())),
+        );
+        if token != Some(expected.as_str()) {
+            return Err(format!(
+                "That is {} items and over the limit for one run. Review the biggest items and confirm again.",
+                targets.len()
+            ));
+        }
+    }
+    Ok(targets
         .iter()
         .map(|target| {
             let (outcome, message) = delete_one(target, permanent, protected, scan_root);
@@ -187,7 +256,7 @@ pub fn run(
                 message,
             }
         })
-        .collect()
+        .collect())
 }
 
 fn delete_one(
@@ -369,7 +438,9 @@ mod tests {
             true,
             &protected,
             root,
-        );
+            None,
+        )
+        .unwrap();
         let outcomes: Vec<Outcome> = results.iter().map(|result| result.outcome).collect();
         assert_eq!(
             outcomes,
@@ -398,9 +469,119 @@ mod tests {
             true,
             &Protected::default(),
             temp.path(),
-        );
+            None,
+        )
+        .unwrap();
         assert_eq!(results[0].outcome, Outcome::Skipped);
         assert!(other.path().join("x.bin").exists());
+    }
+
+    fn many(root: &Path, count: usize) -> (Tree, Vec<NodeId>) {
+        for n in 0..count {
+            write(&root.join(format!("f{n}.bin")));
+        }
+        let tree = scan(root, &ScanState::default()).unwrap();
+        let ids = (0..count)
+            .map(|n| id(&tree, &[format!("f{n}.bin").as_str()]))
+            .collect();
+        (tree, ids)
+    }
+
+    fn targets(tree: &Tree, ids: &[NodeId]) -> Vec<Target> {
+        ids.iter()
+            .map(|&id| Target {
+                id,
+                path: tree.path(id),
+                size: tree.node(id).disk,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_run_of_exactly_the_limit_needs_no_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let (tree, ids) = many(temp.path(), BRAKE_ITEMS as usize);
+        let plan = preview(&tree, &Protected::default(), &ids);
+        assert!(plan.brake.is_none());
+        let results = run(
+            &targets(&tree, &ids),
+            true,
+            &Protected::default(),
+            temp.path(),
+            None,
+        )
+        .unwrap();
+        assert!(results.iter().all(|result| result.outcome == Outcome::Done));
+    }
+
+    #[test]
+    fn over_the_item_limit_run_refuses_without_the_token_and_proceeds_with_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let (tree, ids) = many(root, BRAKE_ITEMS as usize + 2);
+        let protected = Protected::default();
+        let picked = &ids[..BRAKE_ITEMS as usize + 1];
+        let brake = preview(&tree, &protected, picked)
+            .brake
+            .expect("201 items trip the brake");
+        assert_eq!(brake.biggest.len(), 3);
+        let all = targets(&tree, picked);
+
+        // No token, a made-up one, and one issued for a different selection: nothing is touched.
+        assert!(run(&all, true, &protected, root, None).is_err());
+        assert!(run(&all, true, &protected, root, Some("nope")).is_err());
+        let other = preview(&tree, &protected, &ids[1..]).brake.unwrap();
+        assert!(run(&all, true, &protected, root, Some(&other.token)).is_err());
+        assert!(root.join("f0.bin").exists() && root.join("f200.bin").exists());
+
+        let results = run(&all, true, &protected, root, Some(&brake.token)).unwrap();
+        assert_eq!(results.len(), 201);
+        assert!(results.iter().all(|result| result.outcome == Outcome::Done));
+        assert!(!root.join("f0.bin").exists() && root.join("f201.bin").exists());
+    }
+
+    #[test]
+    fn a_selection_over_one_gigabyte_is_refused_without_the_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("a.bin"));
+        write(&root.join("b.bin"));
+        let big = |name: &str, size: u64| Target {
+            id: 1,
+            path: root.join(name),
+            size,
+        };
+        let two = [
+            big("a.bin", BRAKE_BYTES / 2 + 1),
+            big("b.bin", BRAKE_BYTES / 2),
+        ];
+        assert!(run(&two, true, &Protected::default(), root, None).is_err());
+        assert!(root.join("a.bin").exists() && root.join("b.bin").exists());
+
+        // Exactly 1 GiB is not over it.
+        let two = [big("a.bin", BRAKE_BYTES / 2), big("b.bin", BRAKE_BYTES / 2)];
+        assert!(run(&two, true, &Protected::default(), root, None).is_ok());
+    }
+
+    #[test]
+    fn the_brake_names_the_three_biggest_items_that_will_go() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let (_, _) = many(root, BRAKE_ITEMS as usize + 1);
+        for (n, len) in [(5, 300_000), (6, 200_000), (7, 100_000)] {
+            fs::write(root.join(format!("f{n}.bin")), vec![b'x'; len]).unwrap();
+        }
+        let tree = scan(root, &ScanState::default()).unwrap();
+        let ids: Vec<NodeId> = (0..=BRAKE_ITEMS as usize)
+            .map(|n| id(&tree, &[format!("f{n}.bin").as_str()]))
+            .collect();
+        let brake = preview(&tree, &Protected::default(), &ids).brake.unwrap();
+        let names: Vec<&str> = brake
+            .biggest
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect();
+        assert_eq!(names, ["f5.bin", "f6.bin", "f7.bin"]);
     }
 
     #[cfg(windows)]
@@ -440,7 +621,9 @@ mod tests {
             true,
             &Protected::default(),
             &root,
-        );
+            None,
+        )
+        .unwrap();
         assert_eq!(results[0].outcome, Outcome::Skipped);
         assert!(outside.join("precious.bin").exists());
         assert!(root.join("link").exists());
@@ -477,7 +660,9 @@ mod tests {
             true,
             &Protected::default(),
             root,
-        );
+            None,
+        )
+        .unwrap();
         assert_eq!(results[0].outcome, Outcome::InUse);
         assert!(root.join("held.bin").exists());
         // One locked file does not stop the next.

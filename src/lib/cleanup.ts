@@ -403,10 +403,19 @@ export interface PreviewItem {
   reason: string | null
 }
 
+/** Set on a dry run big enough that the delete needs a second confirmation. */
+export interface Brake {
+  /** Handed back to the delete to show the second confirmation was answered. */
+  token: string
+  /** The largest items that would go, biggest first. */
+  biggest: PreviewItem[]
+}
+
 export interface DeletePreview {
   items: PreviewItem[]
   goCount: number
   goSize: number
+  brake?: Brake | null
 }
 
 export type Outcome = 'done' | 'inUse' | 'accessDenied' | 'notFound' | 'skipped' | 'failed'
@@ -504,8 +513,16 @@ export function previewDelete(ids: number[]): Promise<DeletePreview> {
  * Deletes the items one by one, then refreshes the totals and the shown folder. Resolves with
  * a result for each item that went ahead.
  */
-export async function removeMany(ids: number[], permanent: boolean): Promise<ItemResult[]> {
-  const done = await invoke<DeleteManyResult>('cleanup_delete_many', { ids, permanent })
+export async function removeMany(
+  ids: number[],
+  permanent: boolean,
+  confirmToken?: string,
+): Promise<ItemResult[]> {
+  const done = await invoke<DeleteManyResult>('cleanup_delete_many', {
+    ids,
+    permanent,
+    confirmToken,
+  })
   cleanupJob.overview = done.overview
   if (done.logError) {
     cleanupJob.notice = done.logError
@@ -556,4 +573,40 @@ export function summarize(results: ItemResult[]): { done: number; failed: number
     failed: results.length - done.length,
     freed: done.reduce((sum, result) => sum + result.size, 0),
   }
+}
+
+export type RestoreOutcome = 'restored' | 'exists' | 'notInBin' | 'permanent' | 'failed'
+
+export interface RestoreResult {
+  path: string
+  size: number
+  outcome: RestoreOutcome
+  message: string | null
+}
+
+/** The last bulk delete in the deletion log. */
+export interface LastRun {
+  time: string
+  items: number
+  /** Of those, the ones that went to the Recycle Bin. */
+  recycled: number
+}
+
+export function loadLastRun(): Promise<LastRun | null> {
+  return invoke<LastRun | null>('cleanup_last_run')
+}
+
+/** Puts the last bulk delete back from the Recycle Bin; the scan is out of date afterwards. */
+export function restoreLast(): Promise<RestoreResult[]> {
+  return invoke<RestoreResult[]>('cleanup_restore_last')
+}
+
+/** One line for the result of a restore. */
+export function restoreSentence(results: RestoreResult[]): string {
+  const count = (outcome: RestoreOutcome): number =>
+    results.filter((result) => result.outcome === outcome).length
+  const restored = count('restored')
+  const left = results.length - restored
+  const base = `${String(restored)} of ${String(results.length)} restored`
+  return left > 0 ? `${base}; ${String(left)} could not be put back.` : `${base}.`
 }

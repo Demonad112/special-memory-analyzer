@@ -23,7 +23,7 @@ import { formatBytes, plural } from '@/lib/format'
 
 const emit = defineEmits<{ finished: [] }>()
 
-type Phase = 'loading' | 'review' | 'running' | 'results'
+type Phase = 'loading' | 'review' | 'brake' | 'running' | 'results'
 
 /** A dry-run row with the suggested-cleanup row it came from, when there is one. */
 interface Row extends PreviewItem {
@@ -36,6 +36,8 @@ const preview = ref<DeletePreview | null>(null)
 const notes = ref(new Map<number, JunkItem>())
 const results = ref<ItemResult[]>([])
 const error = ref('')
+/** Which button opened the second confirmation of a big run. */
+const brakePermanent = ref(false)
 
 const STATUS_LABELS: Record<PreviewStatus, string> = {
   go: '',
@@ -76,19 +78,36 @@ async function show(ids: number[], from: ReadonlyMap<number, JunkItem> = new Map
   }
 }
 
-async function run(permanent: boolean): Promise<void> {
+/** A big run asks once more, naming the biggest items, before it goes ahead. */
+function run(permanent: boolean): void {
   if (phase.value !== 'review' || !canDelete(count.value, permanent, appAdmin.elevated)) {
     return
   }
+  if (preview.value?.brake) {
+    brakePermanent.value = permanent
+    phase.value = 'brake'
+    return
+  }
+  void go(permanent)
+}
+
+async function go(permanent: boolean, token?: string): Promise<void> {
   phase.value = 'running'
   error.value = ''
   try {
-    results.value = await removeMany(goIds.value, permanent)
+    results.value = await removeMany(goIds.value, permanent, token)
     phase.value = 'results'
     emit('finished')
   } catch (err) {
     error.value = errorMessage(err)
     phase.value = 'review'
+  }
+}
+
+function confirmBig(): void {
+  const token = preview.value?.brake?.token
+  if (phase.value === 'brake' && token) {
+    void go(brakePermanent.value, token)
   }
 }
 
@@ -122,6 +141,7 @@ defineExpose({ show })
     >
       <template v-if="phase === 'results'">Done</template>
       <template v-else-if="phase === 'running'">Deleting…</template>
+      <template v-else-if="phase === 'brake'">This is a big cleanup</template>
       <template v-else>Delete {{ plural(count, 'item') }}?</template>
     </h2>
 
@@ -132,6 +152,38 @@ defineExpose({ show })
       <LoaderCircle class="size-4 animate-spin" />
       Checking what would be deleted…
     </p>
+
+    <template v-else-if="phase === 'brake' && preview?.brake">
+      <p
+        class="mt-1 flex items-start gap-2 text-[13px] text-warning"
+        role="alert"
+      >
+        <TriangleAlert class="mt-0.5 size-4 shrink-0" />
+        {{ plural(count, 'item') }}, {{ formatBytes(preview.goSize) }} in total
+        {{ brakePermanent ? 'will be deleted permanently' : 'will be moved to the Recycle Bin' }}.
+        These are the biggest:
+      </p>
+      <ul
+        class="mt-3 rounded-md border border-stroke bg-card text-[13px]"
+        aria-label="Biggest items"
+      >
+        <li
+          v-for="item in preview.brake.biggest"
+          :key="item.id"
+          class="flex items-baseline gap-3 border-b border-stroke px-3 py-1.5 last:border-b-0"
+        >
+          <span
+            class="min-w-0 flex-1 truncate"
+            :title="item.path"
+          >
+            {{ item.path }}
+          </span>
+          <span class="shrink-0 text-xs text-muted tabular-nums">
+            {{ formatBytes(item.size) }}
+          </span>
+        </li>
+      </ul>
+    </template>
 
     <template v-else-if="phase === 'review' || phase === 'running'">
       <p
@@ -290,6 +342,22 @@ defineExpose({ show })
           @click="close"
         >
           Close
+        </button>
+      </template>
+      <template v-else-if="phase === 'brake'">
+        <button
+          type="button"
+          class="h-8 rounded-md border border-stroke bg-card px-4 hover:bg-card-hover"
+          @click="phase = 'review'"
+        >
+          Back
+        </button>
+        <button
+          type="button"
+          class="flex h-8 items-center gap-1.5 rounded-md bg-accent px-4 font-semibold text-on-accent hover:bg-accent-hover"
+          @click="confirmBig"
+        >
+          Yes, {{ brakePermanent ? 'delete' : 'recycle' }} {{ plural(count, 'item') }}
         </button>
       </template>
       <template v-else>
