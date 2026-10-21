@@ -5,6 +5,7 @@ use cleanup_core::bulk::{self, ItemResult, Outcome, Preview, PreviewStatus, Targ
 use cleanup_core::junk::{self, JunkGroup};
 use cleanup_core::log::{self, LogEntry};
 use cleanup_core::quick::{self, Places, QuickId, QuickWin};
+use cleanup_core::restore::{self, LastRun, RestoreResult};
 use cleanup_core::{Drive, Overview, Protected, Row};
 use report_core::{
     Body, CleanReport, CleanedItem, FileItem, FolderItem, JobInfo, Removed, Saved, TypeItem,
@@ -298,12 +299,14 @@ pub struct DeleteManyResult {
 }
 
 /// Recycles (or, when `permanent`, deletes) the items one by one and reports each result.
-/// More than one item, or a permanent delete, needs administrator.
+/// More than one item, or a permanent delete, needs administrator. A big run (see
+/// `bulk::needs_brake`) also needs the `confirm_token` the dry run issued for it.
 #[tauri::command]
 pub async fn cleanup_delete_many(
     state: State<'_, CleanupState>,
     ids: Vec<NodeId>,
     permanent: bool,
+    confirm_token: Option<String>,
 ) -> Result<DeleteManyResult, String> {
     let elevated = cleanup_core::is_elevated();
     if !elevated && (permanent || ids.len() > 1) {
@@ -336,12 +339,14 @@ pub async fn cleanup_delete_many(
             permanent,
             &Protected::for_this_pc(),
             &job_root,
+            confirm_token.as_deref(),
         )
     })
     .await
-    .map_err(|err| err.to_string())?;
+    .map_err(|err| err.to_string())??;
 
     let now = transfer_core::now_ms();
+    let run = format!("run-{now}");
     let user = transfer_core::user_name();
     let method = if permanent { "permanent" } else { "recycle" };
     let entries: Vec<LogEntry> = results
@@ -356,6 +361,7 @@ pub async fn cleanup_delete_many(
             method: method.into(),
             result: result.outcome.code().into(),
             detail: result.message.clone(),
+            run: Some(run.clone()),
         })
         .collect();
     // The deletes happened, so a log that can't be written doesn't fail the call; the page shows it.
@@ -391,6 +397,55 @@ pub async fn cleanup_delete_many(
         overview: cleanup_core::overview(tree),
         log_error,
     })
+}
+
+/// The last bulk delete in the deletion log, or nothing when there is none to restore.
+#[tauri::command]
+pub async fn cleanup_last_run() -> Result<Option<LastRun>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        restore::summary(&log::read_all(&report_core::logs_root()))
+    })
+    .await
+    .map_err(|err| err.to_string())
+}
+
+/// Puts the last bulk delete back from the Recycle Bin, item by item, and logs what it did.
+/// Items whose original path is taken again are left alone.
+#[tauri::command]
+pub async fn cleanup_restore_last() -> Result<Vec<RestoreResult>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let logs = report_core::logs_root();
+        let entries = log::read_all(&logs);
+        if restore::last_run(&entries).is_empty() {
+            return Err("There is no cleanup to restore.".to_string());
+        }
+        let results = restore::restore_last(&entries, &cleanup_core::recycle_bin_items()?);
+
+        let now = transfer_core::now_ms();
+        let user = transfer_core::user_name();
+        let elevated = cleanup_core::is_elevated();
+        let logged: Vec<LogEntry> = results
+            .iter()
+            .map(|result| LogEntry {
+                time: transfer_core::format_utc(now),
+                time_ms: now,
+                user: user.clone(),
+                elevated,
+                path: result.path.clone(),
+                size: result.size,
+                method: "restore".into(),
+                result: result.outcome.code().into(),
+                detail: result.message.clone(),
+                run: None,
+            })
+            .collect();
+        if let Err(err) = log::append(&logs, &logged) {
+            eprintln!("The deletion log could not be written: {err}");
+        }
+        Ok(results)
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String> {

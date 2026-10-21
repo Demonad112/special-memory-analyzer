@@ -8,9 +8,11 @@ pub mod log;
 mod os;
 mod protect;
 pub mod quick;
+pub mod restore;
 
-pub use os::{delete_permanently, drives, is_elevated, recycle, Drive};
+pub use os::{delete_permanently, drives, is_elevated, recycle, recycle_bin_items, Drive};
 pub use protect::Protected;
+pub use restore::BinItem;
 
 use scan_core::{Kind, NodeId, Tree};
 use serde::Serialize;

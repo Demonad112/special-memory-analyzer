@@ -25,6 +25,7 @@ import JobFields from '@/components/JobFields.vue'
 import JunkPanel from '@/components/JunkPanel.vue'
 import PathField from '@/components/PathField.vue'
 import QuickWins from '@/components/QuickWins.vue'
+import RestoreLast from '@/components/RestoreLast.vue'
 import TreemapView from '@/components/TreemapView.vue'
 import {
   appAdmin,
@@ -221,6 +222,7 @@ async function confirmDelete(): Promise<void> {
 // Several items at once: tick rows, then review the dry run in the bulk dialog.
 const checked = ref(new Set<number>())
 const bulkEl = ref<InstanceType<typeof BulkDeleteDialog> | null>(null)
+const restoreEl = ref<InstanceType<typeof RestoreLast> | null>(null)
 const junkEl = ref<InstanceType<typeof JunkPanel> | null>(null)
 watch(
   () => [job.overview, job.trail.length],
@@ -254,6 +256,7 @@ function onBulkFinished(): void {
   picked.value = null
   void refreshDrives()
   void junkEl.value?.reload()
+  void restoreEl.value?.reload()
 }
 
 async function restartAdmin(): Promise<void> {
@@ -434,6 +437,7 @@ onBeforeUnmount(() => {
       <Info class="size-4 shrink-0" />
       {{ job.notice }}
     </p>
+    <RestoreLast ref="restoreEl" />
 
     <!-- Scanning -->
     <section

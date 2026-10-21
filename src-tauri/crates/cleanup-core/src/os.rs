@@ -152,6 +152,23 @@ pub fn delete_permanently(path: &Path) -> Result<(), String> {
     result.map_err(|err| format!("Could not delete {}: {err}", path.display()))
 }
 
+/// What is in the Recycle Bin on every drive. Bin folders of other users that this account may
+/// not read are skipped.
+#[cfg(windows)]
+pub fn recycle_bin_items() -> Result<Vec<crate::BinItem>, String> {
+    Ok(drives()
+        .iter()
+        .filter_map(|drive| fs::read_dir(format!("{}$Recycle.Bin", drive.path)).ok())
+        .flat_map(|users| users.flatten())
+        .flat_map(|user| crate::restore::bin_items_in(&user.path()))
+        .collect())
+}
+
+#[cfg(not(windows))]
+pub fn recycle_bin_items() -> Result<Vec<crate::BinItem>, String> {
+    Err("The Recycle Bin is only on Windows.".into())
+}
+
 #[cfg(windows)]
 mod win {
     use std::ffi::c_void;

@@ -21,11 +21,15 @@ pub struct LogEntry {
     pub elevated: bool,
     pub path: String,
     pub size: u64,
-    /// "recycle" or "permanent".
+    /// "recycle", "permanent", or "restore" for an item put back from the Recycle Bin.
     pub method: String,
     /// "done", "inUse", "accessDenied", "notFound", "skipped" or "failed".
     pub result: String,
     pub detail: Option<String>,
+    /// Groups the entries of one bulk delete, so the last one can be restored. Absent in logs
+    /// from before restore existed, and on the entries a restore itself writes.
+    #[serde(default)]
+    pub run: Option<String>,
 }
 
 /// Appends `entries` to `<dir>/deletions.jsonl`, creating the folder, and rotates a full log.
@@ -52,6 +56,20 @@ pub fn append(dir: &Path, entries: &[LogEntry]) -> io::Result<()> {
         .write_all(text.as_bytes())
 }
 
+/// Every entry still on disk, oldest first: the rotated copy, then the current log. A line that
+/// does not parse is skipped, so one bad line never hides the rest.
+pub fn read_all(dir: &Path) -> Vec<LogEntry> {
+    [ROTATED_FILE, LOG_FILE]
+        .iter()
+        .filter_map(|name| fs::read_to_string(dir.join(name)).ok())
+        .flat_map(|text| {
+            text.lines()
+                .filter_map(|line| serde_json::from_str::<LogEntry>(line).ok())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,6 +85,7 @@ mod tests {
             method: "recycle".into(),
             result: "done".into(),
             detail: None,
+            run: None,
         }
     }
 
@@ -99,6 +118,25 @@ mod tests {
         );
         let text = fs::read_to_string(temp.path().join(LOG_FILE)).unwrap();
         assert_eq!(text.lines().count(), 1);
+    }
+
+    #[test]
+    fn old_lines_without_a_run_id_still_parse_and_bad_lines_are_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = r#"{"time":"t","timeMs":5,"user":"u","elevated":false,"path":"C:\\a","size":1,"method":"recycle","result":"done","detail":null}"#;
+        let new = serde_json::to_string(&LogEntry {
+            run: Some("r1".into()),
+            ..entry("two")
+        })
+        .unwrap();
+        fs::write(temp.path().join(ROTATED_FILE), format!("{old}\n")).unwrap();
+        fs::write(temp.path().join(LOG_FILE), format!("not json\n{new}\n")).unwrap();
+
+        let all = read_all(temp.path());
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].run, None);
+        assert_eq!(all[1].run.as_deref(), Some("r1"));
+        assert!(read_all(&temp.path().join("missing")).is_empty());
     }
 
     #[test]
