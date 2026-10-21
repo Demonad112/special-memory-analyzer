@@ -436,6 +436,80 @@ mod tests {
     }
 
     #[test]
+    fn record_csv_carries_raw_bytes_for_every_file() {
+        use transfer_core::{
+            ConflictPolicy, ItemKind, ItemResult, ItemStatus, RunState, RunSummary, RunTotals,
+            TransferMode, TransferSettings, VerifyLevel,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let records = temp.path().join("Records");
+        let store = RunStore::create(&records).unwrap();
+        store
+            .save_summary(&RunSummary {
+                id: store.id(),
+                settings: TransferSettings {
+                    source: r"C:\src".into(),
+                    destination: r"D:\dst".into(),
+                    mode: TransferMode::Watch,
+                    verify: VerifyLevel::SizeAndTime,
+                    conflict: ConflictPolicy::Skip,
+                    ignore_junk: false,
+                    download_cloud: false,
+                    preserve: Default::default(),
+                },
+                state: RunState::Completed,
+                created_at_ms: 1,
+                started_at_ms: None,
+                finished_at_ms: None,
+                machine: "PC1".into(),
+                user: "sam".into(),
+                totals: RunTotals {
+                    planned_files: 2,
+                    not_copied: 1,
+                    not_copied_bytes: 77,
+                    ..RunTotals::default()
+                },
+                error: None,
+            })
+            .unwrap();
+        let item = |path: &str, size: u64, status: ItemStatus| ItemResult {
+            relative_path: path.into(),
+            kind: ItemKind::File,
+            size,
+            status,
+            reason: None,
+            side: None,
+            os_code: None,
+            message: None,
+            source_hash: None,
+            dest_hash: None,
+            attempts: 1,
+            inferred: false,
+            recoverable: false,
+            at_ms: 1,
+        };
+        let mut writer = store.results_writer().unwrap();
+        writer
+            .write(&item("ok.txt", 1234, ItemStatus::Arrived))
+            .unwrap();
+        writer
+            .write(&item("bad.txt", 77, ItemStatus::NotCopied))
+            .unwrap();
+        writer.finish().unwrap();
+
+        let doc = document(temp.path(), &records, ReportKind::Record, &store.id()).unwrap();
+        let csv = doc.csv();
+        let header = csv.lines().next().unwrap();
+        assert!(header.contains("Bytes"), "no Bytes column in {header}");
+        for bytes in ["1234", "77"] {
+            assert!(
+                csv.lines().any(|line| line.contains(&format!(",{bytes}"))),
+                "raw {bytes} missing in {csv}"
+            );
+        }
+    }
+
+    #[test]
     fn ids_cannot_leave_the_folder() {
         let temp = tempfile::tempdir().unwrap();
         assert!(load(temp.path(), r"..\secret").is_err());
