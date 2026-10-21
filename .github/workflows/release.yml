@@ -39,12 +39,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # Trust goes in the machine stores: the per-user Root store raises a confirmation dialog that hangs a headless runner.
           # The private key lives only in this runner's store and is deleted by the last step.
           $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Deep Server Analyzer' -CertStoreLocation Cert:\CurrentUser\My -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(180)
           $thumb = $cert.Thumbprint
           Export-Certificate -Cert $cert -FilePath dsa-signing.cer | Out-Null
-          Import-Certificate -FilePath dsa-signing.cer -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
-          Import-Certificate -FilePath dsa-signing.cer -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
+          Import-Certificate -FilePath dsa-signing.cer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+          Import-Certificate -FilePath dsa-signing.cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null
           "CERT_THUMBPRINT=$thumb" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "thumbprint=$thumb" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
@@ -145,7 +146,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not $env:CERT_THUMBPRINT) { return }
-          Get-ChildItem -Path Cert:\CurrentUser\My, Cert:\CurrentUser\Root, Cert:\CurrentUser\TrustedPublisher |
+          Get-ChildItem -Path Cert:\CurrentUser\My, Cert:\LocalMachine\Root, Cert:\LocalMachine\TrustedPublisher |
             Where-Object { $_.Thumbprint -eq $env:CERT_THUMBPRINT } | ForEach-Object {
               if ($_.PSParentPath -like '*\My') { Remove-Item -LiteralPath $_.PSPath -DeleteKey } else { Remove-Item -LiteralPath $_.PSPath }
             }
