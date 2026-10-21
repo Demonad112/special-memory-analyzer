@@ -665,6 +665,61 @@ mod tests {
         assert_eq!(tree.node(link).size, 0);
     }
 
+    /// `mklink /J` needs no privilege. Removed on drop so a failed assertion never leaves the
+    /// temp folder cleanup to walk through the junction.
+    #[cfg(windows)]
+    struct Junction(std::path::PathBuf);
+
+    #[cfg(windows)]
+    impl Junction {
+        fn new(link: &Path, target: &Path) -> Self {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .expect("cmd should run");
+            assert!(
+                output.status.success(),
+                "mklink /J failed: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            Self(link.to_path_buf())
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for Junction {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir(&self.0);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junctions_are_listed_but_not_followed() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        write(&temp.path().join("real/data.bin"), 40);
+        write(&outside.path().join("big.bin"), 5_000);
+        let _inside = Junction::new(&temp.path().join("link"), &temp.path().join("real"));
+        let _away = Junction::new(&temp.path().join("away"), outside.path());
+        // A loop back to the root must not hang the scan.
+        let _loop = Junction::new(&temp.path().join("real/loop"), temp.path());
+
+        let tree = scan_ok(temp.path());
+        assert_eq!(tree.root().size, 40);
+        assert_eq!(tree.root().files, 1);
+        for name in ["link", "away"] {
+            let id = tree.child_by_name(0, name).unwrap();
+            assert_eq!(tree.node(id).kind, Kind::Link, "{name}");
+            assert_eq!(tree.node(id).size, 0, "{name}");
+        }
+        let real = tree.child_by_name(0, "real").unwrap();
+        let looped = tree.child_by_name(real, "loop").unwrap();
+        assert_eq!(tree.node(looped).kind, Kind::Link);
+    }
+
     #[test]
     fn size_on_disk_is_whole_clusters_and_never_below_the_data() {
         let temp = tempfile::tempdir().unwrap();
