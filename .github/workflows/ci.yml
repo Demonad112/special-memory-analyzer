@@ -41,3 +41,26 @@ jobs:
       - run: corepack pnpm quality
       - run: corepack pnpm test
       - run: corepack pnpm rust:test
+
+  kit:
+    name: USB kit scripts
+    runs-on: windows-latest
+    defaults:
+      run:
+        # Windows PowerShell 5.1 is what the kit runs on, so test with it rather than pwsh.
+        shell: powershell
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Install PSScriptAnalyzer
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name PSScriptAnalyzer -RequiredVersion 1.22.0 -Scope CurrentUser -Force
+
+      - name: Analyze kit scripts
+        run: Invoke-ScriptAnalyzer -Path installer-kit -Recurse -Severity Error -EnableExit
+
+      # Unit checks plus the full install, idempotency, early check and expiry path with a
+      # 0.01 h (36 s) window and a throwaway certificate. Test-Kit removes its own trust in a finally block.
+      - name: Test the kit end to end
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File installer-kit\tests\Test-Kit.ps1 -Full
