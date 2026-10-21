@@ -1292,12 +1292,20 @@ mod tests {
         assert_shape(&groups);
     }
 
+    /// Joins `/`-separated segments one component at a time, so the result uses only the
+    /// platform separator, like the paths the finder builds.
+    fn join_all(base: &Path, segments: &str) -> PathBuf {
+        segments
+            .split('/')
+            .fold(base.to_path_buf(), |path, part| path.join(part))
+    }
+
     /// Where a catalog entry sits under a fake profile, so its path is matched like a real one.
     fn place(root: &Path, entry: &Entry) -> PathBuf {
         let base = match entry.base {
-            Base::LocalAppData => root.join("Users/sam/AppData/Local"),
-            Base::AppData => root.join("Users/sam/AppData/Roaming"),
-            Base::UserProfile => root.join("Users/sam"),
+            Base::LocalAppData => join_all(root, "Users/sam/AppData/Local"),
+            Base::AppData => join_all(root, "Users/sam/AppData/Roaming"),
+            Base::UserProfile => join_all(root, "Users/sam"),
             Base::SystemDrive => root.to_path_buf(),
         };
         entry.path.iter().fold(base, |path, part| path.join(part))
@@ -1315,7 +1323,7 @@ mod tests {
             let listed = rows(&groups, JunkKind::AppCaches, Tier::Review);
             assert_eq!(listed.len(), 1, "{}", entry.label);
             let item = listed[0];
-            assert_eq!(item.path, folder.display().to_string(), "{}", entry.label);
+            assert_eq!(Path::new(&item.path), folder, "{}", entry.label);
             assert_eq!(item.confidence, entry.confidence, "{}", entry.label);
             assert_eq!(item.restore.as_deref(), Some(entry.restore));
             assert_eq!(item.ids.len(), 1, "{}", entry.label);
@@ -1335,7 +1343,7 @@ mod tests {
             let listed = rows(&groups, JunkKind::Unidentified, Tier::Never);
             let item = listed
                 .iter()
-                .find(|item| item.path == folder.display().to_string())
+                .find(|item| Path::new(&item.path) == folder)
                 .unwrap_or_else(|| panic!("{} is not reported", entry.label));
             assert!(item.ids.is_empty(), "{}", entry.label);
             assert_eq!(item.confidence, entry.confidence, "{}", entry.label);
@@ -1379,7 +1387,7 @@ mod tests {
     fn chrome_cache_is_reported_apart_from_the_whole_profile_folder() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        let data = root.join("Users/sam/AppData/Local/Google/Chrome/User Data");
+        let data = join_all(root, "Users/sam/AppData/Local/Google/Chrome/User Data");
         write(&data.join("Default/Cache/c1"), 0);
         write(&data.join("Default/Code Cache/c2"), 0);
         write(&data.join("Profile 1/GPUCache/c3"), 0);
@@ -1397,7 +1405,7 @@ mod tests {
             "one cache folder per profile and kind"
         );
         assert!(total[0].ids.is_empty());
-        assert_eq!(total[0].path, data.display().to_string());
+        assert_eq!(Path::new(&total[0].path), data);
         assert!(
             total[0].size > cache[0].size,
             "the total includes the cache"
@@ -1414,10 +1422,10 @@ mod tests {
     fn a_protected_chrome_cache_is_left_out_but_the_total_is_still_reported() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        let data = root.join("Users/sam/AppData/Local/Google/Chrome/User Data");
+        let data = join_all(root, "Users/sam/AppData/Local/Google/Chrome/User Data");
         write(&data.join("Default/Cache/c1"), 0);
         let tree = scan(root, &ScanState::default()).unwrap();
-        let keep = data.join("Default/Cache").display().to_string();
+        let keep = join_all(&data, "Default/Cache").display().to_string();
         let protected = Protected::new(&[keep.as_str()], &[], &[]);
         let groups = find(&tree, &protected, now());
 
