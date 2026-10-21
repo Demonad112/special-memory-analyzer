@@ -101,7 +101,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $files = @(Get-ChildItem -Path src-tauri/target/release/bundle/nsis/*.exe) + @(Get-Item -LiteralPath 'src-tauri/target/release/Deep Server Analyzer.exe')
+          # Only the installer ships, so it must be signed. The loose binaries in target/release are
+          # reported for diagnosis: Tauri leaves the product-name copy unsigned.
+          foreach ($name in 'deep-server-analyzer.exe', 'Deep Server Analyzer.exe') {
+            $loose = Get-Item -LiteralPath (Join-Path 'src-tauri/target/release' $name) -ErrorAction SilentlyContinue
+            if ($loose) { Write-Host "::warning::$name is $((Get-AuthenticodeSignature -LiteralPath $loose.FullName).Status)" }
+          }
+          $files = @(Get-ChildItem -Path src-tauri/target/release/bundle/nsis/*.exe)
           foreach ($file in $files) {
             $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
             if ($sig.Status -ne 'Valid') { throw "$($file.Name): signature status is $($sig.Status)" }
