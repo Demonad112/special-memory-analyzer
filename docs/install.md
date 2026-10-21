@@ -15,7 +15,8 @@ Silent install: `"Deep Server Analyzer_<v>_x64-setup.exe" /S`. Installs per mach
 `C:\Program Files\Deep Server Analyzer`. Silent uninstall:
 `"C:\Program Files\Deep Server Analyzer\uninstall.exe" /S`.
 
-Builds are unsigned until code signing is added, so SmartScreen will warn.
+Release builds are signed with an ephemeral self-signed certificate, which SmartScreen does not trust,
+so it will still warn. The USB kit for servers is in [usb-install.md](usb-install.md).
 
 ## Where data lives
 

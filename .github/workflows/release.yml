@@ -1,7 +1,8 @@
 name: Build installer
 
-# Builds the NSIS installer when a v* tag is pushed, keeps it as a workflow artifact,
-# and publishes it as a GitHub Release.
+# Builds the NSIS installer when a v* tag is pushed, signs it with an ephemeral self-signed
+# certificate (its private key is deleted before the job ends), builds a USB kit that trusts that
+# certificate for a limited time, and publishes both as a GitHub Release.
 # The tag must match the version in package.json, src-tauri/tauri.conf.json and src-tauri/Cargo.toml.
 on:
   push:
@@ -15,6 +16,8 @@ jobs:
   installer:
     name: Windows installer
     runs-on: windows-latest
+    outputs:
+      thumbprint: ${{ steps.cert.outputs.thumbprint }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -30,6 +33,49 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME needs version $want, but tauri.conf.json has $tauri, package.json has $pkg and Cargo.toml has $cargo."
             exit 1
           fi
+
+      - name: Create ephemeral signing certificate
+        id: cert
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The private key lives only in this runner's store and is deleted by the last step.
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Deep Server Analyzer' -CertStoreLocation Cert:\CurrentUser\My -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(180)
+          $thumb = $cert.Thumbprint
+          Export-Certificate -Cert $cert -FilePath dsa-signing.cer | Out-Null
+          Import-Certificate -FilePath dsa-signing.cer -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+          Import-Certificate -FilePath dsa-signing.cer -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
+          "CERT_THUMBPRINT=$thumb" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "thumbprint=$thumb" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Point Tauri at the certificate (job only, not committed)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Use the first timestamp server that answers; retry each one a few times.
+          $timestamp = $null
+          foreach ($url in 'http://timestamp.digicert.com', 'http://timestamp.sectigo.com') {
+            for ($attempt = 1; $attempt -le 3 -and -not $timestamp; $attempt++) {
+              try {
+                Invoke-WebRequest -Uri $url -Method Head -TimeoutSec 20 -UseBasicParsing | Out-Null
+                $timestamp = $url
+              }
+              catch {
+                # Any HTTP answer means the server is reachable; only a network failure means retry.
+                if ($_.Exception.Response) { $timestamp = $url } else { Start-Sleep -Seconds 5 }
+              }
+            }
+            if ($timestamp) { break }
+          }
+          if (-not $timestamp) { throw 'No timestamp server answered.' }
+
+          $path = 'src-tauri/tauri.conf.json'
+          $conf = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          $win = $conf.bundle.windows
+          $win | Add-Member -NotePropertyName certificateThumbprint -NotePropertyValue $env:CERT_THUMBPRINT -Force
+          $win | Add-Member -NotePropertyName digestAlgorithm -NotePropertyValue 'sha256' -Force
+          $win | Add-Member -NotePropertyName timestampUrl -NotePropertyValue $timestamp -Force
+          $conf | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $path -Encoding utf8
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
@@ -50,31 +96,89 @@ jobs:
       - run: corepack pnpm install --frozen-lockfile
       - run: corepack pnpm tauri build
 
+      - name: Verify signatures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(Get-ChildItem -Path src-tauri/target/release/bundle/nsis/*.exe) + @(Get-Item -LiteralPath 'src-tauri/target/release/Deep Server Analyzer.exe')
+          foreach ($file in $files) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            if ($sig.Status -ne 'Valid') { throw "$($file.Name): signature status is $($sig.Status)" }
+            if ($sig.SignerCertificate.Thumbprint -ne $env:CERT_THUMBPRINT) { throw "$($file.Name): signed by $($sig.SignerCertificate.Thumbprint)" }
+            if ($null -eq $sig.TimeStamperCertificate) { throw "$($file.Name): no timestamp" }
+            Write-Host "OK $($file.Name)"
+          }
+
+      - name: Build the USB kit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $kit = Join-Path $env:RUNNER_TEMP 'kit'
+          New-Item -ItemType Directory -Force -Path $kit | Out-Null
+          Get-ChildItem -Path src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1 | Copy-Item -Destination $kit
+          Copy-Item -LiteralPath dsa-signing.cer -Destination $kit
+          Get-ChildItem -Path installer-kit -File | Copy-Item -Destination $kit
+          Set-Content -LiteralPath (Join-Path $kit 'thumbprint.txt') -Value $env:CERT_THUMBPRINT -Encoding ascii
+          $sums = Get-ChildItem -Path $kit -File | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
+          }
+          Set-Content -LiteralPath (Join-Path $kit 'SHA256SUMS.txt') -Value $sums -Encoding ascii
+          $assets = Join-Path $env:RUNNER_TEMP 'assets'
+          New-Item -ItemType Directory -Force -Path $assets | Out-Null
+          Compress-Archive -Path (Join-Path $kit '*') -DestinationPath (Join-Path $assets 'Deep-Server-Analyzer-usb-kit.zip')
+          Copy-Item -LiteralPath (Join-Path $kit 'dsa-signing.cer'), (Join-Path $kit 'SHA256SUMS.txt') -Destination $assets
+
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: Deep-Server-Analyzer-windows
           path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
 
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: Deep-Server-Analyzer-usb-kit
+          path: ${{ runner.temp }}/assets/*
+          if-no-files-found: error
+
+      - name: Remove the ephemeral certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not $env:CERT_THUMBPRINT) { return }
+          Get-ChildItem -Path Cert:\CurrentUser\My, Cert:\CurrentUser\Root, Cert:\CurrentUser\TrustedPublisher |
+            Where-Object { $_.Thumbprint -eq $env:CERT_THUMBPRINT } | ForEach-Object {
+              if ($_.PSParentPath -like '*\My') { Remove-Item -LiteralPath $_.PSPath -DeleteKey } else { Remove-Item -LiteralPath $_.PSPath }
+            }
+
   release:
     name: GitHub Release
     needs: installer
     runs-on: ubuntu-latest
-    # actions: read is required to download the installer artifact from this run.
+    # actions: read is required to download the artifacts from this run.
     permissions:
       contents: write
       actions: read
     steps:
-      - name: Download installer
+      - name: Download installer and USB kit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name Deep-Server-Analyzer-windows --dir installer
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name Deep-Server-Analyzer-windows --dir installer
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name Deep-Server-Analyzer-usb-kit --dir kit
 
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          THUMBPRINT: ${{ needs.installer.outputs.thumbprint }}
         run: |
-          gh release create "$GITHUB_REF_NAME" installer/*.exe \
+          notes=$(mktemp)
+          gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" --jq .body > "$notes"
+          {
+            printf '\n## Signing certificate\n\n'
+            printf 'Thumbprint (SHA-1): `%s`\n\n' "$THUMBPRINT"
+            printf 'The certificate is ephemeral. Its private key was deleted after signing, so this release cannot be re-signed.\n'
+          } >> "$notes"
+          gh release create "$GITHUB_REF_NAME" installer/*.exe kit/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "Deep Server Analyzer $GITHUB_REF_NAME" \
-            --generate-notes
+            --notes-file "$notes"
