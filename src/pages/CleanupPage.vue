@@ -40,6 +40,7 @@ import {
   removeItem,
   restartAsAdmin,
   revealItem,
+  rowsByNode,
   rowsFor,
   runScan,
   scanPercent,
@@ -47,6 +48,7 @@ import {
   shownBytes,
   sizeMode,
   type CleanupRow,
+  type JunkItem,
 } from '@/lib/cleanup'
 import { copyText } from '@/lib/clipboard'
 import { cleanPath, errorMessage, pickFolder } from '@/lib/compare'
@@ -237,6 +239,14 @@ function toggleChecked(id: number): void {
 
 function reviewIds(ids: number[]): void {
   void bulkEl.value?.show(ids)
+}
+
+/** A suggested cleanup's rows; the dry run keeps each row's why and restore line. */
+function reviewJunk(items: JunkItem[]): void {
+  void bulkEl.value?.show(
+    items.flatMap((item) => item.ids),
+    rowsByNode(items),
+  )
 }
 
 function onBulkFinished(): void {
@@ -839,7 +849,7 @@ onBeforeUnmount(() => {
       <JunkPanel
         ref="junkEl"
         class="mt-6"
-        @review="reviewIds"
+        @review="reviewJunk"
       />
     </div>
 
