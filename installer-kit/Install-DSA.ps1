@@ -134,7 +134,8 @@ try {
     $signedBy = $null
     if ($sig.SignerCertificate) { $signedBy = $sig.SignerCertificate.Thumbprint }
     if ($sig.Status -ne 'Valid' -or $signedBy -ine $thumb) {
-        throw "Setup signature check failed (status $($sig.Status)). For Install mode, trust the certificate first with Trust-Only.cmd."
+        $signerText = if ($signedBy) { $signedBy } else { 'none' }
+        throw "Setup signature check failed (status $($sig.Status), signer $signerText, expected $thumb). For Install mode, trust the certificate first with Trust-Only.cmd."
     }
     Write-TrustLog 'Setup signature is valid and matches the certificate'
 

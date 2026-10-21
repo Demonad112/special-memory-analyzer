@@ -123,7 +123,8 @@ try {
             # notepad.exe copy stands in for the NSIS setup; it is re-signed with the throwaway certificate.
             $setupPath = Join-Path $stage 'DSA-Test_0.0.0_x64-setup.exe'
             Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\notepad.exe') -Destination $setupPath
-            Set-AuthenticodeSignature -FilePath $setupPath -Certificate $cert -HashAlgorithm SHA256 | Out-Null
+            $signed = Set-AuthenticodeSignature -FilePath $setupPath -Certificate $cert -HashAlgorithm SHA256
+            if ($signed.Status -ne 'Valid') { throw "Re-signing the test setup failed: $($signed.Status) $($signed.StatusMessage)" }
             Set-Content -LiteralPath (Join-Path $stage 'thumbprint.txt') -Value $thumb -Encoding ascii
             $sums = foreach ($file in @($cerPath, $setupPath)) {
                 '{0}  {1}' -f (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant(), (Split-Path -Leaf $file)
@@ -154,6 +155,7 @@ try {
             Assert-True 'startup check before expiry leaves trust' ((Invoke-KitScript $remove @('-FromTask')) -eq 0)
             Assert-True 'trust still present after early check' ((Get-StoreCount $thumb 'Root') -eq 1)
 
+            if ($null -eq $record) { throw 'No expiry record was written, so there is nothing to wait for.' }
             $wait = [Math]::Ceiling(($record.ExpiresUtc - [DateTime]::UtcNow).TotalSeconds) + 3
             Write-Host "  waiting $wait s for the window to expire"
             Start-Sleep -Seconds $wait
