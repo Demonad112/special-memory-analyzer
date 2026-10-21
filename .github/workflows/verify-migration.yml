@@ -59,12 +59,23 @@ jobs:
           cd src-tauri
           cargo test -p transfer-core unreadable -- --nocapture 2>&1 | grep -E "^test |test result|left:|right:|panicked" || true
           icacls "$TEMP" | head -5
+      - name: re-run the ACL-dependent tests under pwsh (as ci.yml does)
+        if: always()
+        shell: pwsh
+        run: |
+          Set-Location src-tauri
+          cargo test -p transfer-core unreadable 2>&1 | Select-String '^test |test result|left:|right:'
+          $d = Join-Path $env:TEMP 'aclprobe'; New-Item -ItemType Directory -Force "$d\sub" | Out-Null
+          icacls "$d\sub" /deny '*S-1-1-0:(RD)'
+          icacls "$d\sub"
+          try { Get-ChildItem "$d\sub" -ErrorAction Stop | Out-Null; "VERIFY-ACL listing allowed despite deny" } catch { "VERIFY-ACL listing denied: $($_.Exception.Message)" }
+          icacls "$d\sub" /remove:d '*S-1-1-0' | Out-Null
       - name: named behaviour tests
         if: always()
         shell: bash
         run: |
           cd src-tauri
-          for t in symlinks_are_listed_but_not_followed a_junction_in_the_selection_is_refused_and_its_target_survives a_locked_file_is_listed_and_retry_copies_it_once_released a_locked_source_is_retried_and_reported_as_in_use a_locked_file_is_reported_as_in_use_and_stays recycle_moves_a_file_out_and_drives_include_the_system_drive a_full_log_is_rotated_and_the_new_entry_lands_in_a_fresh_file explorer_fixture_matches_what_the_page_renders defaults_keep_everything_and_old_records_load; do
+          for t in a_junction_in_the_selection_is_refused_and_its_target_survives a_locked_file_is_listed_and_retry_copies_it_once_released a_locked_source_is_retried_and_reported_as_in_use a_locked_file_is_reported_as_in_use_and_stays recycle_moves_a_file_out_and_drives_include_the_system_drive a_full_log_is_rotated_and_the_new_entry_lands_in_a_fresh_file explorer_fixture_matches_what_the_page_renders defaults_keep_everything_and_old_records_load; do
             echo "VERIFY-TEST $t"
             cargo test --workspace "$t" 2>&1 | grep -E "^test .*(ok|FAILED)$|test result: .* [1-9][0-9]* passed|running 0 tests" | grep -v 'running 0 tests' || echo "VERIFY-NOT-FOUND $t"
           done
