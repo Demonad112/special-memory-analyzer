@@ -5,6 +5,8 @@
 use crate::Protected;
 use scan_core::{Kind, NodeId, Tree};
 use serde::Serialize;
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 /// Logs and backup files older than this are listed.
@@ -57,7 +59,7 @@ impl JunkKind {
             JunkKind::Thumbnails => "Thumbs.db and .DS_Store files.",
             JunkKind::Installers => ".exe and .msi files in a Downloads folder, 90 days old.",
             JunkKind::DevCaches => {
-                "node_modules not touched for 90 days, plus __pycache__ and .cache folders."
+                "node_modules of projects untouched for 90 days, and __pycache__ folders, one row per project or environment."
             }
             JunkKind::EmptyFolders => "Folders with nothing in them.",
         }
@@ -68,7 +70,11 @@ impl JunkKind {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JunkItem {
+    /// The node a tick on this row stands for. For a collapsed row, the first of `ids`.
     pub id: NodeId,
+    /// Every node deleting this row removes. A single item is `[id]`; a collapsed
+    /// `__pycache__` row lists each of its folders, so its `files` and `size` are their sum.
+    pub ids: Vec<NodeId>,
     pub name: String,
     pub path: String,
     pub size: u64,
@@ -107,6 +113,9 @@ pub fn find(tree: &Tree, protected: &Protected, now_ms: u64) -> Vec<JunkGroup> {
 
     // Folders on the way down, with whether any of them is called Downloads.
     let mut stack: Vec<(NodeId, bool)> = vec![(0, false)];
+    // `__pycache__` folders by the project or environment they belong to: one row each.
+    let mut pycache: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    let mut owners = Owners::default();
     while let Some((id, in_downloads)) = stack.pop() {
         for child in tree.live_children(id) {
             let node = tree.node(child);
@@ -118,16 +127,24 @@ pub fn find(tree: &Tree, protected: &Protected, now_ms: u64) -> Vec<JunkGroup> {
                         add(&mut groups, tree, protected, &root, child, kind);
                     }
                 }
-                Kind::Dir => {
-                    if let Some(kind) = classify_dir(tree, child, now_ms) {
-                        add(&mut groups, tree, protected, &root, child, kind);
-                    } else {
+                Kind::Dir => match classify_dir(tree, id, child, now_ms) {
+                    DirClass::Junk(kind) => add(&mut groups, tree, protected, &root, child, kind),
+                    DirClass::PyCache => {
+                        let owner = owners.of(tree, child);
+                        pycache.entry(owner).or_default().push(child);
+                    }
+                    // Dependencies are judged as a whole; nothing inside is looked at.
+                    DirClass::Dependencies => {}
+                    DirClass::Walk => {
                         let downloads = in_downloads || node.name.eq_ignore_ascii_case("downloads");
                         stack.push((child, downloads));
                     }
-                }
+                },
             }
         }
+    }
+    for (owner, dirs) in pycache {
+        add_pycache(&mut groups, tree, protected, &root, owner, dirs);
     }
 
     groups.retain(|group| group.count > 0);
@@ -165,6 +182,7 @@ fn add(
     group.count += 1;
     group.items.push(JunkItem {
         id,
+        ids: vec![id],
         name: node.name.clone(),
         path: path.display().to_string(),
         size: node.disk,
@@ -175,6 +193,45 @@ fn add(
         } else {
             node.modified_ms
         },
+    });
+}
+
+/// One row for all the `__pycache__` folders of a project or environment. A venv holds hundreds,
+/// and one row each would bury everything else. The row's `path` is the project when it covers
+/// several folders; the group's `count` still counts every folder.
+fn add_pycache(
+    groups: &mut [JunkGroup],
+    tree: &Tree,
+    protected: &Protected,
+    root: &Path,
+    owner: NodeId,
+    mut dirs: Vec<NodeId>,
+) {
+    dirs.retain(|&dir| protected.check(&tree.path(dir), root).is_ok());
+    dirs.sort_unstable();
+    let Some(&first) = dirs.first() else { return };
+    let Some(group) = groups
+        .iter_mut()
+        .find(|group| group.kind == JunkKind::DevCaches)
+    else {
+        return;
+    };
+    let size: u64 = dirs.iter().map(|&dir| tree.node(dir).disk).sum();
+    group.size += size;
+    group.count += dirs.len() as u64;
+    let shown = if dirs.len() == 1 { first } else { owner };
+    group.items.push(JunkItem {
+        id: first,
+        name: tree.node(first).name.clone(),
+        path: tree.path(shown).display().to_string(),
+        size,
+        files: dirs.iter().map(|&dir| tree.node(dir).files).sum(),
+        is_folder: true,
+        modified_ms: dirs
+            .iter()
+            .filter_map(|&dir| newest_modified(tree, dir))
+            .max(),
+        ids: dirs,
     });
 }
 
@@ -202,23 +259,151 @@ fn classify_file(name: &str, age: Option<u64>, in_downloads: bool) -> Option<Jun
     }
 }
 
-fn classify_dir(tree: &Tree, id: NodeId, now_ms: u64) -> Option<JunkKind> {
+enum DirClass {
+    Junk(JunkKind),
+    PyCache,
+    /// A `node_modules` that is not listed. Its contents are not junk either.
+    Dependencies,
+    Walk,
+}
+
+fn classify_dir(tree: &Tree, parent: NodeId, id: NodeId, now_ms: u64) -> DirClass {
     let node = tree.node(id);
     let lower = node.name.to_lowercase();
     match lower.as_str() {
-        "__pycache__" | ".cache" => Some(JunkKind::DevCaches),
+        "__pycache__" if !runtime_owned(&tree.path(id)) => DirClass::PyCache,
         "node_modules" => {
-            // An unknown date counts as recent: better to keep than to suggest.
-            let stale = newest_modified(tree, id)
-                .is_some_and(|newest| now_ms.saturating_sub(newest) / DAY_MS >= STALE_DAYS);
-            stale.then_some(JunkKind::DevCaches)
+            if !runtime_owned(&tree.path(id)) && project_is_stale(tree, parent, id, now_ms) {
+                DirClass::Junk(JunkKind::DevCaches)
+            } else {
+                DirClass::Dependencies
+            }
         }
+        // `.cache` is not matched by name: one folder holds pip's cache next to multi-GB models
+        // and tool state.
         _ => {
             // A folder that could not be read completely may not really be empty.
             let empty =
                 tree.live_children(id).next().is_none() && node.errors == 0 && node.error.is_none();
-            empty.then_some(JunkKind::EmptyFolders)
+            if empty {
+                DirClass::Junk(JunkKind::EmptyFolders)
+            } else {
+                DirClass::Walk
+            }
         }
+    }
+}
+
+/// Lock files that show a `package.json` is a real project.
+const LOCKFILES: [&str; 6] = [
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lockb",
+    "bun.lock",
+];
+
+/// `node_modules` is listed only beside a `package.json` and a lock file (so it can be rebuilt
+/// with `npm ci` or `pnpm install`), when the project and the folder itself have both sat for
+/// [`STALE_DAYS`]. The project counts as touched when its manifest, lock file, `src/` or git
+/// state changed. An unknown date counts as recent: better to keep than to suggest.
+fn project_is_stale(tree: &Tree, project: NodeId, modules: NodeId, now_ms: u64) -> bool {
+    let stale = |modified: Option<u64>| {
+        modified.is_some_and(|modified| now_ms.saturating_sub(modified) / DAY_MS >= STALE_DAYS)
+    };
+    let Some(manifest) = child_named(tree, project, "package.json") else {
+        return false;
+    };
+    let Some(lock) = LOCKFILES
+        .iter()
+        .find_map(|name| child_named(tree, project, name))
+    else {
+        return false;
+    };
+    let mut signals = vec![tree.node(manifest).modified_ms, tree.node(lock).modified_ms];
+    if let Some(src) = child_named(tree, project, "src") {
+        signals.push(newest_modified(tree, src));
+    }
+    if let Some(git) = child_named(tree, project, ".git") {
+        let index = child_named(tree, git, "index");
+        let head = child_named(tree, git, "logs").and_then(|logs| child_named(tree, logs, "HEAD"));
+        signals.extend(
+            [index, head]
+                .into_iter()
+                .flatten()
+                .map(|id| tree.node(id).modified_ms),
+        );
+    }
+    signals.into_iter().all(stale) && stale(newest_modified(tree, modules))
+}
+
+/// The live child of `id` called `name`, ignoring case.
+fn child_named(tree: &Tree, id: NodeId, name: &str) -> Option<NodeId> {
+    tree.live_children(id)
+        .find(|&child| tree.node(child).name.eq_ignore_ascii_case(name))
+}
+
+/// Folders an app or a language runtime owns. What is inside belongs to it, not to a project,
+/// so it is never listed. Segments are matched with both slashes, so this holds on any host.
+fn runtime_owned(path: &Path) -> bool {
+    let text = path.to_string_lossy().to_lowercase();
+    let parts: Vec<&str> = text.split(['/', '\\']).collect();
+    parts.contains(&"lightning-services")
+        || parts.windows(2).any(|pair| {
+            matches!(
+                (pair[0], pair[1]),
+                ("roaming", "local")
+                    | ("local", "packages")
+                    | ("local", "node")
+                    | ("local", "python")
+                    | ("programs", "python")
+            )
+        })
+}
+
+/// Files that mark a folder as a Python project or environment.
+const PYTHON_ROOTS: [&str; 7] = [
+    "pyvenv.cfg",
+    "conda-meta",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "requirements.txt",
+    "Pipfile",
+];
+
+/// Where a `__pycache__` belongs: the nearest folder marked as a venv or project. Without a
+/// mark, the nearest `lib` / `site-packages`; without that, the folder holding it.
+#[derive(Default)]
+struct Owners {
+    rooted: HashMap<NodeId, bool>,
+}
+
+impl Owners {
+    fn of(&mut self, tree: &Tree, pycache: NodeId) -> NodeId {
+        let holder = tree.parent(pycache).unwrap_or(0);
+        let mut fallback = None;
+        let mut at = Some(holder);
+        while let Some(dir) = at {
+            if self.is_root(tree, dir) {
+                return dir;
+            }
+            let name = tree.node(dir).name.to_lowercase();
+            if fallback.is_none() && matches!(name.as_str(), "lib" | "site-packages") {
+                fallback = Some(dir);
+            }
+            at = tree.parent(dir);
+        }
+        fallback.unwrap_or(holder)
+    }
+
+    fn is_root(&mut self, tree: &Tree, dir: NodeId) -> bool {
+        *self.rooted.entry(dir).or_insert_with(|| {
+            PYTHON_ROOTS
+                .iter()
+                .any(|name| child_named(tree, dir, name).is_some())
+        })
     }
 }
 
@@ -286,9 +471,18 @@ mod tests {
         write(&root.join("Downloads/setup.exe"), 200);
         write(&root.join("Downloads/fresh.exe"), 3);
         write(&root.join("Other/setup.exe"), 200);
+        // node_modules is listed only beside a manifest and a lock file, both as old as it is.
+        write(&root.join("app/package.json"), 400);
+        write(&root.join("app/package-lock.json"), 400);
         write(&root.join("app/node_modules/pkg/index.js"), 400);
+        write(&root.join("web/package.json"), 400);
+        write(&root.join("web/package-lock.json"), 400);
         write(&root.join("web/node_modules/pkg/index.js"), 2);
+        // A lone node_modules has nothing to rebuild it from.
+        write(&root.join("loose/node_modules/pkg/index.js"), 400);
         write(&root.join("py/__pycache__/m.pyc"), 0);
+        // A whole .cache folder is never listed.
+        write(&root.join(".cache/pip/x"), 400);
         fs::create_dir_all(root.join("empty/inner")).unwrap();
 
         let tree = scan(root, &ScanState::default()).unwrap();
@@ -306,6 +500,14 @@ mod tests {
             names(&groups, JunkKind::DevCaches),
             ["__pycache__", "node_modules"]
         );
+        let dev = groups
+            .iter()
+            .find(|group| group.kind == JunkKind::DevCaches)
+            .unwrap();
+        assert_eq!(dev.count, 2);
+        for item in &dev.items {
+            assert_eq!(item.ids, [item.id], "{}: one folder, one id", item.path);
+        }
         // Only the innermost empty folder; "empty" has a child, so it isn't empty yet.
         assert_eq!(names(&groups, JunkKind::EmptyFolders), ["inner"]);
         let installer = &groups
@@ -451,5 +653,58 @@ mod tests {
         assert_eq!(group.items.len(), 1, "one row for the venv");
         let summed: u64 = group.items.iter().map(|item| item.size).sum();
         assert_eq!(summed, group.size);
+    }
+
+    #[test]
+    fn a_venv_inside_a_project_gets_its_own_row_and_the_row_lists_every_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("proj/pyproject.toml"), 0);
+        write(&root.join("proj/pkg/__pycache__/a.pyc"), 0);
+        write(&root.join("proj/.venv/pyvenv.cfg"), 0);
+        write(
+            &root.join("proj/.venv/lib/site-packages/x/__pycache__/b.pyc"),
+            0,
+        );
+        write(
+            &root.join("proj/.venv/lib/site-packages/y/__pycache__/c.pyc"),
+            0,
+        );
+        let tree = scan(root, &ScanState::default()).unwrap();
+        let groups = find(&tree, &Protected::default(), now());
+        let group = &groups[0];
+
+        assert_eq!((group.count, group.items.len()), (3, 2));
+        let mut rows: Vec<(usize, bool)> = group
+            .items
+            .iter()
+            .map(|item| (item.ids.len(), item.path.ends_with(".venv")))
+            .collect();
+        rows.sort();
+        assert_eq!(rows, [(1, false), (2, true)]);
+        for item in &group.items {
+            assert_eq!(item.ids[0], item.id);
+            for &id in &item.ids {
+                assert_eq!(tree.node(id).name, "__pycache__");
+            }
+        }
+    }
+
+    #[test]
+    fn protected_pycache_folders_are_left_out_of_a_collapsed_row() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("venv/pyvenv.cfg"), 0);
+        write(&root.join("venv/lib/keep/__pycache__/a.pyc"), 0);
+        write(&root.join("venv/lib/go/__pycache__/b.pyc"), 0);
+        let tree = scan(root, &ScanState::default()).unwrap();
+        let keep = root.join("venv/lib/keep").display().to_string();
+        let protected = Protected::new(&[keep.as_str()], &[], &[]);
+        let groups = find(&tree, &protected, now());
+
+        assert_eq!(groups[0].count, 1);
+        assert_eq!(groups[0].items[0].ids.len(), 1);
+        assert!(groups[0].items[0].path.ends_with("__pycache__"));
+        assert!(groups[0].items[0].path.contains("go"));
     }
 }

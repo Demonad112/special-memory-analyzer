@@ -340,7 +340,10 @@ export type JunkKind =
   | 'emptyFolders'
 
 export interface JunkItem {
+  /** Keys the row. For a collapsed row, the first of `ids`. */
   id: number
+  /** Every node deleting this row removes: `[id]`, or each `__pycache__` folder of a project. */
+  ids: number[]
   name: string
   path: string
   size: number
