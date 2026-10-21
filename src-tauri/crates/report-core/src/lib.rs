@@ -24,6 +24,8 @@ use transfer_core::{format_utc, machine_name, now_ms, user_name};
 
 /// Overrides where reports are saved (tests, portable layouts).
 pub const REPORTS_DIR_ENV: &str = "DEEP_SERVER_ANALYZER_REPORTS_DIR";
+/// Overrides where the deletion log is kept (tests, portable layouts).
+pub const LOGS_DIR_ENV: &str = "DEEP_SERVER_ANALYZER_LOGS_DIR";
 const JOB_FILE: &str = "job.json";
 
 /// `%LOCALAPPDATA%\Deep Server Analyzer\Reports`, next to the Records folder.
@@ -37,11 +39,9 @@ pub fn reports_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("Reports"))
 }
 
-/// Where the deletion log lives: `Logs` next to `Reports` (`DEEP_SERVER_ANALYZER_LOGS_DIR` overrides it).
+/// Where the deletion log lives: `Logs` next to `Reports` (`LOGS_DIR_ENV` overrides it).
 pub fn logs_root() -> PathBuf {
-    if let Some(dir) =
-        std::env::var_os("DEEP_SERVER_ANALYZER_LOGS_DIR").filter(|value| !value.is_empty())
-    {
+    if let Some(dir) = std::env::var_os(LOGS_DIR_ENV).filter(|value| !value.is_empty()) {
         return PathBuf::from(dir);
     }
     reports_root()

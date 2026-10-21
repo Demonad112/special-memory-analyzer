@@ -237,6 +237,22 @@ describe('bulk delete calls', () => {
     expect(cleanupJob.rows.map((item) => item.name)).toEqual(['Public'])
   })
 
+  it('shows a notice when the deletion log could not be written', async () => {
+    cleanupJob.trail = [row(0, 'C:\\', 100)]
+    cleanupJob.notice = ''
+    core.invoke
+      .mockResolvedValueOnce({
+        results: [result(2, 'done', 60)],
+        overview: overview(40),
+        logError: 'The deletion log could not be written: access denied',
+      })
+      .mockResolvedValueOnce([])
+
+    await removeMany([2], false)
+
+    expect(cleanupJob.notice).toBe('The deletion log could not be written: access denied')
+  })
+
   it('counts what went and what did not', () => {
     const summary = summarize([
       result(1, 'done', 50),

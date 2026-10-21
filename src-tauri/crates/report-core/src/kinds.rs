@@ -846,6 +846,36 @@ fn record_verdict(run: &RunSummary) -> Verdict {
 mod tests {
     use super::*;
 
+    /// A report saved by an older build lacks newer fields; every body struct must still load.
+    #[test]
+    fn every_report_body_loads_from_an_empty_object() {
+        assert_eq!(
+            serde_json::from_str::<CompareReport>("{}").unwrap(),
+            CompareReport::default()
+        );
+        assert_eq!(
+            serde_json::from_str::<UsageReport>("{}").unwrap(),
+            UsageReport::default()
+        );
+        assert_eq!(
+            serde_json::from_str::<CleanReport>("{}").unwrap(),
+            CleanReport::default()
+        );
+        for body in [
+            r#"{"kind":"compare","data":{}}"#,
+            r#"{"kind":"diskUsage","data":{}}"#,
+            r#"{"kind":"cleanup","data":{}}"#,
+        ] {
+            serde_json::from_str::<Body>(body).unwrap();
+        }
+        // The report envelope keeps its identity fields required; only `job` is optional.
+        let saved = r#"{"id":"x","createdAtMs":1,"machine":"PC1","user":"sam","body":{"kind":"compare","data":{}}}"#;
+        assert_eq!(
+            serde_json::from_str::<Saved>(saved).unwrap().job,
+            JobInfo::default()
+        );
+    }
+
     fn saved(body: Body) -> Saved {
         Saved {
             id: "x".into(),
