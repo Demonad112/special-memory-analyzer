@@ -723,7 +723,7 @@ dependencies = [
 
 [[package]]
 name = "deep-server-analyzer"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "cleanup-core",
  "report-core",

@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "deep-server-analyzer"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 authors = ["Demonad112"]
 license = "Apache-2.0"
