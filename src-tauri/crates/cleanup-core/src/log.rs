@@ -102,6 +102,15 @@ mod tests {
     }
 
     #[test]
+    fn a_log_folder_that_cannot_be_created_is_an_error_not_a_panic() {
+        // `cleanup_delete_many` turns this error into the `logError` the page shows.
+        let temp = tempfile::tempdir().unwrap();
+        let blocker = temp.path().join("Logs");
+        fs::write(&blocker, b"a file where the folder should be").unwrap();
+        assert!(append(&blocker, &[entry("one")]).is_err());
+    }
+
+    #[test]
     fn nothing_to_log_creates_nothing() {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().join("Logs");
