@@ -17,8 +17,20 @@ pub enum Base {
     SystemDrive,
 }
 
-/// What removing the folder costs, as the UI says it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+/// Which list a finding belongs to. Ordered as the UI shows them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    /// May be ticked and cleared without a second look.
+    Safe,
+    /// Could go, but a person looks first.
+    Review,
+    /// Reported with its size only: no delete ids leave the backend.
+    Never,
+}
+
+/// What removing the folder costs, as the UI says it. Ordered from least to most to lose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Confidence {
     /// The app or Windows rebuilds it on its own.
@@ -169,6 +181,18 @@ pub const REVIEW: &[Entry] = &[
         quick: None,
     },
 ];
+
+/// Chrome's whole profile folder: reported with its size, never offered. Its cache folders are
+/// the `*` entries in [`SAFE`], so the cache can be shown apart from this total.
+pub const CHROME_USER_DATA: Entry = Entry {
+    base: Base::LocalAppData,
+    path: &["Google", "Chrome", "User Data"],
+    label: "Chrome profile data",
+    restore: "Holds sign-ins, history, extensions and settings. Clearing the cache folders \
+              leaves these alone.",
+    confidence: Confidence::UserData,
+    quick: None,
+};
 
 /// Found and reported with their size; nothing here gets a delete action.
 pub const REPORT_ONLY: &[Entry] = &[

@@ -69,16 +69,19 @@ function forget(ids: number[]): void {
   groups.value = groups.value
     .map((group) => ({
       ...group,
-      items: group.items.filter((item) => !item.ids.every((id) => gone.has(id))),
+      // A reported row has no ids and is never deleted, so it stays.
+      items: group.items.filter(
+        (item) => item.ids.length === 0 || !item.ids.every((id) => gone.has(id)),
+      ),
     }))
     .filter((group) => group.items.length > 0)
   const left = new Set(groups.value.flatMap((group) => group.items.map((item) => item.id)))
   ticked.value = new Set([...ticked.value].filter((id) => left.has(id)))
 }
 
-/** Matches not on a row: a collapsed row stands for several. */
+/** Matches not on a row: a collapsed row stands for several, a reported row for one. */
 function unlisted(group: JunkGroup): number {
-  return group.count - group.items.reduce((sum, item) => sum + item.ids.length, 0)
+  return group.count - group.items.reduce((sum, item) => sum + Math.max(item.ids.length, 1), 0)
 }
 
 async function reload(): Promise<void> {
@@ -144,11 +147,12 @@ defineExpose({ forget, reload })
 
     <div
       v-for="group in groups"
-      :key="group.kind"
+      :key="`${group.kind}-${group.tier}`"
       class="mt-3"
     >
       <label class="flex items-baseline gap-2 text-[13px] font-semibold">
         <input
+          v-if="group.tier !== 'never'"
           type="checkbox"
           :checked="groupTicked(group)"
           :aria-label="`Tick all ${group.title}`"
@@ -167,6 +171,7 @@ defineExpose({ forget, reload })
         >
           <label class="flex items-baseline gap-2 py-0.5">
             <input
+              v-if="item.ids.length > 0"
               type="checkbox"
               :checked="ticked.has(item.id)"
               @change="toggle(item.id)"
