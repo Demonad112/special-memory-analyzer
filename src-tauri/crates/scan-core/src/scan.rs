@@ -673,16 +673,19 @@ mod tests {
     #[cfg(windows)]
     impl Junction {
         fn new(link: &Path, target: &Path) -> Self {
+            // mklink rejects forward slashes, and `join("a/b")` leaves them in the path.
+            let backslashed = |path: &Path| path.to_string_lossy().replace('/', "\\");
             let output = std::process::Command::new("cmd")
                 .args(["/C", "mklink", "/J"])
-                .arg(link)
-                .arg(target)
+                .arg(backslashed(link))
+                .arg(backslashed(target))
                 .output()
                 .expect("cmd should run");
             assert!(
                 output.status.success(),
-                "mklink /J failed: {}",
-                String::from_utf8_lossy(&output.stdout)
+                "mklink /J failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
             );
             Self(link.to_path_buf())
         }

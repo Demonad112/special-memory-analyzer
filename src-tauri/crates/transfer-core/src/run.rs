@@ -751,10 +751,12 @@ mod tests {
     /// needs admin or Developer Mode). Returns whether the link was made.
     #[cfg(windows)]
     fn make_link(flag: &str, link: &std::path::Path, target: &std::path::Path) -> bool {
+        // mklink rejects forward slashes, and `join("a/b")` leaves them in the path.
+        let backslashed = |path: &std::path::Path| path.to_string_lossy().replace('/', "\\");
         std::process::Command::new("cmd")
             .args(["/C", "mklink", flag])
-            .arg(link)
-            .arg(target)
+            .arg(backslashed(link))
+            .arg(backslashed(target))
             .output()
             .expect("cmd should run")
             .status
