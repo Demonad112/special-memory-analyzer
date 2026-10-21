@@ -1,6 +1,7 @@
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { ref, watch } from 'vue'
+import { trackJob } from './busy'
 import { formatBytes, plural } from './format'
 import { currentJob } from './job'
 
@@ -127,13 +128,15 @@ export async function startCompare(
       rightDone: event.rightDone,
     })
   }
-  return invoke<CompareResult>('compare_start', {
-    left,
-    right,
-    ignoreJunk,
-    job: currentJob(),
-    onEvent,
-  })
+  return trackJob(() =>
+    invoke<CompareResult>('compare_start', {
+      left,
+      right,
+      ignoreJunk,
+      job: currentJob(),
+      onEvent,
+    }),
+  )
 }
 
 /** Rows below one folder of the last compare. */

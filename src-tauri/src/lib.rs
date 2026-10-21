@@ -30,6 +30,12 @@ fn supports_mica() -> bool {
     }
 }
 
+/// Closes the app through Tauri's exit API. Used by the idle timer, which only calls it when no job is running.
+#[tauri::command]
+fn app_exit(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[tauri::command]
 fn app_info(app: tauri::AppHandle) -> AppInfo {
     AppInfo {
@@ -72,6 +78,7 @@ pub fn run() {
             cleanup::cleanup_quick_list,
             cleanup::cleanup_quick_clean,
             cleanup::app_restart_admin,
+            app_exit,
             reports::reports_list,
             reports::report_delete,
             reports::reports_prune,

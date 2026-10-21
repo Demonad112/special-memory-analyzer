@@ -1,6 +1,19 @@
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted } from 'vue'
+import IdleWarning from './components/IdleWarning.vue'
 import NavRail from './components/NavRail.vue'
 import TitleBar from './components/TitleBar.vue'
+import { startIdleTimeout } from './lib/idleTimeout'
+
+let stopIdleTimer: (() => void) | null = null
+
+onMounted(() => {
+  stopIdleTimer = startIdleTimeout()
+})
+
+onBeforeUnmount(() => {
+  stopIdleTimer?.()
+})
 </script>
 
 <template>
@@ -14,5 +27,6 @@ import TitleBar from './components/TitleBar.vue'
         <RouterView />
       </main>
     </div>
+    <IdleWarning />
   </div>
 </template>
