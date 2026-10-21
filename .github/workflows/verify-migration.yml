@@ -35,6 +35,13 @@ jobs:
         run: corepack pnpm quality
       - name: vitest
         run: corepack pnpm test
+      - name: environment diagnostics
+        shell: pwsh
+        run: |
+          "VERIFY-ENV TEMP=$env:TEMP USER=$env:USERNAME"
+          whoami /groups | Select-String 'Mandatory Label|Administrators'
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, Root
+          Get-Volume | Format-Table DriveLetter, FileSystemType
       - name: rust tests (workspace)
         shell: bash
         run: |
@@ -45,7 +52,15 @@ jobs:
           echo "VERIFY: total passed = $(grep -E '^test result:' rust-test.log | sed -E 's/.* ([0-9]+) passed.*/\1/' | paste -sd+ - | bc)"
           echo "VERIFY: failed/ignored lines"
           grep -E ' FAILED$| ignored$' rust-test.log || echo "none"
+      - name: re-run the ACL-dependent tests alone (confirmation)
+        if: always()
+        shell: bash
+        run: |
+          cd src-tauri
+          cargo test -p transfer-core unreadable -- --nocapture 2>&1 | grep -E "^test |test result|left:|right:|panicked" || true
+          icacls "$TEMP" | head -5
       - name: named behaviour tests
+        if: always()
         shell: bash
         run: |
           cd src-tauri
@@ -54,6 +69,7 @@ jobs:
             cargo test --workspace "$t" 2>&1 | grep -E "^test .*(ok|FAILED)$|test result: .* [1-9][0-9]* passed|running 0 tests" | grep -v 'running 0 tests' || echo "VERIFY-NOT-FOUND $t"
           done
       - name: explorer fixture regeneration produces no diff
+        if: always()
         shell: bash
         run: |
           cd src-tauri
@@ -62,6 +78,7 @@ jobs:
           git status --porcelain
           git diff --exit-code && echo "VERIFY: fixture diff empty"
       - name: dependency licences
+        if: always()
         shell: bash
         run: |
           cd src-tauri
