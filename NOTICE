@@ -12,6 +12,8 @@ Rust (runtime)
   windows-sys, windows-version                      MIT OR Apache-2.0
   blake3                                            CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception
   notify                                            CC0-1.0
+  cssparser, cssparser-macros, dtoa-short,          MPL-2.0
+  option-ext, selectors
 
 Rust (build time)
   tauri-build                                       Apache-2.0 OR MIT
@@ -21,6 +23,11 @@ JavaScript (bundled into the app)
   @lucide/vue (Lucide icons)                        ISC
   @tauri-apps/api, @tauri-apps/plugin-dialog        Apache-2.0 OR MIT
   tailwindcss (CSS generated at build time)         MIT
+  lightningcss, lightningcss-win32-x64-msvc         MPL-2.0
+
+The MPL-2.0 libraries above are used unmodified. Their source is available from
+their upstream repositories (servo/rust-cssparser, servo/rust-selectors,
+parcel-bundler/lightningcss and crates.io).
 
 Development and test tools (not shipped): vite, vitest, typescript, vue-tsc,
 prettier, jsdom, @vitejs/plugin-vue, @tailwindcss/vite, @tauri-apps/cli,

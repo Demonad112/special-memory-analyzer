@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-gKvAmINkqxqYkYn+Cdd8kRsWrG1OVBF8xqC8mpEXrkc=' 'sha256-V/F/TwbXs0xEsJ99CkyXNDZdc/FQWMEyrwhmcEAGiVM='; img-src data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-RWvjFnCs3tQp3Q4YAPN5py7r2jgiRD9TsGVihGhSmwI=' 'sha256-V/F/TwbXs0xEsJ99CkyXNDZdc/FQWMEyrwhmcEAGiVM='; img-src data:">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Disk usage - Fixture</title>
 <style>
@@ -43,6 +43,9 @@ input[type=search]{flex:1;max-width:320px;padding:6px 10px;border:1px solid var(
 button{padding:6px 14px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--text);font:inherit;cursor:pointer}
 button:hover{border-color:var(--accent-2)}
 .code textarea{width:100%;font:12px/1.4 Consolas,'Cascadia Mono',monospace;background:var(--zebra);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px;resize:vertical;white-space:pre;overflow-wrap:normal}
+.rec fieldset{border:1px solid var(--line);border-radius:8px;margin:8px 0;padding:6px 12px;display:flex;flex-wrap:wrap;gap:6px 18px}.rec legend{color:var(--muted);font-size:12px;padding:0 4px}.rec label{display:flex;gap:6px;align-items:center}
+.rec details.cmd{margin:8px 0}.rec details.cmd>summary{cursor:pointer;font-weight:600;padding:4px 0}.rec textarea{width:100%;font:12px/1.4 Consolas,'Cascadia Mono',monospace;background:var(--zebra);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px;resize:vertical;white-space:pre;overflow-wrap:normal}
+.rec ul.manual{margin:6px 0;padding-left:20px;font-family:Consolas,'Cascadia Mono',monospace;font-size:12px}
 .scroll{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{position:sticky;top:0;background:var(--surface);text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid var(--line);padding:8px}
@@ -54,7 +57,7 @@ tr.warn td{color:var(--warn)}tr.warn td:first-child{border-left:3px solid var(--
 tr.good td:first-child{border-left:3px solid var(--good)}
 footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:24px;color:var(--muted);font-size:12px}
 @media (max-width:560px){header{padding:18px}h1{font-size:24px}.value{font-size:20px}}
-@media print{:root{--page:#fff}body{background:#fff}main{padding:0}header{box-shadow:none;-webkit-print-color-adjust:exact;print-color-adjust:exact}.tile,.card,tr{break-inside:avoid;box-shadow:none}th{position:static}.tools,.code button{display:none}table.long tbody tr:nth-child(n+201){display:none}.printonly{display:block}details.fold:not([open])>*:not(summary){display:block}}
+@media print{:root{--page:#fff}body{background:#fff}main{padding:0}header{box-shadow:none;-webkit-print-color-adjust:exact;print-color-adjust:exact}.tile,.card,tr{break-inside:avoid;box-shadow:none}th{position:static}.tools,.code button,.rec .act{display:none}table.long tbody tr:nth-child(n+201){display:none}.printonly{display:block}details.fold:not([open])>*:not(summary){display:block}}
 </style>
 <style>
 .explorer h3{font-size:14px;margin:12px 0 6px}.explorer h4{font-size:12px;margin:12px 0 4px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
@@ -114,6 +117,38 @@ q('button[data-save]').forEach(function(b){b.addEventListener('click',function()
 var t=document.getElementById(b.getAttribute('data-save')),a=document.createElement('a');
 a.href=URL.createObjectURL(new Blob([t.value],{type:'text/plain'}));a.download=b.getAttribute('data-name');
 document.body.appendChild(a);a.click();a.remove()})});
+var D=document.getElementById('d'),R=null;
+try{R=D&&JSON.parse(D.textContent).rec}catch(e){}
+if(R){
+var cut=false,ed={},m=document.getElementById('rec-main'),p=document.getElementById('rec-pass2');
+var mask=function(){var k=0;q('input[data-bit]').forEach(function(c){if(c.checked)k|=1<<c.getAttribute('data-bit')});return k};
+var build=function(p2,k,lim){
+var L=[p2?R.pre2:R.pre],n=0;cut=false;
+R.dirs.forEach(function(d){
+var names=d.f.filter(function(f){return !(f[1]&k)}).map(function(f){return f[0]});
+if(!names.length)return;
+if(lim&&n>=lim){cut=true;return}
+n++;
+var h=p2?d.h2:d.h,line=h;
+names.forEach(function(s){
+if(line.length+s.length>R.max&&line!==h){L.push(line+R.sfx,R.chk);line=h}
+line+=' '+s});
+L.push(line+R.sfx,R.chk)});
+R.mk.forEach(function(e){if(!(e[2]&k))L.push(p2?e[1]:e[0])});
+L.push(p2?R.post2:R.post);
+return L.join('\n')+'\n'};
+var mark=function(t){if(cut)t.setAttribute('data-cut','1');else t.removeAttribute('data-cut')};
+[m,p].forEach(function(t){if(t)t.addEventListener('input',function(){ed[t.id]=true})});
+q('input[data-bit]').forEach(function(c){c.addEventListener('change',function(){
+var k=mask();m.value=build(0,k,R.limit);mark(m);p.value=build(1,k,R.limit);mark(p);ed={}})});
+var x=document.getElementById('rec-p2');
+if(x)x.addEventListener('change',function(){document.getElementById('rec-p2box').hidden=!x.checked});
+q('button[data-ps1]').forEach(function(b){b.addEventListener('click',function(){
+var id=b.getAttribute('data-ps1'),t=document.getElementById(id),v=t.value;
+if(t.getAttribute('data-cut')&&!ed[id])v=build(id==='rec-pass2'?1:0,mask(),0);
+var a=document.createElement('a');
+a.href=URL.createObjectURL(new Blob(['\ufeff'+v.replace(/\r?\n/g,'\r\n')],{type:'text/plain'}));a.download=b.getAttribute('data-name');
+document.body.appendChild(a);a.click();a.remove()})})}
 })();
 </script>
 <script>
