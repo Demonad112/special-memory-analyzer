@@ -338,27 +338,55 @@ export type JunkKind =
   | 'installers'
   | 'devCaches'
   | 'emptyFolders'
+  | 'appCaches'
+  | 'browserData'
+  | 'unidentified'
+
+/** Which list a finding sits in: `never` rows are reported by size and carry no ids. */
+export type Tier = 'safe' | 'review' | 'never'
+
+/** What removing it costs, least to most. */
+export type Confidence = 'regenerates' | 'redownloads' | 'user_data'
 
 export interface JunkItem {
   /** Keys the row. For a collapsed row, the first of `ids`. */
   id: number
-  /** Every node deleting this row removes: `[id]`, or each `__pycache__` folder of a project. */
+  /**
+   * Every node deleting this row removes: `[id]`, or each folder a collapsed row stands for.
+   * Empty for a `never` row: it is reported, not offered.
+   */
   ids: number[]
   name: string
   path: string
+  /** Space on disk: online-only (cloud) files count as 0. */
   size: number
   files: number
   isFolder: boolean
   modifiedMs: number | null
+  /** Online-only bytes below this row, left out of `size`; say so when above 0. */
+  cloudBytes: number
+  tier: Tier
+  confidence: Confidence
+  /** Why it is suggested, or what it was recognised as. */
+  why: string
+  /** How to get it back, when there is something to say. */
+  restore: string | null
 }
 
 export interface JunkGroup {
   kind: JunkKind
+  /** A group holds one tier: a kind with rows in two tiers is two groups. Safe first. */
+  tier: Tier
+  /** The least forgiving confidence of any match in the group. */
+  confidence: Confidence
   title: string
   description: string
+  why: string
   /** Every match, including those past the listed items. */
   size: number
   count: number
+  /** Online-only bytes below every match, left out of `size`. */
+  cloudBytes: number
   items: JunkItem[]
 }
 
