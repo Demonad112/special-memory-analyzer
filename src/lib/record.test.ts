@@ -17,7 +17,9 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 import {
   bytesPerSecond,
+  connectShare,
   countByReason,
+  shareOf,
   defaultPreserve,
   formatNotCopiedList,
   formatTimeLeft,
@@ -104,6 +106,26 @@ describe('record commands', () => {
         options: expect.objectContaining({ conflict: 'keepBoth' }),
       }),
     )
+  })
+
+  it('finds the share of a network path and ignores local paths', () => {
+    expect(shareOf('\\\\nas\\backup\\2024\\Jan')).toBe('\\\\nas\\backup')
+    expect(shareOf('//nas/backup/x')).toBe('\\\\nas\\backup')
+    expect(shareOf('\\\\?\\UNC\\nas\\backup\\x')).toBe('\\\\nas\\backup')
+    expect(shareOf('C:\\Data')).toBeNull()
+    expect(shareOf('\\\\nas')).toBeNull()
+    expect(shareOf('\\\\?\\C:\\Data')).toBeNull()
+  })
+
+  it('signs in to a share with the typed account', async () => {
+    core.invoke.mockResolvedValue('\\\\nas\\backup')
+
+    await expect(connectShare('\\\\nas\\backup\\x', 'sam', 'pw')).resolves.toBe('\\\\nas\\backup')
+    expect(core.invoke).toHaveBeenLastCalledWith('share_connect', {
+      path: '\\\\nas\\backup\\x',
+      username: 'sam',
+      password: 'pw',
+    })
   })
 
   it('retries by reason, by path, or everything', async () => {

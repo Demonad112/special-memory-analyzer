@@ -55,7 +55,10 @@ fn keep_both_target(
     source_size: u64,
     source_time: Option<SystemTime>,
 ) -> Result<PathBuf, ()> {
-    let stem = destination.file_stem().unwrap_or_default().to_string_lossy();
+    let stem = destination
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
     let extension = destination
         .extension()
         .map(|ext| format!(".{}", ext.to_string_lossy()))
@@ -311,7 +314,10 @@ pub fn copy_file(
         .map(|wanted| meta::apply(source, destination, &wanted, &options.preserve))
         .unwrap_or_default();
     if kept_as.is_some() {
-        let name = destination.file_name().unwrap_or_default().to_string_lossy();
+        let name = destination
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
         warnings.push(format!(
             "A different file was already there, so both were kept: saved as \"{name}\"."
         ));
@@ -670,8 +676,7 @@ mod tests {
             ..no_retry()
         };
 
-        let Ok(CopyOutcome::Copied { warnings, .. }) = copy(&source, &destination, &options)
-        else {
+        let Ok(CopyOutcome::Copied { warnings, .. }) = copy(&source, &destination, &options) else {
             panic!("keep both should copy");
         };
         assert_eq!(fs::read(&destination).unwrap(), b"different");
@@ -694,7 +699,10 @@ mod tests {
             copy(&source, &destination, &options),
             Ok(CopyOutcome::Copied { .. })
         ));
-        assert_eq!(fs::read(dir.path("out/a (2).txt")).unwrap(), b"someone else's");
+        assert_eq!(
+            fs::read(dir.path("out/a (2).txt")).unwrap(),
+            b"someone else's"
+        );
         assert_eq!(fs::read(dir.path("out/a (3).txt")).unwrap(), b"source");
 
         // Same size and date as the source: the earlier run's copy, not a new conflict.

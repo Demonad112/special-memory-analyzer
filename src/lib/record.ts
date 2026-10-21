@@ -251,6 +251,17 @@ export function listRecords(): Promise<RunSummary[]> {
   return invoke<RunSummary[]>('record_list')
 }
 
+/** The `\\server\share` part of a network path, or null for a local path. */
+export function shareOf(path: string): string | null {
+  const match = /^[\\/]{2}(?:\?[\\/]UNC[\\/])?([^\\/?.][^\\/]*)[\\/]+([^\\/]+)/.exec(path.trim())
+  return match ? `\\\\${match[1]}\\${match[2]}` : null
+}
+
+/** Signs in to the share a network path is on; resolves with the share. */
+export function connectShare(path: string, username: string, password: string): Promise<string> {
+  return invoke<string>('share_connect', { path, username, password })
+}
+
 export function revealPath(path: string): Promise<void> {
   return invoke('record_reveal', { path })
 }

@@ -416,6 +416,25 @@ pub async fn record_list() -> Result<Vec<RunSummary>, String> {
         .map_err(to_text)
 }
 
+/// Signs in to the network share a UNC path is on, with an account the user types. Returns the
+/// share (`\\server\share`). The password is passed to Windows for this call and not stored.
+#[tauri::command]
+pub async fn share_connect(
+    path: String,
+    username: String,
+    password: String,
+) -> Result<String, String> {
+    let share = transfer_core::share::share_root(&path)
+        .ok_or_else(|| "That is not a network path (\\\\server\\share).".to_string())?;
+    let target = share.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        transfer_core::share::connect(&target, &username, &password)
+    })
+    .await
+    .map_err(to_text)??;
+    Ok(share)
+}
+
 /// Opens Explorer at a file or folder (a source file, the recovery folder).
 #[tauri::command]
 pub fn record_reveal(path: String) -> Result<(), String> {

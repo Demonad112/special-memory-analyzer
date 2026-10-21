@@ -99,6 +99,7 @@ pub fn run() {
             record::record_load,
             record::record_list,
             record::record_reveal,
+            record::share_connect,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Deep Server Analyzer");

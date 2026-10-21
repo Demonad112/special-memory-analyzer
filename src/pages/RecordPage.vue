@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import JobFields from '@/components/JobFields.vue'
+import ShareSignIn from '@/components/ShareSignIn.vue'
 import PathField from '@/components/PathField.vue'
 import { errorMessage, ignoreJunk, loadPaths, pickFolder, savePaths } from '@/lib/compare'
 import { formatBytes, formatCount, plural } from '@/lib/format'
@@ -353,6 +354,7 @@ function when(ms: number): string {
           {{ choice.label }}
         </label>
       </template>
+      <ShareSignIn :paths="[paths.left, paths.right]" />
       <JobFields class="mt-4" />
       <p
         v-if="mode === 'watch'"
