@@ -1,6 +1,7 @@
 name: Build installer
 
-# Builds the NSIS installer when a v* tag is pushed and keeps it as a workflow artifact.
+# Builds the NSIS installer when a v* tag is pushed, keeps it as a workflow artifact,
+# and publishes it as a GitHub Release.
 # The tag must match the version in package.json, src-tauri/tauri.conf.json and src-tauri/Cargo.toml.
 on:
   push:
@@ -54,3 +55,26 @@ jobs:
           name: Deep-Server-Analyzer-windows
           path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: installer
+    runs-on: ubuntu-latest
+    # actions: read is required to download the installer artifact from this run.
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name Deep-Server-Analyzer-windows --dir installer
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" installer/*.exe \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Deep Server Analyzer $GITHUB_REF_NAME" \
+            --generate-notes
