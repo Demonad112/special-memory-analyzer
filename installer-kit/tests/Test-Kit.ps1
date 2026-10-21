@@ -123,8 +123,15 @@ try {
             # notepad.exe copy stands in for the NSIS setup; it is re-signed with the throwaway certificate.
             $setupPath = Join-Path $stage 'DSA-Test_0.0.0_x64-setup.exe'
             Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\notepad.exe') -Destination $setupPath
+            # notepad.exe is catalog-signed by Microsoft, and the catalog signer wins over an embedded one.
+            # Trailing bytes change the file hash so no catalog matches and only our signature counts.
+            $tail = [System.Text.Encoding]::ASCII.GetBytes([guid]::NewGuid().ToString())
+            $stream = [System.IO.File]::Open($setupPath, [System.IO.FileMode]::Append)
+            try { $stream.Write($tail, 0, $tail.Length) } finally { $stream.Dispose() }
             $signed = Set-AuthenticodeSignature -FilePath $setupPath -Certificate $cert -HashAlgorithm SHA256
             if ($signed.Status -ne 'Valid') { throw "Re-signing the test setup failed: $($signed.Status) $($signed.StatusMessage)" }
+            $actual = (Get-AuthenticodeSignature -LiteralPath $setupPath).SignerCertificate.Thumbprint
+            if ($actual -ine $thumb) { throw "Test setup is signed by $actual, not the test certificate $thumb." }
             Set-Content -LiteralPath (Join-Path $stage 'thumbprint.txt') -Value $thumb -Encoding ascii
             $sums = foreach ($file in @($cerPath, $setupPath)) {
                 '{0}  {1}' -f (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant(), (Split-Path -Leaf $file)
