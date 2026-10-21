@@ -255,7 +255,16 @@ export function scanPercent(bytes: number, drive: Drive | undefined): number | n
 }
 
 export type QuickId =
-  'userTemp' | 'windowsTemp' | 'browserCache' | 'updateCache' | 'recycleBin' | 'oldInstallers'
+  | 'userTemp'
+  | 'windowsTemp'
+  | 'browserCache'
+  | 'updateCache'
+  | 'recycleBin'
+  | 'oldInstallers'
+  | 'internetCache'
+  | 'crashReports'
+  | 'shaderCaches'
+  | 'playwright'
 
 /** A quick cleanup card. */
 export interface QuickWin {
