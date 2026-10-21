@@ -212,7 +212,6 @@ fn set_attributes(_destination: &Path, _source: u32) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn extended_path_prefixes_absolute_paths_once() {
@@ -242,6 +241,7 @@ mod tests {
     #[test]
     fn created_accessed_modified_and_attributes_round_trip() {
         use std::os::windows::fs::MetadataExt;
+        use std::time::Duration;
         let dir = std::env::temp_dir().join(format!("ds-meta-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("s.txt");

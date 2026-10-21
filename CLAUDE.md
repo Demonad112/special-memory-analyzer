@@ -42,7 +42,8 @@ Run quality and tests before opening a PR. Scope tests to the touched files when
 ## Environment notes
 
 - Windows desktop: the shell may be Git Bash or PowerShell. Heredocs in Bash halve backslashes, so write files containing backslashes with the file tools.
-- Cloud (web/mobile) sessions start with an empty container: install dependencies first. The app crate needs Windows (or WebKitGTK), so check Rust there with `--target x86_64-pc-windows-msvc`.
+- Cloud (web/mobile) sessions start with an empty container: install dependencies first. The app crate builds on Linux once WebKitGTK is installed, so `corepack pnpm quality` runs in full there:
+  `apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev patchelf && corepack pnpm install --frozen-lockfile`. Code behind `#[cfg(windows)]` is still only checked on Windows.
 - Run `rust:test` on Windows under pwsh, not Git Bash: see `docs/windows-testing.md`.
 
 ## Gotchas
