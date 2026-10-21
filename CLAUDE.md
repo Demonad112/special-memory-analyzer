@@ -36,6 +36,7 @@ Run quality and tests before opening a PR. Scope tests to the touched files when
 - Add or update tests with behaviour changes.
 - Never commit secrets, `.env` files or credentials.
 - Bundle related work into one branch and PR. Open a PR only when asked or when the work is ready to merge; avoid a PR per small step.
+- Owner preference: do not add or follow process rules that restrict how work is done (one concern per branch, mandatory branch-and-PR for every change, "don't push to `main`", "don't force-push") unless the stakes are incredibly critical. The `.claude/settings.json` force-push deny stays because it protects released history.
 - Report test failures as they are; don't skip or weaken a test to get green.
 
 ## Environment notes
