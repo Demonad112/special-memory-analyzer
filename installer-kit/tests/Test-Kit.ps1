@@ -84,6 +84,16 @@ try {
     Set-Content -LiteralPath (Get-DsaExpiryPath) -Value 'not json' -Encoding UTF8
     Assert-True 'a corrupt record reads as no trust' ($null -eq (Read-TrustExpiry))
 
+    # Removal checks and the extend helper's no-trust path.
+    $storeChecks = @(Test-TrustRemoved -Thumbprint '0000000000000000000000000000000000000000' | Where-Object { $_.Name -like 'Certificate*' })
+    Assert-True 'removal check covers both stores' ($storeChecks.Count -eq 2)
+    Assert-True 'an unknown thumbprint counts as absent' (@($storeChecks | Where-Object { -not $_.Passed }).Count -eq 0)
+    $recordCheck = Test-TrustRemoved -Thumbprint '' | Where-Object { $_.Name -like 'Expiry record*' }
+    Assert-True 'a leftover expiry record fails the check' (-not $recordCheck.Passed)
+    Remove-Item -LiteralPath (Get-DsaExpiryPath) -Force
+    Assert-True 'no leftover record passes the check' ((Test-TrustRemoved -Thumbprint '' | Where-Object { $_.Name -like 'Expiry record*' }).Passed)
+    Assert-True 'extending with no trust returns null' ($null -eq (Add-TrustHours -RemoveScriptPath 'x'))
+
     # Startup and expiry rule: never remove before the expiry.
     $expiry = [DateTime]::UtcNow.AddMinutes(10)
     Assert-True 'not due one second early' (-not (Test-TrustDue -ExpiresUtc $expiry -NowUtc $expiry.AddSeconds(-1)))
@@ -155,6 +165,12 @@ try {
             Assert-True 'DSA-TrustExpiry task exists' ($null -ne (Get-ScheduledTask -TaskName 'DSA-TrustExpiry' -ErrorAction SilentlyContinue))
             $record = Read-TrustExpiry
             Assert-True 'expiry record names the thumbprint' ($record.Thumbprint -ieq $thumb)
+
+            $extended = Add-TrustHours -RemoveScriptPath (Join-Path (Get-DsaDataDir) 'Remove-Trust.ps1')
+            Assert-True 'extend moves the expiry out by an hour' ($extended -gt $record.ExpiresUtc.AddMinutes(59))
+            Assert-True 'extend keeps one task' (@(Get-ScheduledTask -TaskName 'DSA-TrustExpiry' -ErrorAction SilentlyContinue).Count -eq 1)
+            Write-TrustExpiry -Thumbprint $record.Thumbprint -ExpiresUtc $record.ExpiresUtc -Hours $record.Hours -RemoveAfterInstall $false
+            Register-TrustTask -ExpiresUtc $record.ExpiresUtc -RemoveScriptPath (Join-Path (Get-DsaDataDir) 'Remove-Trust.ps1')
 
             Assert-True 'second install exits 0' ((Invoke-KitScript $install $installArgs) -eq 0)
             Assert-True 'second install keeps one Root copy' ((Get-StoreCount $thumb 'Root') -eq 1)

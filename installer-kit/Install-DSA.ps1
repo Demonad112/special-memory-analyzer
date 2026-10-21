@@ -23,6 +23,9 @@ Trust only: do not run the setup.
 .PARAMETER NoPrompt
 Never ask; use -TrustHours or 8 h.
 
+.PARAMETER NoCountdown
+Do not show the console countdown (used by DSA-Installer.ps1, which has its own).
+
 .PARAMETER Mode
 Trust (import and schedule only), Install (setup only, certificate must already be trusted) or Both.
 #>
@@ -33,6 +36,7 @@ param(
     [switch]$Interactive,
     [switch]$SkipInstall,
     [switch]$NoPrompt,
+    [switch]$NoCountdown,
     [ValidateSet('Trust', 'Install', 'Both')] [string]$Mode = 'Both'
 )
 
@@ -160,7 +164,7 @@ try {
         exit 0
     }
     if ($Mode -ne 'Install') {
-        if (Test-InteractiveSession) {
+        if ((Test-InteractiveSession) -and -not $NoCountdown) {
             Show-TrustCountdown -RemoveScriptPath $removeScript
         }
         else {

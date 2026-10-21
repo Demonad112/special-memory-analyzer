@@ -19,10 +19,21 @@ the release notes.
 2. Check the thumbprint in the release notes against the one the script prints.
 3. Run `Install-DSA.cmd` only from a folder you extracted yourself.
 
+## Installer window
+
+Extract the kit zip, then double-click `DSA-Installer.cmd` and accept the UAC prompt. The window has:
+
+- **Install**: verifies the kit, trusts the certificate for 8 h, schedules removal and runs the silent setup.
+- **▲ +1 h**: adds an hour to the trust window (capped at 72 h from now).
+- **✕ Remove trust** (red): opens a PowerShell window that removes the trust, then prints an OK or FAIL line for each store, the `DSA-TrustExpiry` task and the expiry record. The window turns green only when every check passes.
+
+Closing the window keeps the timer running. Reopening `DSA-Installer.cmd` while trust is active goes straight to the countdown. The scripts below still work on their own.
+
 ## Files in the kit
 
 | File                                                  | What it does                                                                                                                                                            |
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DSA-Installer.cmd` / `.ps1`                          | The installer window described above.                                                                                                                                   |
 | `Install-DSA.cmd` / `.ps1`                            | Verifies the kit, asks how long trust should last, trusts the certificate, schedules its removal, checks the setup signature, runs the setup, then shows the countdown. |
 | `Trust-Only.cmd`                                      | Trust and schedule removal, no install.                                                                                                                                 |
 | `Install-Only.cmd`                                    | Runs the setup only. The certificate must already be trusted.                                                                                                           |

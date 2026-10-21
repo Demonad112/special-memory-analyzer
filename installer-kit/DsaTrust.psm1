@@ -153,6 +153,41 @@ function Register-TrustTask {
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
     Register-ScheduledTask -TaskName $script:TaskName -Action $action -Trigger @($atExpiry, $atStartup) `
         -Principal $principal -Settings $settings -Force | Out-Null
+    Write-TrustLog "Registered $script:TaskName for $($ExpiresUtc.ToString('o')) UTC"
+}
+
+function Add-TrustHours {
+    # Moves the expiry out by $Hours (capped at 72 h from now) and swaps the task trigger.
+    # Returns the new expiry, or $null when no trust is active.
+    param([string]$RemoveScriptPath, [double]$Hours = 1)
+    $record = Read-TrustExpiry
+    if (-not $record) { return $null }
+    $newExpiry = $record.ExpiresUtc.AddHours($Hours)
+    $cap = [DateTime]::UtcNow.AddHours($script:MaxHours)
+    if ($newExpiry -gt $cap) { $newExpiry = $cap }
+    Write-TrustExpiry -Thumbprint $record.Thumbprint -ExpiresUtc $newExpiry `
+        -Hours ($record.Hours + $Hours) -RemoveAfterInstall $record.RemoveAfterInstall
+    Register-TrustTask -ExpiresUtc $newExpiry -RemoveScriptPath $RemoveScriptPath
+    Write-TrustLog "Extended trust by $Hours h, now until $($newExpiry.ToString('o')) UTC"
+    return $newExpiry
+}
+
+function Test-TrustRemoved {
+    # One result per check: @{ Name; Passed }. Empty $Thumbprint skips the store checks.
+    param([string]$Thumbprint)
+    $results = @()
+    foreach ($name in 'Root', 'TrustedPublisher') {
+        if (-not $Thumbprint) { continue }
+        $store = New-Object -TypeName System.Security.Cryptography.X509Certificates.X509Store -ArgumentList $name, 'LocalMachine'
+        $store.Open('ReadOnly')
+        try { $count = @($store.Certificates | Where-Object { $_.Thumbprint -eq $Thumbprint }).Count }
+        finally { $store.Close() }
+        $results += [pscustomobject]@{ Name = "Certificate absent from LocalMachine\$name"; Passed = ($count -eq 0) }
+    }
+    $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
+    $results += [pscustomobject]@{ Name = "Scheduled task $script:TaskName is gone"; Passed = ($null -eq $task) }
+    $results += [pscustomobject]@{ Name = 'Expiry record is gone'; Passed = (-not (Test-Path -LiteralPath (Get-DsaExpiryPath))) }
+    return $results
 }
 
 function Unregister-TrustTask {
@@ -205,11 +240,7 @@ function Show-TrustCountdown {
         if ([Console]::KeyAvailable) {
             $key = [Console]::ReadKey($true).KeyChar.ToString().ToUpperInvariant()
             if ($key -eq 'E') {
-                $newExpiry = $record.ExpiresUtc.AddHours(1)
-                Write-TrustExpiry -Thumbprint $record.Thumbprint -ExpiresUtc $newExpiry `
-                    -Hours ($record.Hours + 1) -RemoveAfterInstall $record.RemoveAfterInstall
-                Register-TrustTask -ExpiresUtc $newExpiry -RemoveScriptPath $RemoveScriptPath
-                Write-TrustLog "Extended trust by 1 h, now until $($newExpiry.ToString('o')) UTC"
+                $null = Add-TrustHours -RemoveScriptPath $RemoveScriptPath
                 $lastDrawn = -1
             }
             elseif ($key -eq 'R') {
@@ -228,5 +259,5 @@ function Show-TrustCountdown {
 
 Export-ModuleMember -Function Get-DsaDataDir, Get-DsaExpiryPath, Write-TrustLog, ConvertTo-TrustHours, Get-CerThumbprint, `
     Test-Sha256Sums, Write-TrustExpiry, Read-TrustExpiry, Test-TrustDue, Add-TrustStores, `
-    Remove-TrustStores, Register-TrustTask, Unregister-TrustTask, Remove-ActiveTrust, `
-    Format-Remaining, Show-TrustCountdown
+    Remove-TrustStores, Register-TrustTask, Add-TrustHours, Test-TrustRemoved, Unregister-TrustTask, `
+    Remove-ActiveTrust, Format-Remaining, Show-TrustCountdown
