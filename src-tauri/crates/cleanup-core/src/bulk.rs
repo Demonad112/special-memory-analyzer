@@ -299,7 +299,7 @@ fn delete_one(
 }
 
 /// True for a symlink or junction (a Windows reparse point).
-pub fn is_reparse_point(path: &Path) -> bool {
+pub(crate) fn is_reparse_point(path: &Path) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
