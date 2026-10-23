@@ -45,12 +45,38 @@ Closing the window keeps the timer running. Reopening `DSA-Installer.cmd` while 
 `Install-DSA.ps1` checks `thumbprint.txt` against the certificate, and `SHA256SUMS.txt` against the
 certificate and setup exe. It stops if either check fails.
 
+The kit cannot vouch for itself: the certificate, `thumbprint.txt` and the hashes all come from the same zip.
+So `Install-DSA.ps1` also refuses any certificate that is not self-signed as `CN=Deep Server Analyzer`,
+code-signing only, not a CA, RSA 3072 bits or more, and valid for at most 181 days. The real anchor is the
+full 40-character thumbprint on the release page:
+
+- Interactive runs print the thumbprint and ask for its last 8 characters.
+- `-ExpectedThumbprint <thumbprint>` checks the whole value. It is required with `-NoPrompt` and in
+  sessions without a console.
+- `DSA-Installer.cmd` shows the full thumbprint and the SHA-256 of `dsa-signing.cer`, and enables **Install**
+  only after you paste the thumbprint from the release page.
+
+The data folder `C:\ProgramData\DSA` is created admin-only (SYSTEM and Administrators full control, Users read
+only), because the expiry task runs its scripts as SYSTEM. A folder owned by anyone else is renamed to
+`DSA.untrusted-<timestamp>`.
+
+## Verifying a download
+
+Each release carries build provenance. Before you copy a file to a server, run:
+
+```powershell
+gh attestation verify .\Deep-Server-Analyzer_x.y.z_x64-setup.exe --repo Demonad112/special-memory-analyzer
+gh attestation verify .\Deep-Server-Analyzer-usb-kit.zip --repo Demonad112/special-memory-analyzer
+```
+
+`SHA256SUMS-release.txt` on the release page lists the hashes of the installer and the kit zip.
+
 ## Choosing the trust window
 
 Interactive runs show a picker: 1 h, 4 h, 8 h (default), 12 h, 24 h, custom (`90m`, `2.5h`; clamped to
 15 min to 72 h), or remove right after install. Enter, or 30 seconds with no key, picks 8 h.
 
-Non-interactive runs (`-NoPrompt`, or no console) use `-TrustHours` or 8 h. Pass `-RemoveAfterInstall`
+Non-interactive runs (`-NoPrompt`, or no console) use `-TrustHours` or 8 h, and need `-ExpectedThumbprint`. Pass `-RemoveAfterInstall`
 for servers without AppLocker or WDAC rules, where the trust should not outlive the install.
 
 ## The countdown
@@ -80,7 +106,7 @@ from `LocalMachine\Root` and `LocalMachine\TrustedPublisher`, and the task is un
 
 ## Test run on a server
 
-1. Run `Install-DSA.cmd -NoPrompt -TrustHours 0.5 -SkipInstall` and confirm it reports the thumbprint.
+1. Run `Install-DSA.cmd -NoPrompt -TrustHours 0.5 -SkipInstall -ExpectedThumbprint <thumbprint from the release page>` and confirm it reports the thumbprint.
 2. Check `certlm.msc` for the certificate under Trusted Root and Trusted Publishers.
 3. Run `Show-Trust-Timer.cmd`, then `Remove-Trust.cmd`, and confirm the certificate and the
    `DSA-TrustExpiry` task are gone.

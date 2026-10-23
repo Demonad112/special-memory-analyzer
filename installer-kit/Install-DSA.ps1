@@ -20,8 +20,12 @@ Run the setup with its own UI instead of /S.
 .PARAMETER SkipInstall
 Trust only: do not run the setup.
 
+.PARAMETER ExpectedThumbprint
+Full SHA-1 thumbprint copied from the release page. Must match the kit's certificate. Required with -NoPrompt
+or in a non-interactive session, because the kit cannot vouch for itself.
+
 .PARAMETER NoPrompt
-Never ask; use -TrustHours or 8 h.
+Never ask; use -TrustHours or 8 h. Needs -ExpectedThumbprint.
 
 .PARAMETER NoCountdown
 Do not show the console countdown (used by DSA-Installer.ps1, which has its own).
@@ -35,6 +39,7 @@ param(
     [switch]$RemoveAfterInstall,
     [switch]$Interactive,
     [switch]$SkipInstall,
+    [string]$ExpectedThumbprint,
     [switch]$NoPrompt,
     [switch]$NoCountdown,
     [ValidateSet('Trust', 'Install', 'Both')] [string]$Mode = 'Both'
@@ -85,6 +90,7 @@ function Read-TrustChoice {
 }
 
 try {
+    Initialize-DsaDataDir
     Write-TrustLog "Install-DSA started (mode $Mode) by $env:USERNAME"
 
     # 1. Verify the kit.
@@ -101,6 +107,18 @@ try {
     $published = (Get-Content -LiteralPath $thumbFile -Raw).Trim()
     if ($published -ine $thumb) { throw "thumbprint.txt ($published) does not match the certificate ($thumb)." }
     Test-Sha256Sums -SumsPath $sums -FilePaths @($cer, $setup.FullName)
+    $certObject = New-Object -TypeName System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList $cer
+    Test-DsaCertificate -Cert $certObject -ExpectedThumbprint $ExpectedThumbprint
+    if ($Mode -ne 'Install' -and -not $ExpectedThumbprint) {
+        # Everything in the kit comes from one zip, so only a thumbprint from the release page proves it is genuine.
+        if ($NoPrompt -or -not (Test-InteractiveSession)) {
+            throw 'Pass -ExpectedThumbprint with the thumbprint from the release page. The kit cannot vouch for itself.'
+        }
+        Write-Host "Certificate thumbprint (SHA-1): $thumb"
+        Write-Host 'Compare it with the thumbprint on the release page, then type its LAST 8 characters to continue.'
+        $typed = ConvertTo-NormalThumbprint (Read-Host 'Last 8 characters')
+        if ($typed.Length -ne 8 -or -not $thumb.ToUpperInvariant().EndsWith($typed)) { throw 'The typed characters do not match the certificate thumbprint.' }
+    }
     Write-TrustLog "Verified kit hashes. Signing thumbprint: $thumb"
 
     # 2. Choose the trust window.
@@ -126,7 +144,6 @@ try {
         $trustAdded = $true
         $expires = [DateTime]::UtcNow.AddHours($hours)
         Write-TrustExpiry -Thumbprint $thumb -ExpiresUtc $expires -Hours $hours -RemoveAfterInstall $remove
-        New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
         # Copies outlive the USB stick, so the expiry task still works after the kit is unplugged.
         Copy-Item -LiteralPath (Join-Path $kitDir 'DsaTrust.psm1'), (Join-Path $kitDir 'Remove-Trust.ps1') -Destination $dataDir -Force
         Register-TrustTask -ExpiresUtc $expires -RemoveScriptPath $removeScript

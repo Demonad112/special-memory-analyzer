@@ -42,6 +42,9 @@ $xaml = @'
 
     <StackPanel Grid.Row="1" x:Name="PanelIdle" Margin="0,16,0,0">
       <TextBlock x:Name="IdleText" TextWrapping="Wrap" Foreground="#A8ADB5"/>
+      <TextBlock x:Name="ThumbText" TextWrapping="Wrap" Margin="0,12,0,0" FontFamily="Consolas" FontSize="12" IsHitTestVisible="False"/>
+      <TextBlock Text="Paste the thumbprint from the release page" Margin="0,12,0,4" Foreground="#A8ADB5"/>
+      <TextBox x:Name="ThumbInput" FontFamily="Consolas" FontSize="13" Padding="6"/>
       <Button x:Name="InstallButton" Content="Install" Height="44" Margin="0,24,0,0" FontSize="16"
               Background="#2F6FEB" Foreground="White" BorderThickness="0"/>
     </StackPanel>
@@ -82,7 +85,7 @@ $xaml = @'
 '@
 
 $window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$xaml)))
-$names = 'PanelIdle', 'PanelBusy', 'PanelActive', 'PanelDone', 'IdleText', 'InstallButton', 'BusyText',
+$names = 'PanelIdle', 'PanelBusy', 'PanelActive', 'PanelDone', 'IdleText', 'ThumbText', 'ThumbInput', 'InstallButton', 'BusyText',
 'Clock', 'ExpiresText', 'ExtendButton', 'KillButton', 'DoneTitle', 'DoneText', 'CloseButton', 'Footer'
 $ui = @{}
 foreach ($name in $names) {
@@ -145,7 +148,14 @@ function Start-KitProcess {
 $setup = Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*-setup.exe' -File | Select-Object -First 1
 $cer = Join-Path $PSScriptRoot 'dsa-signing.cer'
 if ($setup -and (Test-Path -LiteralPath $cer)) {
-    $ui.IdleText.Text = "Trusts the Deep Server Analyzer signing certificate ($((Get-CerThumbprint -CerPath $cer).Substring(0, 12))...) for 8 hours, installs the app, then removes the trust. Use the arrow to add time and the red button to remove it early."
+    $script:certThumb = Get-CerThumbprint -CerPath $cer
+    $certSha256 = (Get-FileHash -LiteralPath $cer -Algorithm SHA256).Hash
+    $ui.IdleText.Text = 'Trusts the Deep Server Analyzer signing certificate for 8 hours, installs the app, then removes the trust. Use the arrow to add time and the red button to remove it early. Compare the thumbprint below with the one on the release page, then paste it to continue.'
+    $ui.ThumbText.Text = "Thumbprint (SHA-1): $script:certThumb`nCertificate file SHA-256: $certSha256"
+    $ui.InstallButton.IsEnabled = $false
+    $ui.ThumbInput.Add_TextChanged({
+            $ui.InstallButton.IsEnabled = ((ConvertTo-NormalThumbprint $ui.ThumbInput.Text) -ceq (ConvertTo-NormalThumbprint $script:certThumb))
+        })
 }
 else {
     $ui.IdleText.Text = 'The setup or certificate is missing from this folder. Extract the whole kit zip and open DSA-Installer.cmd from there.'
@@ -155,7 +165,7 @@ else {
 $ui.InstallButton.Add_Click({
         $ui.BusyText.Text = 'Checking the kit...'
         Show-Panel 'busy'
-        $script:proc = Start-KitProcess $installScript @('-NoPrompt', '-NoCountdown') 'Hidden'
+        $script:proc = Start-KitProcess $installScript @('-NoPrompt', '-NoCountdown', '-ExpectedThumbprint', $script:certThumb) 'Hidden'
     })
 
 $ui.ExtendButton.Add_Click({
