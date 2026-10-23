@@ -164,7 +164,11 @@ async function runCompare(pair?: ComparePaths): Promise<void> {
 }
 
 async function cancel(): Promise<void> {
-  await cancelCompare()
+  try {
+    await cancelCompare()
+  } catch (err) {
+    showToast(errorMessage(err))
+  }
 }
 
 async function browse(side: Side): Promise<void> {

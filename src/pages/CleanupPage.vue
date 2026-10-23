@@ -332,9 +332,15 @@ function showToast(message: string): void {
   }, 4000)
 }
 
+function cancel(): void {
+  cancelScan().catch((err: unknown) => {
+    showToast(errorMessage(err))
+  })
+}
+
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape' && job.running) {
-    void cancelScan()
+    cancel()
     return
   }
   const typing = event.target instanceof HTMLInputElement
@@ -382,7 +388,7 @@ onBeforeUnmount(() => {
         type="button"
         class="mt-1.5 h-8 shrink-0 rounded-md border border-stroke bg-card px-5 hover:bg-card-hover"
         title="Cancel (Esc)"
-        @click="cancelScan"
+        @click="cancel"
       >
         Cancel
       </button>
