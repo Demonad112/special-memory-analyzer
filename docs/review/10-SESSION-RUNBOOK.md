@@ -4,10 +4,10 @@ This is how to work through the audit fixes on a limited weekly usage budget. Ru
 
 ## Current position
 
-_Updated at the 11:50 pm stop on 2026-10-22. See `HANDOFF.md` for the exact branch and PR state._
+_Updated 2026-10-23._
 
-- **B01** stopped part-way. [PR #20](https://github.com/Demonad112/special-memory-analyzer/pull/20) (draft, branch `fix/b01-safety-net`) has DSA-059, 063 and 020 done. **DSA-069 remains**: its work in progress is the git stash "B01 DSA-069 WIP…" (see `HANDOFF.md`). The "Fixed in" register marks for the done IDs are also still missing.
-- **Next session: finish B01** with the resume prompt below. Then mark PR #20 ready. You merge it, then start B02.
+- **B01** and **B02** are merged (PRs #20, #21, #22). DSA-018 is skipped until Q-deps is approved.
+- **Next session: B03.** Run it locally with the prompts below, or in the cloud with "Prompt: run a batch in a cloud session". Local `cargo` builds are blocked on the dev machine (Access denied, os error 5), so Rust checks run in the cloud or in CI.
 
 ## Order
 
@@ -95,6 +95,46 @@ docs/review/05-SONNET-PROMPT.md. Re-run the full gate, push, and mark the PR rea
 
 Same budget rule: if you're running low, finish or stash the current ID, push, update the PR's
 "Not done yet" list and stop.
+```
+
+## Prompt: run a batch in a cloud session
+
+Use this when the session runs in the cloud on GitHub instead of locally. Cloud sessions start from a fresh clone of `main`, so the previous batch must be merged first. Set `BATCH` (B01 to B11) and paste it. Code behind `#[cfg(windows)]` is not compiled there; the Windows CI job is the check for it.
+
+```
+You are continuing the Deep Server Analyzer audit fixes in the GitHub repo Demonad112/special-memory-analyzer
+(Tauri 2 + Rust workspace, Vue 3 + TypeScript). This is a CLOUD session: start from a fresh clone of `main`.
+BATCH = <B0N>. DSA-018 (vite bump) stays skipped until the owner approves it.
+
+SETUP (empty container):
+  apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev     libjavascriptcoregtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+  corepack pnpm install --frozen-lockfile
+Rust 1.98.1 and Node 24.18.0 are pinned (rust-toolchain.toml, .nvmrc).
+
+READ FIRST: CLAUDE.md, docs/review/10-SESSION-RUNBOOK.md (order table: confirm the previous batch is merged),
+docs/review/04-IMPLEMENTATION-PLAN.md (section BATCH), docs/review/05-SONNET-PROMPT.md, and each ID's row in
+docs/review/02-FINDINGS-REGISTER.md. HANDOFF.md may be stale; the code and the register win.
+
+TASK: branch `fix/<batch>-<slug>` from up-to-date main. Fix the batch's IDs in the plan's order, test first where
+marked TF. One commit per finding, subject "DSA-0NN: <imperative summary>", message ends with
+"Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"; use `git commit -F <file>`. After each fix append
+" **Fixed in `<short-sha>` (BATCH).**" to the row's Recommended fix cell and run prettier on the register.
+New issues get the next free DSA number (DSA-071+) in the register; do not fix them here.
+
+OWNER DECISIONS: elevated use is normal (Q3). Quick cleanups stay permanent but logged and protection-checked
+(B04). Deletes go to the Recycle Bin by default and are logged to Logs\deletions.jsonl. Apache-2.0 only: never
+copy GPL source. Other questions use the defaults in docs/review/07-OPEN-QUESTIONS.md.
+
+CHECKS: run `corepack pnpm check`. Windows-only code is not compiled here: write its tests anyway and say in the
+PR that they are verified by the Windows CI job only. Report failures as they are; never skip or weaken a test.
+
+DELIVERY: push early; open a DRAFT PR titled "BATCH: <batch name> (<IDs>)" with the IDs done, a "Not done yet"
+list, a "Windows-only, verified by CI only" section, ending "🤖 Generated with [Claude Code](https://claude.com/claude-code)".
+Watch CI (`gh run list`, `gh run view <id> --log-failed`) and fix failures. When every ID is done and CI is green,
+`gh pr ready`. DO NOT MERGE, tag, release or force-push. Never run installer-kit/tests/Test-Kit.ps1 -Full.
+
+BUDGET: if usage runs low, finish or revert the current ID (never leave a half fix committed), push, update the
+PR's "Not done yet" list and stop.
 ```
 
 ## Things only you do
