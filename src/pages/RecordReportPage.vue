@@ -45,11 +45,18 @@ const recovering = ref(false)
 const job = recordJob
 
 async function load(): Promise<void> {
+  const id = props.id
   error.value = ''
+  details.value = null
   try {
-    details.value = await loadRecord(props.id)
+    const loaded = await loadRecord(id)
+    if (id === props.id) {
+      details.value = loaded
+    }
   } catch (err) {
-    error.value = errorMessage(err)
+    if (id === props.id) {
+      error.value = errorMessage(err)
+    }
   }
 }
 onMounted(load)
