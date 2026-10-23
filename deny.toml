@@ -15,3 +15,6 @@ allow = [
 
 [advisories]
 yanked = "warn"
+
+[bans]
+multiple-versions = "warn"

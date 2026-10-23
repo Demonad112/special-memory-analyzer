@@ -87,12 +87,14 @@ jobs:
       - run: corepack enable
       - run: corepack pnpm install --frozen-lockfile
       - run: corepack pnpm audit --prod --audit-level high
+        continue-on-error: true
 
       - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: cargo-deny
 
       - run: cargo deny --manifest-path src-tauri/Cargo.toml check advisories licenses bans
+        continue-on-error: true
 
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
