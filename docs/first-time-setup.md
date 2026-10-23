@@ -43,9 +43,12 @@ then **Keep anyway**. That happens with any new file.
 
 The scripts do not work from inside a zip, so this step matters.
 
-1. Right-click the zip and choose **Extract All...**
-2. Click **Extract**. A normal folder with the same name opens.
-3. Check that the folder contains at least these files:
+1. Right-click the zip, choose **Properties**, tick **Unblock** at the bottom if you see it, and click
+   **OK**. This removes the "downloaded from the internet" mark so Smart App Control does not block the
+   scripts. If there is no **Unblock** box, skip this.
+2. Right-click the zip and choose **Extract All...**
+3. Click **Extract**. A normal folder with the same name opens.
+4. Check that the folder contains at least these files:
    - `DSA-Installer.cmd`
    - `Deep Server Analyzer_...-setup.exe`
    - `dsa-signing.cer`
@@ -134,13 +137,14 @@ Removing the trust does not remove the app. To uninstall it too:
 
 ## Quick problem guide
 
-| What you see                                 | What to do                                                                                        |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| Install button is greyed out                 | You opened the file from inside the zip or from a partial copy. Extract the whole zip first.      |
-| The window never opens                       | Click **Yes** on the administrator prompt. If you clicked **No**, double-click it again.          |
-| Thumbprint does not match the release page   | Stop. Download the zip again from the real Releases page.                                         |
-| Install failed                               | Read the message, then see `C:\ProgramData\DSA\trust.log`. Nothing stays trusted after a failure. |
-| Company security software blocks the scripts | Ask the security team first. The kit changes certificate stores and adds a scheduled task.        |
-| Not sure whether anything is still trusted   | Run the red button or `Remove-Trust.cmd`. It is safe to run when nothing is trusted.              |
+| What you see                                 | What to do                                                                                                    |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| "Smart App Control blocked a file"           | Unblock the files: in PowerShell run `Get-ChildItem "<kit folder>" -Recurse \| Unblock-File`, then try again. |
+| Install button is greyed out                 | You opened the file from inside the zip or from a partial copy. Extract the whole zip first.                  |
+| The window never opens                       | Click **Yes** on the administrator prompt. If you clicked **No**, double-click it again.                      |
+| Thumbprint does not match the release page   | Stop. Download the zip again from the real Releases page.                                                     |
+| Install failed                               | Read the message, then see `C:\ProgramData\DSA\trust.log`. Nothing stays trusted after a failure.             |
+| Company security software blocks the scripts | Ask the security team first. The kit changes certificate stores and adds a scheduled task.                    |
+| Not sure whether anything is still trusted   | Run the red button or `Remove-Trust.cmd`. It is safe to run when nothing is trusted.                          |
 
 For the technical details behind all of this, see [usb-install.md](usb-install.md).
