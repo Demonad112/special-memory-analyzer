@@ -165,6 +165,8 @@ jobs:
     permissions:
       contents: write
       actions: read
+      id-token: write
+      attestations: write
     steps:
       - name: Download installer and USB kit
         env:
@@ -172,6 +174,19 @@ jobs:
         run: |
           gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name Deep-Server-Analyzer-windows --dir installer
           gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name Deep-Server-Analyzer-usb-kit --dir kit
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            installer/*.exe
+            kit/*.zip
+
+      - name: Hash the release files
+        run: |
+          (cd installer && sha256sum *.exe) > SHA256SUMS-release.txt
+          (cd kit && sha256sum *.zip) >> SHA256SUMS-release.txt
+          cat SHA256SUMS-release.txt
 
       - name: Create release
         env:
@@ -185,7 +200,7 @@ jobs:
             printf 'Thumbprint (SHA-1): `%s`\n\n' "$THUMBPRINT"
             printf 'The certificate is ephemeral. Its private key was deleted after signing, so this release cannot be re-signed.\n'
           } >> "$notes"
-          gh release create "$GITHUB_REF_NAME" installer/*.exe kit/* \
+          gh release create "$GITHUB_REF_NAME" installer/*.exe kit/* SHA256SUMS-release.txt \
             --repo "$GITHUB_REPOSITORY" \
             --title "Deep Server Analyzer $GITHUB_REF_NAME" \
             --notes-file "$notes"
