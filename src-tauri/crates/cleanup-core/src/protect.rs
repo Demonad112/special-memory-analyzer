@@ -1,5 +1,5 @@
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Paths Disk Cleanup never deletes, whatever the user picks.
 ///
@@ -119,6 +119,18 @@ impl Protected {
         // The Users folder itself too.
         protected.exact.extend(protected.children_of.clone());
         protected
+    }
+
+    /// These folders and everything in them are kept too. For the app's own data folders, which
+    /// the user can move with environment variables (records, reports and the deletion log).
+    pub fn with_extra_inside(mut self, folders: impl IntoIterator<Item = PathBuf>) -> Self {
+        for folder in folders {
+            let folder = normalize(&folder.to_string_lossy());
+            if !folder.is_empty() && !self.inside.contains(&folder) {
+                self.inside.push(folder);
+            }
+        }
+        self
     }
 
     /// Ok when `path` may be deleted: it is inside the scanned folder and nothing Windows needs.
@@ -283,6 +295,25 @@ mod tests {
         assert!(wide_check(r"C:\ProgramData\Vendor\cache").is_ok());
         assert!(wide_check(r"C:\Users\Sam\AppData\Local\Temp\x.tmp").is_ok());
         assert!(wide_check(r"C:\Users\Sam\AppData\Local\Deep Server AnalyzerOld\x").is_ok());
+    }
+
+    #[test]
+    fn extra_inside_folders_are_kept_with_everything_in_them() {
+        let protected = Protected::default().with_extra_inside([
+            PathBuf::from(r"D:\Work\my-logs"),
+            PathBuf::from(r"D:\Work\my-reports\"),
+        ]);
+        let root = Path::new(r"D:\Work");
+        for path in [
+            r"D:\Work\my-logs",
+            r"D:\Work\my-logs\deletions.jsonl",
+            r"D:\Work\MY-REPORTS\a\b.json",
+        ] {
+            assert!(protected.check(Path::new(path), root).is_err(), "{path}");
+        }
+        for path in [r"D:\Work\my-logs-old\x", r"D:\Work\other\x"] {
+            assert!(protected.check(Path::new(path), root).is_ok(), "{path}");
+        }
     }
 
     #[test]

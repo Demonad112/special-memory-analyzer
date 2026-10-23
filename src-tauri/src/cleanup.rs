@@ -25,6 +25,20 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const CANCELLED: &str = "cancelled";
 const NO_RESULT: &str = "That scan is no longer available. Scan again.";
 
+/// The never-delete list for this PC, plus the app's own data folders wherever the environment
+/// variables put them, so Disk Cleanup can't delete saved records, reports or the deletion log.
+fn protected() -> Protected {
+    protected_with([
+        transfer_core::records_root(),
+        report_core::reports_root(),
+        report_core::logs_root(),
+    ])
+}
+
+fn protected_with(data_roots: impl IntoIterator<Item = PathBuf>) -> Protected {
+    Protected::for_this_pc().with_extra_inside(data_roots)
+}
+
 #[derive(Default)]
 pub struct CleanupState {
     cancel: Mutex<Option<CancelToken>>,
@@ -211,7 +225,7 @@ pub async fn cleanup_delete(
         return Err(NEEDS_ADMIN.into());
     }
     let (target, root, token) = with_tree(&state, |tree| {
-        let preview = bulk::preview(tree, &Protected::for_this_pc(), &[id]);
+        let preview = bulk::preview(tree, &protected(), &[id]);
         let item = &preview.items[0];
         if item.status != PreviewStatus::Go {
             return Err(item
@@ -316,7 +330,7 @@ fn run_logged(
     let results = bulk::run(
         targets,
         permanent,
-        &Protected::for_this_pc(),
+        &protected(),
         root,
         token,
         &mut |result| {
@@ -346,11 +360,7 @@ pub fn app_elevated() -> bool {
 #[tauri::command]
 pub async fn cleanup_junk(state: State<'_, CleanupState>) -> Result<Vec<JunkGroup>, String> {
     with_tree(&state, |tree| {
-        Ok(junk::find(
-            tree,
-            &Protected::for_this_pc(),
-            transfer_core::now_ms(),
-        ))
+        Ok(junk::find(tree, &protected(), transfer_core::now_ms()))
     })
 }
 
@@ -360,9 +370,7 @@ pub fn cleanup_delete_preview(
     state: State<'_, CleanupState>,
     ids: Vec<NodeId>,
 ) -> Result<Preview, String> {
-    with_tree(&state, |tree| {
-        Ok(bulk::preview(tree, &Protected::for_this_pc(), &ids))
-    })
+    with_tree(&state, |tree| Ok(bulk::preview(tree, &protected(), &ids)))
 }
 
 #[derive(Serialize)]
@@ -389,7 +397,7 @@ pub async fn cleanup_delete_many(
         return Err(NEEDS_ADMIN.into());
     }
     let (targets, root) = with_tree(&state, |tree| {
-        let protected = Protected::for_this_pc();
+        let protected = protected();
         let preview = bulk::preview(tree, &protected, &ids);
         let targets: Vec<Target> = preview
             .items
@@ -658,6 +666,24 @@ mod tests {
             outcome,
             message: message.map(Into::into),
         }
+    }
+
+    #[test]
+    fn the_apps_data_folders_are_protected_wherever_they_are() {
+        let root = Path::new(r"D:\Work");
+        let logs = PathBuf::from(r"D:\Work\my-logs");
+        let protected = protected_with([logs.clone(), PathBuf::from(r"D:\Work\records")]);
+
+        assert!(protected
+            .check(&logs.join("deletions.jsonl"), root)
+            .is_err());
+        assert!(protected.check(&logs, root).is_err());
+        assert!(protected
+            .check(Path::new(r"D:\Work\records\run-1"), root)
+            .is_err());
+        assert!(protected
+            .check(Path::new(r"D:\Work\other\file.bin"), root)
+            .is_ok());
     }
 
     #[test]
