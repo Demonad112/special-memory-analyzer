@@ -26,7 +26,6 @@ import {
   compareJob,
   runCompareJob,
   toggleRow,
-  errorMessage,
   formatMissingList,
   isCancelled,
   loadChildren,
@@ -119,9 +118,6 @@ describe('compare commands', () => {
   it('recognises the cancel error and other messages', () => {
     expect(isCancelled('cancelled')).toBe(true)
     expect(isCancelled('Source: nope')).toBe(false)
-    expect(errorMessage('Source: nope')).toBe('Source: nope')
-    expect(errorMessage(new Error('boom'))).toBe('boom')
-    expect(errorMessage(42)).toBe('Something went wrong.')
   })
 })
 

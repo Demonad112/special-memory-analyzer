@@ -3,6 +3,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { ref, shallowReactive, watch } from 'vue'
 import { trackJob } from './busy'
 import { formatBytes, plural } from './format'
+import { errorMessage } from './errors'
 import { currentJob } from './job'
 
 const ignoreJunkKey = 'analyzer-ignore-junk'
@@ -103,13 +104,6 @@ export const CANCELLED = 'cancelled'
 
 export function isCancelled(error: unknown): boolean {
   return error === CANCELLED
-}
-
-export function errorMessage(error: unknown): string {
-  if (typeof error === 'string') {
-    return error
-  }
-  return error instanceof Error ? error.message : 'Something went wrong.'
 }
 
 /** Scans both folders and compares them. Progress arrives about every 100 ms. */

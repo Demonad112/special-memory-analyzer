@@ -6,7 +6,8 @@ import PageHeader from '@/components/PageHeader.vue'
 import JobFields from '@/components/JobFields.vue'
 import ShareSignIn from '@/components/ShareSignIn.vue'
 import PathField from '@/components/PathField.vue'
-import { errorMessage, ignoreJunk, loadPaths, pickFolder, savePaths } from '@/lib/compare'
+import { ignoreJunk, loadPaths, pickFolder, savePaths } from '@/lib/compare'
+import { errorMessage } from '@/lib/errors'
 import { formatBytes, formatCount, plural } from '@/lib/format'
 import {
   bytesPerSecond,

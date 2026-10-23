@@ -1,7 +1,8 @@
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core'
 import { reactive, ref } from 'vue'
 import { trackJob } from './busy'
-import { errorMessage, type EntryKind, type ScanProgress } from './compare'
+import { type EntryKind, type ScanProgress } from './compare'
+import { errorMessage } from './errors'
 import { currentJob } from './job'
 
 export interface Drive {

@@ -52,7 +52,8 @@ import {
   type JunkItem,
 } from '@/lib/cleanup'
 import { copyText } from '@/lib/clipboard'
-import { cleanPath, errorMessage, pickFolder } from '@/lib/compare'
+import { cleanPath, pickFolder } from '@/lib/compare'
+import { errorMessage } from '@/lib/errors'
 import { openReport } from '@/lib/reports'
 import { categoryLabels, categoryOfExtension, type Category } from '@/lib/fileTypes'
 import { formatBytes, formatDuration, plural } from '@/lib/format'

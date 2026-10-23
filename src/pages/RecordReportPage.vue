@@ -15,7 +15,8 @@ import {
 import { computed, onMounted, ref, shallowRef, watch } from 'vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { copyText } from '@/lib/clipboard'
-import { errorMessage, pickFolder } from '@/lib/compare'
+import { pickFolder } from '@/lib/compare'
+import { errorMessage } from '@/lib/errors'
 import { formatBytes, formatCount, plural } from '@/lib/format'
 import { exportReport, openReport, type ExportFormat } from '@/lib/reports'
 import {

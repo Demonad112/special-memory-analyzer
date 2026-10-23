@@ -35,10 +35,10 @@ import PageHeader from '@/components/PageHeader.vue'
 import PathField from '@/components/PathField.vue'
 import SummaryStrip from '@/components/SummaryStrip.vue'
 import { copyText } from '@/lib/clipboard'
+import { errorMessage } from '@/lib/errors'
 import {
   cancelCompare,
   cleanPath,
-  errorMessage,
   formatMissingList,
   ignoreJunk,
   loadMissing,

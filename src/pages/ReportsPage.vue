@@ -15,7 +15,7 @@ import { isTauri } from '@tauri-apps/api/core'
 import { computed, onBeforeUnmount, onMounted, ref, type Component } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
-import { errorMessage } from '@/lib/compare'
+import { errorMessage } from '@/lib/errors'
 import { jobLabel } from '@/lib/job'
 import {
   deleteReport,
