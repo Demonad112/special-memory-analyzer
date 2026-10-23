@@ -198,48 +198,71 @@ pub fn cleanup_reveal(state: State<'_, CleanupState>, id: NodeId) -> Result<(), 
 }
 
 /// Recycles (or, when `permanent`, deletes) one item, then drops it from the scan. Returns the
-/// updated totals and lists.
+/// updated totals and lists. This is a one-item bulk delete, so it refuses links, is logged to
+/// `deletions.jsonl` and obeys the never-delete list like the bulk path does.
 #[tauri::command]
 pub async fn cleanup_delete(
     state: State<'_, CleanupState>,
     id: NodeId,
     permanent: bool,
 ) -> Result<Overview, String> {
-    if permanent && !cleanup_core::is_elevated() {
+    let elevated = cleanup_core::is_elevated();
+    if permanent && !elevated {
         return Err(NEEDS_ADMIN.into());
     }
-    let (path, root, size) = with_tree(&state, |tree| {
-        if id == 0 || !tree.is_live(id) {
-            return Err("That item is already gone. Scan again to refresh.".to_string());
+    let (target, root, token) = with_tree(&state, |tree| {
+        let preview = bulk::preview(tree, &Protected::for_this_pc(), &[id]);
+        let item = &preview.items[0];
+        if item.status != PreviewStatus::Go {
+            return Err(item
+                .reason
+                .clone()
+                .unwrap_or_else(|| "That item cannot be deleted.".into()));
         }
-        let node = tree.node(id);
-        Ok((tree.path(id), tree.path(0), node.disk))
+        let target = Target {
+            id,
+            path: PathBuf::from(&item.path),
+            size: item.size,
+        };
+        // The one-item confirmation already happened in the UI; a single huge folder must not
+        // also need the bulk token.
+        Ok((target, tree.path(0), preview.brake.map(|brake| brake.token)))
     })?;
-    Protected::for_this_pc().check(&path, &root)?;
 
-    let job_path = path.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
-        if permanent {
-            cleanup_core::delete_permanently(&job_path)
-        } else {
-            cleanup_core::recycle(&job_path)
-        }
+    let job_target = target.clone();
+    let results = tauri::async_runtime::spawn_blocking(move || {
+        bulk::run(
+            &[job_target],
+            permanent,
+            &Protected::for_this_pc(),
+            &root,
+            token.as_deref(),
+        )
     })
     .await
-    .map_err(|err| err.to_string())?;
-    // Even a failed delete can take part of a folder; only a fully gone item leaves the tree.
-    let gone = std::fs::symlink_metadata(&path).is_err();
+    .map_err(|err| err.to_string())??;
+    let result = results
+        .first()
+        .ok_or("The delete returned no result.".to_string())?;
 
+    let run = format!("run-{}", transfer_core::now_ms());
+    let entries = log_entries(&results, permanent, elevated, &run);
+    // The delete happened, so a log that can't be written doesn't fail the call.
+    if let Err(err) = log::append(&report_core::logs_root(), &entries) {
+        eprintln!("The deletion log could not be written: {err}");
+    }
+
+    let gone = matches!(result.outcome, Outcome::Done | Outcome::NotFound);
     let mut guard = lock(&state.tree)?;
     let tree = guard.as_mut().ok_or(NO_RESULT)?;
     // A new scan may have replaced the tree while Windows was deleting.
-    if gone && tree.is_live(id) && tree.path(id) == path {
+    if gone && tree.is_live(id) && tree.path(id) == target.path {
         tree.remove(id);
         if let Some(saved) = lock(&state.report)?.as_mut() {
             if let Body::DiskUsage(report) = &mut saved.body {
                 report.removed.push(Removed {
-                    path: path.display().to_string(),
-                    size,
+                    path: result.path.clone(),
+                    size: target.size,
                     permanent,
                 });
                 // The delete happened; a report that can't be updated isn't worth an error.
@@ -248,13 +271,48 @@ pub async fn cleanup_delete(
         }
     }
     if !gone {
-        outcome?;
-        return Err(format!(
-            "{} is still there. Some files in it may be open in another program.",
-            path.display()
-        ));
+        return Err(single_error(result));
     }
     Ok(cleanup_core::overview(tree))
+}
+
+/// What the page shows when a one-item delete did not take the item.
+fn single_error(result: &ItemResult) -> String {
+    let still_there = format!("{} is still there.", result.path);
+    match result.message.as_deref() {
+        None => format!("{still_there} Some files in it may be open in another program."),
+        Some(message) if message == still_there => {
+            format!("{still_there} Some files in it may be open in another program.")
+        }
+        Some(message) => message.to_string(),
+    }
+}
+
+/// One `deletions.jsonl` line for each item the run tried, all sharing the run id.
+fn log_entries(
+    results: &[ItemResult],
+    permanent: bool,
+    elevated: bool,
+    run: &str,
+) -> Vec<LogEntry> {
+    let now = transfer_core::now_ms();
+    let user = transfer_core::user_name();
+    let method = if permanent { "permanent" } else { "recycle" };
+    results
+        .iter()
+        .map(|result| LogEntry {
+            time: transfer_core::format_utc(now),
+            time_ms: now,
+            user: user.clone(),
+            elevated,
+            path: result.path.clone(),
+            size: result.size,
+            method: method.into(),
+            result: result.outcome.code().into(),
+            detail: result.message.clone(),
+            run: Some(run.to_string()),
+        })
+        .collect()
 }
 
 const NEEDS_ADMIN: &str =
@@ -345,25 +403,8 @@ pub async fn cleanup_delete_many(
     .await
     .map_err(|err| err.to_string())??;
 
-    let now = transfer_core::now_ms();
-    let run = format!("run-{now}");
-    let user = transfer_core::user_name();
-    let method = if permanent { "permanent" } else { "recycle" };
-    let entries: Vec<LogEntry> = results
-        .iter()
-        .map(|result| LogEntry {
-            time: transfer_core::format_utc(now),
-            time_ms: now,
-            user: user.clone(),
-            elevated,
-            path: result.path.clone(),
-            size: result.size,
-            method: method.into(),
-            result: result.outcome.code().into(),
-            detail: result.message.clone(),
-            run: Some(run.clone()),
-        })
-        .collect();
+    let run = format!("run-{}", transfer_core::now_ms());
+    let entries = log_entries(&results, permanent, elevated, &run);
     // The deletes happened, so a log that can't be written doesn't fail the call; the page shows it.
     let log_error = log::append(&report_core::logs_root(), &entries)
         .err()
@@ -596,4 +637,60 @@ fn run_as_admin() -> Result<(), String> {
 #[cfg(not(windows))]
 fn run_as_admin() -> Result<(), String> {
     Err("Only on Windows.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(outcome: Outcome, message: Option<&str>) -> ItemResult {
+        ItemResult {
+            id: 7,
+            path: "C:\\scan\\old".into(),
+            size: 42,
+            outcome,
+            message: message.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn every_result_becomes_one_log_line_with_the_run_and_method() {
+        let results = [
+            result(Outcome::Done, None),
+            result(Outcome::Skipped, Some("left alone")),
+        ];
+        let entries = log_entries(&results, false, true, "run-1");
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|e| e.method == "recycle" && e.elevated));
+        assert!(entries.iter().all(|e| e.run.as_deref() == Some("run-1")));
+        assert_eq!(entries[0].result, "done");
+        assert_eq!(entries[1].result, "skipped");
+        assert_eq!(entries[1].detail.as_deref(), Some("left alone"));
+        assert_eq!(entries[1].size, 42);
+        assert_eq!(
+            log_entries(&results, true, false, "r")[0].method,
+            "permanent"
+        );
+    }
+
+    #[test]
+    fn a_single_delete_that_leaves_the_item_keeps_the_old_wording() {
+        let still =
+            "C:\\scan\\old is still there. Some files in it may be open in another program.";
+        assert_eq!(single_error(&result(Outcome::Failed, None)), still);
+        assert_eq!(
+            single_error(&result(
+                Outcome::Failed,
+                Some("C:\\scan\\old is still there.")
+            )),
+            still
+        );
+        assert_eq!(
+            single_error(&result(
+                Outcome::InUse,
+                Some("x is open in another program.")
+            )),
+            "x is open in another program."
+        );
+    }
 }

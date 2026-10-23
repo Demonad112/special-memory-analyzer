@@ -643,6 +643,35 @@ mod tests {
     }
 
     #[test]
+    fn a_one_item_run_on_a_link_is_skipped_and_the_target_survives() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        write(&outside.join("precious.bin"));
+        fs::create_dir_all(&root).unwrap();
+        dir_link(&root.join("link"), &outside);
+
+        let target = Target {
+            id: 1,
+            path: root.join("link"),
+            size: 0,
+        };
+        for permanent in [false, true] {
+            let results = run(
+                std::slice::from_ref(&target),
+                permanent,
+                &Protected::default(),
+                &root,
+                None,
+            )
+            .unwrap();
+            assert_eq!(results[0].outcome, Outcome::Skipped);
+        }
+        assert!(outside.join("precious.bin").exists());
+        assert!(fs::symlink_metadata(root.join("link")).is_ok());
+    }
+
+    #[test]
     fn a_plain_parent_chain_is_not_a_reparse_ancestor() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("root");
