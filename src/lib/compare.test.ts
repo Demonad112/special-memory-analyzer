@@ -23,6 +23,9 @@ vi.mock('@tauri-apps/plugin-dialog', () => dialog)
 import {
   cancelCompare,
   cleanPath,
+  compareJob,
+  runCompareJob,
+  toggleRow,
   errorMessage,
   formatMissingList,
   isCancelled,
@@ -37,6 +40,7 @@ import {
   rowPath,
   savePaths,
   startCompare,
+  type CompareResult,
   type DiffSummary,
 } from './compare'
 
@@ -198,5 +202,67 @@ describe('missingDelta', () => {
   it('starts over for a different pair', () => {
     missingDelta(pair, 9)
     expect(missingDelta({ left: 'C:\\A', right: 'E:\\Other' }, 2)).toBeNull()
+  })
+})
+
+describe('compareJob', () => {
+  const finished = {
+    rows: [],
+    summary: { missing: 0 },
+    elapsedMs: 1,
+    reportId: null,
+  } as unknown as CompareResult
+
+  function reset(): void {
+    Object.assign(compareJob, {
+      running: false,
+      result: null,
+      error: '',
+      notice: '',
+      children: new Map(),
+      expanded: new Set(),
+      loading: new Set(),
+    })
+  }
+
+  it('keeps the result in shared state and refuses a second run while busy', async () => {
+    reset()
+    let finish: (value: CompareResult) => void = () => undefined
+    core.invoke.mockImplementationOnce(
+      () =>
+        new Promise<CompareResult>((resolve) => {
+          finish = resolve
+        }),
+    )
+    const first = runCompareJob('C:\a', 'D:\b', true)
+    expect(compareJob.running).toBe(true)
+
+    await runCompareJob('C:\a', 'D:\b', true)
+    expect(core.invoke).toHaveBeenCalledTimes(1)
+
+    finish(finished)
+    await first
+    expect(compareJob.running).toBe(false)
+    expect(compareJob.result).toBe(finished)
+    expect(compareJob.compared).toEqual({ left: 'C:\a', right: 'D:\b' })
+  })
+
+  it('drops children that arrive after a newer compare replaced the result', async () => {
+    reset()
+    compareJob.result = finished
+    let release: (rows: never[]) => void = () => undefined
+    core.invoke.mockImplementationOnce(
+      () =>
+        new Promise<never[]>((resolve) => {
+          release = resolve
+        }),
+    )
+    const pending = toggleRow(4)
+    compareJob.result = { ...finished }
+    compareJob.children = new Map()
+    release([])
+    await pending
+
+    expect(compareJob.children.has(4)).toBe(false)
   })
 })

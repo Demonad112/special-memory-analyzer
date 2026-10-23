@@ -24,6 +24,7 @@ import {
   reactive,
   ref,
   shallowRef,
+  toRef,
   watch,
 } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -40,21 +41,17 @@ import {
   errorMessage,
   formatMissingList,
   ignoreJunk,
-  isCancelled,
-  loadChildren,
   loadMissing,
   loadPaths,
   loadRecent,
-  missingDelta,
   pickFolder,
-  rememberRecent,
   revealRow,
   rowPath,
   savePaths,
-  startCompare,
+  compareJob,
+  runCompareJob,
+  toggleRow,
   type ComparePaths,
-  type CompareProgress,
-  type CompareResult,
   type DiffRow,
   type Side,
 } from '@/lib/compare'
@@ -81,17 +78,18 @@ const paths = reactive(loadPaths())
 watch(paths, () => savePaths(paths))
 const recent = ref<ComparePaths[]>(loadRecent())
 
-const running = ref(false)
-const progress = ref<CompareProgress | null>(null)
-const result = shallowRef<CompareResult | null>(null)
-const compared = ref<ComparePaths>({ left: '', right: '' })
-const finishedAt = ref<Date | null>(null)
-const error = ref('')
-const notice = ref('')
+// The compare lives in `compareJob`, so it survives leaving this page.
+const running = toRef(compareJob, 'running')
+const progress = toRef(compareJob, 'progress')
+const result = toRef(compareJob, 'result')
+const compared = toRef(compareJob, 'compared')
+const finishedAt = toRef(compareJob, 'finishedAt')
+const error = toRef(compareJob, 'error')
+const notice = toRef(compareJob, 'notice')
 
-const children = shallowRef(new Map<number, DiffRow[]>())
-const expanded = shallowRef(new Set<number>())
-const loading = shallowRef(new Set<number>())
+const children = toRef(compareJob, 'children')
+const expanded = toRef(compareJob, 'expanded')
+const loading = toRef(compareJob, 'loading')
 const filter = ref<CompareFilter>('all')
 const sort = ref<Sort>(defaultSort)
 const selected = ref<number | null>(null)
@@ -118,9 +116,22 @@ const filters: { value: CompareFilter; label: string }[] = [
 ]
 
 // Elapsed time while a compare runs.
-const startedAt = ref(0)
-const now = ref(0)
+const startedAt = toRef(compareJob, 'startedAt')
+const now = ref(Date.now())
 let ticker: ReturnType<typeof setInterval> | undefined
+watch(
+  running,
+  (active) => {
+    clearInterval(ticker)
+    if (active) {
+      now.value = Date.now()
+      ticker = setInterval(() => {
+        now.value = Date.now()
+      }, 250)
+    }
+  },
+  { immediate: true },
+)
 const elapsed = computed(() => {
   const seconds = Math.max(0, Math.floor((now.value - startedAt.value) / 1000))
   return `${String(Math.floor(seconds / 60))}:${String(seconds % 60).padStart(2, '0')}`
@@ -140,42 +151,15 @@ async function runCompare(pair?: ComparePaths): Promise<void> {
   const right = cleanPath(paths.right)
   paths.left = left
   paths.right = right
-  running.value = true
   confirmingCopy.value = false
-  error.value = ''
-  notice.value = ''
-  progress.value = null
-  result.value = null
   selected.value = null
   sort.value = defaultSort
-  children.value = new Map()
-  expanded.value = new Set()
-  loading.value = new Set()
-  startedAt.value = Date.now()
-  now.value = startedAt.value
-  ticker = setInterval(() => {
-    now.value = Date.now()
-  }, 250)
-  try {
-    result.value = await startCompare(left, right, ignoreJunk.value, (update) => {
-      progress.value = update
-    })
-    compared.value = { left, right }
-    finishedAt.value = new Date()
+  await runCompareJob(left, right, ignoreJunk.value)
+  recent.value = loadRecent()
+  if (result.value) {
     filter.value = result.value.summary.missing > 0 ? 'missing' : 'all'
-    notice.value = missingDelta({ left, right }, result.value.summary.missing) ?? ''
-    recent.value = rememberRecent({ left, right })
     await nextTick()
     resultsEl.value?.scrollIntoView({ block: 'start', behavior: 'smooth' })
-  } catch (err) {
-    if (isCancelled(err)) {
-      notice.value = 'Compare cancelled. Nothing was changed.'
-    } else {
-      error.value = errorMessage(err)
-    }
-  } finally {
-    clearInterval(ticker)
-    running.value = false
   }
 }
 
@@ -202,30 +186,10 @@ function setSort(key: Exclude<SortKey, 'size'>): void {
 }
 
 async function toggle(id: number): Promise<void> {
-  const next = new Set(expanded.value)
-  if (next.has(id)) {
-    next.delete(id)
-    expanded.value = next
-    return
-  }
-  next.add(id)
-  expanded.value = next
-  if (children.value.has(id) || loading.value.has(id)) {
-    return
-  }
-  loading.value = new Set(loading.value).add(id)
   try {
-    const loaded = await loadChildren(id)
-    children.value = new Map(children.value).set(id, loaded)
+    await toggleRow(id)
   } catch (err) {
     showToast(errorMessage(err))
-    const collapsed = new Set(expanded.value)
-    collapsed.delete(id)
-    expanded.value = collapsed
-  } finally {
-    const done = new Set(loading.value)
-    done.delete(id)
-    loading.value = done
   }
 }
 
