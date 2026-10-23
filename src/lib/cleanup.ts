@@ -164,6 +164,7 @@ async function scanFolder(path: string): Promise<void> {
     notice: '',
     reportId: null,
   })
+  navSeq++
   const onProgress = new Channel<ScanProgress>()
   onProgress.onmessage = (progress) => {
     cleanupJob.progress = progress
@@ -198,9 +199,17 @@ export function cancelScan(): Promise<void> {
   return invoke('cleanup_cancel')
 }
 
+/** Counts navigations so a slow earlier one cannot overwrite a newer one. */
+let navSeq = 0
+
 /** Shows what is inside `row`, a folder in the shown one. */
 export async function openFolder(row: CleanupRow): Promise<void> {
-  cleanupJob.rows = await invoke<CleanupRow[]>('cleanup_children', { id: row.id })
+  const seq = ++navSeq
+  const rows = await invoke<CleanupRow[]>('cleanup_children', { id: row.id })
+  if (seq !== navSeq) {
+    return
+  }
+  cleanupJob.rows = rows
   cleanupJob.trail = [...cleanupJob.trail, row]
 }
 
@@ -210,7 +219,12 @@ export async function openTrail(index: number): Promise<void> {
   if (!folder) {
     return
   }
-  cleanupJob.rows = await invoke<CleanupRow[]>('cleanup_children', { id: folder.id })
+  const seq = ++navSeq
+  const rows = await invoke<CleanupRow[]>('cleanup_children', { id: folder.id })
+  if (seq !== navSeq) {
+    return
+  }
+  cleanupJob.rows = rows
   cleanupJob.trail = cleanupJob.trail.slice(0, index + 1)
 }
 
@@ -224,7 +238,11 @@ export async function removeItem(id: number, permanent: boolean): Promise<void> 
   cleanupJob.trail = [overview.root, ...cleanupJob.trail.slice(1)]
   const shown = cleanupJob.trail.at(-1)
   if (shown) {
-    cleanupJob.rows = await invoke<CleanupRow[]>('cleanup_children', { id: shown.id })
+    const seq = ++navSeq
+    const rows = await invoke<CleanupRow[]>('cleanup_children', { id: shown.id })
+    if (seq === navSeq) {
+      cleanupJob.rows = rows
+    }
   }
 }
 
@@ -533,7 +551,11 @@ export async function removeMany(
   cleanupJob.trail = [done.overview.root, ...cleanupJob.trail.slice(1)]
   const shown = cleanupJob.trail.at(-1)
   if (shown) {
-    cleanupJob.rows = await invoke<CleanupRow[]>('cleanup_children', { id: shown.id })
+    const seq = ++navSeq
+    const rows = await invoke<CleanupRow[]>('cleanup_children', { id: shown.id })
+    if (seq === navSeq) {
+      cleanupJob.rows = rows
+    }
   }
   return done.results
 }

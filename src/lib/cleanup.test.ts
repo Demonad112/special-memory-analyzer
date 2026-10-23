@@ -144,6 +144,27 @@ describe('cleanup scan', () => {
     expect(cleanupJob.rows[0]?.name).toBe('Users')
   })
 
+  it('keeps the breadcrumb and list together when two opens overlap', async () => {
+    cleanupJob.trail = [row(0, 'C:\\', 100)]
+    cleanupJob.rows = []
+    let releaseFirst: (rows: CleanupRow[]) => void = () => undefined
+    core.invoke
+      .mockImplementationOnce(
+        () =>
+          new Promise<CleanupRow[]>((resolve) => {
+            releaseFirst = resolve
+          }),
+      )
+      .mockResolvedValueOnce([row(5, 'Docs', 10)])
+    const first = openFolder(row(1, 'Users', 100))
+    await openFolder(row(2, 'Windows', 50))
+    releaseFirst([row(3, 'Sam', 60)])
+    await first
+
+    expect(cleanupJob.trail.map((folder) => folder.name)).toEqual(['C:\\', 'Windows'])
+    expect(cleanupJob.rows.map((item) => item.name)).toEqual(['Docs'])
+  })
+
   it('refreshes totals and the shown folder after a delete', async () => {
     cleanupJob.trail = [row(0, 'C:\\', 100), row(1, 'Users', 100)]
     core.invoke.mockResolvedValueOnce(overview(40)).mockResolvedValueOnce([row(3, 'Public', 40)])
