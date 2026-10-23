@@ -1,30 +1,53 @@
-# HANDOFF: Deep Server Analyzer, audit done, B01 stopped part-way
+# HANDOFF: Deep Server Analyzer, audit fixes, B01 and B02 done, B03 next
 
 Date: 2026-10-23. Repo: `C:\Dev\projects\special-memory-analyzer` (remote `Demonad112/special-memory-analyzer`).
 
 ## Status at a glance
 
-| Item        | State                                                                                                                                                                        |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `main`      | Includes PR #17 (kit unblock guide), #18 (audit, `docs/review/`), #19 (this file) and the CLAUDE.md update. CI on `main` after #19: success (run 39906332765)                |
-| Open PRs    | [#20](https://github.com/Demonad112/special-memory-analyzer/pull/20) **draft**: B01, branch `fix/b01-safety-net`, 3 of 4 findings done. See "B01 state at the 11:50 pm stop" |
-| Releases    | `v1.1.0`, `v1.1.1` (Build installer: success), `v1.1.1-test.1` (success)                                                                                                     |
-| Uncommitted | None                                                                                                                                                                         |
+| Item        | State                                                                                                                                                                                                                                                                               |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| B01         | Done. [PR #20](https://github.com/Demonad112/special-memory-analyzer/pull/20) merged (DSA-059, 063, 020); [PR #21](https://github.com/Demonad112/special-memory-analyzer/pull/21) (DSA-069 and register marks) merged by the owner. DSA-018 skipped on purpose (vite bump, Q-deps). |
+| B02         | Done. [PR #22](https://github.com/Demonad112/special-memory-analyzer/pull/22) merged by the owner (DSA-004, 005, 019, 067).                                                                                                                                                         |
+| Next        | **B03: Delete safety I** (DSA-002, 013, 014, 016, 017, 028). Not started.                                                                                                                                                                                                           |
+| Open PRs    | None expected. Run `gh pr list --state open` to confirm.                                                                                                                                                                                                                            |
+| Uncommitted | This file only (HANDOFF.md was edited on the local `main` checkout and not committed). Nothing else is built-but-unpushed.                                                                                                                                                          |
 
-## B01 state at the 11:50 pm stop (2026-10-22)
+## Things the next session must know
 
-- **Branch:** `fix/b01-safety-net` on origin (head `58e4c1b`), [PR #20](https://github.com/Demonad112/special-memory-analyzer/pull/20) as a **draft**, not merged. The local worktree branch `Claude/b01-safety-net-27168c` (in `.claude/worktrees/b01-safety-net-27168c`) is the same commits.
-- **Done and committed:**
-  - DSA-059 (`36f021e`): `check` script
-  - DSA-063 (`4b194b5`): Rust 1.98.1 and Node 24.18.0 pinned
-  - DSA-020 (`296b201` and `58e4c1b`): CI audit job, `deny.toml`, every scanner runs
-- **Not done: DSA-069** (vitest `environment: 'node'` + jsdom pragmas). The work in progress is **uncommitted**, saved as a git stash in this repo: `B01 DSA-069 WIP: vitest environment node + jsdom pragmas (unverified)`. It covers 7 files, +7/−1. One test was failing under it and the cause wasn't found.
-  - Restore with `git stash list`, then `git stash apply stash@{N}` on the B01 branch.
-  - The stash lives in the repo's shared refs, so it survives archiving the worktree. If it's ever lost, redo the change from the register row.
-- **Also not done:** the "Fixed in" marks in `02-FINDINGS-REGISTER.md` for DSA-059, 063 and 020.
-- **Skipped by design:** DSA-018 (vite bump), pending Q-deps approval.
-- **Unverified locally:** rust:fmt:check, clippy and rust:test on the pinned toolchain. Smart App Control blocked them at first; it's now off, but the re-run was cut off. CI on PR #20 will show them.
-- **Safe to archive:** the B01 session (its commits are pushed and its WIP is stashed) and this audit session.
+- **Local Rust checks are blocked on this machine.** `cargo` build scripts fail with `Access denied (os error 5)` (fresh unsigned binaries; Smart App Control is off, so Defender ASR is the likely cause). So `clippy` and `rust:test` cannot run here, and **B03 is Rust-heavy**. Options: ask the owner to allow the repo folder in Defender/ASR, or rely on CI (`gh run view <id> --log-failed`) and say so in the PR. Do not change security settings yourself.
+- `corepack pnpm check` runs quality, vitest and `rust:test`; prettier, vue-tsc, rustfmt and vitest work locally.
+- B02 changed the kit: `-NoPrompt` now needs `-ExpectedThumbprint`. Never run `installer-kit	ests\Test-Kit.ps1 -Full` locally.
+- Use `git commit -F <file>` and end messages with the Co-Authored-By line. In PowerShell, quote stash refs (`'stash@{0}'`). Python heredocs in Git Bash mangle backslashes; use the file tools for Windows paths.
+- Work in a fresh worktree or branch from up-to-date `main`: `fix/b03-delete-safety`. The old worktree `.claude/worktrees/b01-safety-net-27168c` held B01 and B02 and can be archived once PRs #21 and #22 are merged.
+
+## Owner decisions (defaults the owner accepted for B03 onward)
+
+| Q      | Decision                                                            |
+| ------ | ------------------------------------------------------------------- |
+| Q1     | Quick cleanups stay permanent deletes, but logged (DSA-003, in B04) |
+| Q3     | Elevated use is normal, so DSA-001, 012, 015 stay High/Medium       |
+| Q-deps | No vite bump until the full build is verified; then approve         |
+| Q4     | Canonical repo is `Demonad112/special-memory-analyzer`              |
+| Q8     | No ESLint; add `@vue/test-utils` (B11)                              |
+
+The rest use the defaults in `docs/review/07-OPEN-QUESTIONS.md`.
+
+## Continuation prompt for the next session
+
+```
+Start batch BATCH = B03 (Delete safety I) of the Deep Server Analyzer audit fixes
+(C:\Dev\projects\special-memory-analyzer). PRs #21 and #22 are merged.
+
+Read CLAUDE.md, HANDOFF.md and docs/review/10-SESSION-RUNBOOK.md. Then `git switch main; git pull`,
+branch fix/b03-delete-safety, and follow docs/review/04-IMPLEMENTATION-PLAN.md (B03) and
+docs/review/05-SONNET-PROMPT.md: DSA-017, 016, ... in the plan's order, test first where marked TF,
+one commit per finding "DSA-0NN: ...", a "Fixed in <sha> (B03)" mark in 02-FINDINGS-REGISTER.md.
+Local cargo builds fail with "Access denied (os error 5)": do not retry or change security settings;
+run prettier, vue-tsc, rustfmt and vitest locally and let CI run clippy and rust:test.
+Push, open one PR (draft if unfinished, with a "Not done yet" list) and do not merge.
+Budget: I'm on a usage limit. If low, finish or stash the current ID, push, update the PR and stop.
+Never run installer-kit	ests\Test-Kit.ps1 -Full locally.
+```
 
 ## What was done this session
 
@@ -64,13 +87,6 @@ A read-only principal-engineer audit, plus a handoff for a cheaper model (Sonnet
 - `cargo audit`/`cargo deny`: not installed, not run.
 
 Not verified in this session: running the app, the kit install path, and the release workflow.
-
-## Next steps (in order)
-
-1. Done 2026-10-23: PRs #17 and #18 (audit) merged; `main` is at `4451855` (CLAUDE.md now covers the USB kit, release scripts and `docs/review/`).
-2. **Owner:** answer at least Q1, Q3 and Q-deps in `docs/review/07-OPEN-QUESTIONS.md`. Unanswered questions use the defaults written there.
-3. **Work one session at a time** following `docs/review/10-SESSION-RUNBOOK.md`: the order table, the per-session rhythm, and the two prompts (start a batch / resume a batch). Sessions run one after another, not in parallel, to keep usage within the weekly budget.
-4. First session: finish B01 (see "B01 state at the 11:50 pm stop" below), using the resume prompt.
 
 ## Rules to keep
 
