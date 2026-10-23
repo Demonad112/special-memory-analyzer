@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 import { nextTick } from 'vue'
 import { brand, currentJob, job, jobLabel, loadJob } from './job'

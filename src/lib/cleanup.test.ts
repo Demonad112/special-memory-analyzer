@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, type Component } from 'vue'
 import JunkPanel from '@/components/JunkPanel.vue'
