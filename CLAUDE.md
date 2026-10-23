@@ -14,6 +14,14 @@ corepack pnpm rust:test       # cargo test --workspace --manifest-path src-tauri
 corepack pnpm tauri dev       # dev server on port 1430
 corepack pnpm tauri build     # NSIS installer in src-tauri/target/release/bundle/nsis/
 
+# USB kit (Windows PowerShell 5.1)
+powershell -NoProfile -ExecutionPolicy Bypass -File installer-kit\tests\Test-Kit.ps1
+# -Full changes LocalMachine cert stores and adds a SYSTEM task: CI or throwaway VM only
+
+# Release (owner only)
+scripts\Set-ReleaseTag.ps1 -Version vX.Y.Z   # refuses unless CI is green on origin/main; pushing the tag starts release.yml
+scripts\Get-Release.ps1 -Version vX.Y.Z      # waits for the run, downloads and checks SHA256SUMS
+
 # GitHub
 gh pr create --fill
 gh pr view --web
@@ -27,8 +35,10 @@ Run quality and tests before opening a PR. Scope tests to the touched files when
 
 - `src/`: Vue app. `pages/` one per screen, `components/`, `lib/` plain TS helpers with a `*.test.ts` beside each, `router.ts`, `styles.css`.
 - `src-tauri/src/`: Tauri commands, one file per area (`compare.rs`, `record.rs`, `cleanup.rs`, `reports.rs`).
-- `src-tauri/crates/`: `scan-core` (folder walker and size compare), `transfer-core` (Record), `cleanup-core` (Disk Cleanup, Recycle Bin, deletion log), `report-core` (saved reports, HTML and CSV export).
-- `docs/`: notes that outlive a session (`install.md`).
+- `src-tauri/crates/`: `scan-core` (folder walker and size compare), `transfer-core` (Record), `cleanup-core` (Disk Cleanup, Recycle Bin, deletion log), `report-core` (saved reports, HTML and CSV export). Dependencies point down: report-core → scan-core + transfer-core; cleanup-core → scan-core only.
+- `installer-kit/`: USB kit (time-boxed cert trust + silent install). `DsaTrust.psm1` is the shared module; `.cmd` files are self-elevating wrappers.
+- `scripts/`: release helpers (`Set-ReleaseTag.ps1`, `Get-Release.ps1`).
+- `docs/`: notes that outlive a session (`install.md`, `usb-install.md`, `first-time-setup.md`, `windows-testing.md`). `docs/review/` holds the 2026-10 audit: findings register DSA-001..070 and the batch fix plan.
 
 ## Conventions
 
@@ -56,3 +66,5 @@ Run quality and tests before opening a PR. Scope tests to the touched files when
 - Apache-2.0 only: never copy source from GPL tools such as WinDirStat.
 - Data lives in `%LOCALAPPDATA%\Deep Server Analyzer`. Overrides: `DEEP_SERVER_ANALYZER_RECORDS_DIR`, `_REPORTS_DIR`, `_LOGS_DIR`.
 - Refresh the report explorer fixture with `UPDATE_FIXTURES=1 cargo test -p report-core explorer_fixture`.
+- A release tag `vX.Y.Z` must match `version` in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, or `release.yml` fails.
+- Releases are signed with an ephemeral self-signed cert whose key is deleted after the build: a release can never be re-signed, and there are no signing secrets in the repo.
