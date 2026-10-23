@@ -278,6 +278,12 @@ fn delete_one(
             Some("It is a shortcut or junction now, so it was left alone.".into()),
         );
     }
+    if has_reparse_ancestor(path, scan_root) {
+        return (
+            Outcome::Skipped,
+            Some("A folder above it is a shortcut or junction now, so it was left alone.".into()),
+        );
+    }
     let attempt = if permanent {
         delete_permanently(path)
     } else {
@@ -296,6 +302,17 @@ fn delete_one(
             Some(detail.unwrap_or_else(|| format!("{} is still there.", path.display()))),
         ),
     }
+}
+
+/// True when a folder between `scan_root` (exclusive) and `path` (exclusive) is a link now. The
+/// scan saw plain folders; a swapped parent would send the delete through to another place.
+fn has_reparse_ancestor(path: &Path, scan_root: &Path) -> bool {
+    // Compare depths, not prefixes, so a differently cased root still stops the walk.
+    let root_depth = scan_root.components().count();
+    path.ancestors()
+        .skip(1)
+        .take_while(|ancestor| ancestor.components().count() > root_depth)
+        .any(is_reparse_point)
 }
 
 /// True for a symlink or junction (a Windows reparse point).
@@ -593,6 +610,45 @@ mod tests {
             .output()
             .unwrap();
         assert!(status.status.success(), "mklink /J failed");
+    }
+
+    /// A directory link: a junction on Windows, a symlink elsewhere.
+    fn dir_link(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        junction(link, target);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[test]
+    fn a_parent_swapped_for_a_link_after_the_scan_is_refused_and_the_other_folder_is_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let other = temp.path().join("other");
+        write(&root.join("a/b/file.bin"));
+        write(&other.join("b/file.bin"));
+        let target = Target {
+            id: 1,
+            path: root.join("a/b/file.bin"),
+            size: 5000,
+        };
+
+        // Scan time: `a` is a plain folder. Delete time: it has become a link to `other`.
+        fs::remove_dir_all(root.join("a")).unwrap();
+        dir_link(&root.join("a"), &other);
+
+        let results = run(&[target], true, &Protected::default(), &root, None).unwrap();
+        assert_eq!(results[0].outcome, Outcome::Skipped);
+        assert!(other.join("b/file.bin").exists());
+    }
+
+    #[test]
+    fn a_plain_parent_chain_is_not_a_reparse_ancestor() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        write(&root.join("a/b/file.bin"));
+        assert!(!has_reparse_ancestor(&root.join("a/b/file.bin"), &root));
+        assert!(!has_reparse_ancestor(&root.join("a"), &root));
     }
 
     #[cfg(windows)]
