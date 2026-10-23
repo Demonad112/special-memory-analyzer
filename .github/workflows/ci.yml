@@ -64,3 +64,36 @@ jobs:
       # 0.01 h (36 s) window and a throwaway certificate. Test-Kit removes its own trust in a finally block.
       - name: Test the kit end to end
         run: powershell -NoProfile -ExecutionPolicy Bypass -File installer-kit\tests\Test-Kit.ps1 -Full
+
+  audit:
+    name: Dependency and secret scan
+    runs-on: ubuntu-latest
+    # Non-blocking while the known vite advisories (DSA-018) are open.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: corepack enable
+      - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm audit --prod --audit-level high
+
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-deny
+
+      - run: cargo deny --manifest-path src-tauri/Cargo.toml check advisories licenses bans
+
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
