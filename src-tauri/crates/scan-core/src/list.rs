@@ -132,9 +132,19 @@ fn std_is_cloud(_metadata: &fs::Metadata) -> bool {
     false
 }
 
+/// Reparse tag bit 0x2000_0000: the point redirects to another name (junction, symlink, WSL
+/// symlink, app-exec link). Cloud placeholders (`0x9000_xxxx`) and WOF do not set it.
+const TAG_NAME_SURROGATE: u32 = 0x2000_0000;
+
+/// True when a reparse tag is a link the walk must not follow.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_link_tag(tag: u32) -> bool {
+    tag & TAG_NAME_SURROGATE != 0
+}
+
 #[cfg(windows)]
 mod nt {
-    use super::{plain, Entry, Listing};
+    use super::{is_link_tag, plain, Entry, Listing};
     use crate::scan::Kind;
     use std::ffi::{c_void, OsString};
     use std::io;
@@ -163,8 +173,6 @@ mod nt {
     const ATTR_COMPRESSED: u32 = 0x800;
     /// Offline, recall-on-open and recall-on-data-access: the data is in the cloud.
     pub const CLOUD_ATTRIBUTES: u32 = 0x1000 | 0x4_0000 | 0x40_0000;
-    const TAG_MOUNT_POINT: u32 = 0xA000_0003;
-    const TAG_SYMLINK: u32 = 0xA000_000C;
     /// Windows Overlay Filter: a compressed file whose directory entry shows no allocation.
     const TAG_WOF: u32 = 0x8000_0017;
 
@@ -364,7 +372,7 @@ mod nt {
                 } else {
                     0
                 };
-                let is_link = matches!(reparse_tag, TAG_MOUNT_POINT | TAG_SYMLINK);
+                let is_link = is_link_tag(reparse_tag);
                 if is_link {
                     out.push(plain(name, Kind::Link));
                 } else if attrs & ATTR_DIRECTORY != 0 {
@@ -414,5 +422,24 @@ mod nt {
             cloud,
             file_id: read_u64(bytes, at + 72),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_link_tag;
+
+    #[test]
+    fn name_surrogate_tags_are_links() {
+        assert!(is_link_tag(0xA000_0003), "mount point");
+        assert!(is_link_tag(0xA000_000C), "symlink");
+        assert!(is_link_tag(0xA000_001D), "WSL symlink");
+    }
+
+    #[test]
+    fn cloud_wof_and_plain_files_are_not_links() {
+        assert!(!is_link_tag(0x9000_601A), "OneDrive placeholder");
+        assert!(!is_link_tag(0x8000_0017), "WOF");
+        assert!(!is_link_tag(0), "no reparse point");
     }
 }
