@@ -12,6 +12,6 @@ mod scan;
 pub use diff::{
     compare, DiffNode, DiffRow, DiffSide, DiffStatus, DiffSummary, DiffTree, MissingEntry, Side,
 };
-pub use paths::{check_pair, clean_path};
+pub use paths::{canonical_root, check_pair, clean_path, strip_verbatim};
 pub use portable::{data_dir_in, portable_data_dir, PORTABLE_MARKER};
 pub use scan::{scan, CancelToken, Kind, Node, NodeId, ScanError, ScanProgress, ScanState, Tree};

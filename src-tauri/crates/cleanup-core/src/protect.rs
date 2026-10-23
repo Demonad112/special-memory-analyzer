@@ -118,6 +118,14 @@ impl Protected {
         };
         // The Users folder itself too.
         protected.exact.extend(protected.children_of.clone());
+        // Short-name and `subst` spellings of the bases resolve to the same long path.
+        for list in [
+            &mut protected.inside,
+            &mut protected.exact,
+            &mut protected.children_of,
+        ] {
+            add_canonical(list);
+        }
         protected
     }
 
@@ -133,10 +141,45 @@ impl Protected {
         self
     }
 
+    /// Whether a normalized path is a protected folder, inside one, or a profile under Users.
+    fn is_kept(&self, path: &str) -> bool {
+        self.inside.iter().any(|base| within(path, base))
+            || self.exact.iter().any(|base| base == path)
+            || self
+                .children_of
+                .iter()
+                .any(|base| parent(path) == Some(base.as_str()))
+    }
+
+    /// True for a folder that must never be a cleanup target itself: a protected folder, a
+    /// profile, a drive root or the Windows folder. What is inside a protected base (such as
+    /// `%SystemRoot%\Temp`) is not a root.
+    pub fn is_protected_root(&self, path: &Path) -> bool {
+        let normal = normalize(&path.to_string_lossy());
+        let resolved = scan_core::canonical_root(path)
+            .ok()
+            .map(|path| normalize(&path.to_string_lossy()));
+        [Some(normal), resolved].into_iter().flatten().any(|path| {
+            let drive_root = path.len() == 2 && path.ends_with(':');
+            drive_root
+                || path.is_empty()
+                || self.exact.contains(&path)
+                || self.inside.contains(&path)
+                || self
+                    .children_of
+                    .iter()
+                    .any(|base| parent(&path) == Some(base.as_str()))
+        })
+    }
+
     /// Ok when `path` may be deleted: it is inside the scanned folder and nothing Windows needs.
     pub fn check(&self, path: &Path, scan_root: &Path) -> Result<(), String> {
+        let scan_path = path;
         let path = normalize(&path.to_string_lossy());
         let root = normalize(&scan_root.to_string_lossy());
+        if path.starts_with("globalroot") || path.starts_with("volume{") {
+            return Err(KEPT.into());
+        }
         if path == root || !within(&path, &root) {
             return Err("Only items inside the scanned folder can be deleted.".into());
         }
@@ -150,17 +193,37 @@ impl Protected {
         if system_folder || SYSTEM_NAMES.contains(&name) {
             return Err(KEPT.into());
         }
-        let protected = self.inside.iter().any(|base| within(&path, base))
-            || self.exact.contains(&path)
-            || self
-                .children_of
-                .iter()
-                .any(|base| parent(&path) == Some(base.as_str()));
-        if protected {
+        // Also by the name the parent resolves to, so 8.3 short names and `subst` drives match
+        // the same protected folders as the long form.
+        let resolved = resolved_parent(scan_path);
+        if self.is_kept(&path) || resolved.as_deref().is_some_and(|path| self.is_kept(path)) {
             return Err(KEPT.into());
         }
         Ok(())
     }
+}
+
+/// Adds the canonical spelling of every folder that exists, keeping the raw one too.
+fn add_canonical(list: &mut Vec<String>) {
+    let extra: Vec<String> = list
+        .iter()
+        .filter_map(|base| scan_core::canonical_root(Path::new(base)).ok())
+        .map(|path| normalize(&path.to_string_lossy()))
+        .filter(|path| !list.contains(path))
+        .collect();
+    for path in extra {
+        if !list.contains(&path) {
+            list.push(path);
+        }
+    }
+}
+
+/// `path` with its parent folder resolved (short names, `subst`, links); the last name is kept
+/// as written, so a link itself is judged as the link. None when the parent does not resolve.
+fn resolved_parent(path: &Path) -> Option<String> {
+    let name = path.file_name()?;
+    let parent = scan_core::canonical_root(path.parent()?).ok()?;
+    Some(normalize(&parent.join(name).to_string_lossy()))
 }
 
 /// Names of the folders in the profile that start with a dot.
@@ -179,6 +242,9 @@ fn dot_folders_in(profile: Option<&str>) -> Vec<String> {
 /// Lowercase, backslashes, no trailing backslash, no `\\?\` prefix.
 fn normalize(path: &str) -> String {
     let path = path.trim().replace('/', "\\").to_lowercase();
+    if let Some(rest) = path.strip_prefix("\\\\?\\unc\\") {
+        return format!("\\\\{}", rest.trim_end_matches('\\'));
+    }
     let path = path.strip_prefix("\\\\?\\").unwrap_or(&path);
     path.trim_end_matches('\\').to_string()
 }
@@ -462,5 +528,97 @@ mod tests {
             assert!(reason.contains("Storage settings"), "{path}: {reason}");
         }
         assert!(check(r"C:\Windows.older\x", r"C:\").is_ok());
+    }
+
+    #[test]
+    fn verbatim_unc_and_device_spellings_do_not_slip_past() {
+        let protected = Protected::new(&[r"\\server\share\Windows"], &[], &[]);
+        let root = Path::new(r"\\server\share");
+        assert!(protected
+            .check(Path::new(r"\\?\UNC\server\share\Windows\x"), root)
+            .is_err());
+        assert!(protected
+            .check(Path::new(r"\\?\UNC\server\share\Data\x"), root)
+            .is_ok());
+        let any = Protected::default();
+        for path in [
+            r"\\?\GLOBALROOT\Device\HarddiskVolume3\Windows\x",
+            r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\Windows\x",
+        ] {
+            assert!(any.check(Path::new(path), Path::new(path)).is_err());
+            assert!(
+                any.check(Path::new(path), Path::new(r"\\?\GLOBALROOT"))
+                    .is_err(),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_protected_root_is_a_base_itself_not_a_path_inside_one() {
+        let this_pc = Protected::from_env(&|name| match name {
+            "SystemRoot" => Some(r"C:\Windows".into()),
+            "USERPROFILE" => Some(r"C:\Users\Sam".into()),
+            "LOCALAPPDATA" => Some(r"C:\Users\Sam\AppData\Local".into()),
+            _ => sam(name),
+        });
+        for path in [
+            r"C:\",
+            r"C:",
+            r"C:\Windows",
+            r"C:\WINDOWS\",
+            r"C:\Users",
+            r"C:\Users\Sam",
+            r"C:\Users\Alex",
+            r"C:\Users\Sam\Documents",
+            r"C:\Users\Sam\AppData\Local",
+        ] {
+            assert!(this_pc.is_protected_root(Path::new(path)), "{path}");
+        }
+        for path in [
+            r"C:\Windows\Temp",
+            r"C:\Users\Sam\AppData\Local\Temp",
+            r"D:\Data",
+        ] {
+            assert!(!this_pc.is_protected_root(Path::new(path)), "{path}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_8_3_short_name_of_a_protected_folder_is_refused() {
+        let protected = Protected::from_env(&|name| match name {
+            "ProgramFiles" => Some(r"C:\Program Files".into()),
+            _ => None,
+        });
+        let short = Path::new(r"C:\PROGRA~1\Vendor\app.exe");
+        assert!(protected.check(short, Path::new(r"C:\PROGRA~1")).is_err());
+        assert!(protected.check(short, Path::new(r"C:\")).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_subst_drive_onto_the_windows_folder_is_refused() {
+        use std::process::Command;
+        struct Subst(&'static str);
+        impl Drop for Subst {
+            fn drop(&mut self) {
+                let _ = Command::new("subst").args([self.0, "/D"]).status();
+            }
+        }
+        let letter = "Z:";
+        let windows = env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        // A stale mapping from an earlier crashed run would make the next call fail.
+        let _ = Command::new("subst").args([letter, "/D"]).status();
+        let made = Command::new("subst").args([letter, &windows]).status();
+        if !made.is_ok_and(|status| status.success()) {
+            eprintln!("subst is not available here; skipping");
+            return;
+        }
+        let _guard = Subst(letter);
+        let protected =
+            Protected::from_env(&|name| (name == "SystemRoot").then(|| windows.clone()));
+        let item = Path::new(r"Z:\System32\x");
+        assert!(protected.check(item, Path::new(r"Z:\")).is_err());
     }
 }

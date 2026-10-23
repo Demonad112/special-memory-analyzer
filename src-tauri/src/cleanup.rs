@@ -75,6 +75,9 @@ pub async fn cleanup_scan(
     if path.as_os_str().is_empty() {
         return Err("Pick a drive or folder to scan.".into());
     }
+    // One canonical form for the tree root, so every later never-delete check sees the real
+    // folder whatever name the user typed (short name, admin share, subst drive).
+    let path = scan_core::canonical_root(&path)?;
     let cancel = CancelToken::new();
     if let Some(previous) = lock(&state.cancel)?.replace(cancel.clone()) {
         previous.cancel();
