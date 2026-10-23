@@ -13,7 +13,7 @@ use report_core::{
 };
 use scan_core::{clean_path, scan, CancelToken, NodeId, ScanProgress, ScanState, Tree};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -230,27 +230,15 @@ pub async fn cleanup_delete(
     })?;
 
     let job_target = target.clone();
-    let results = tauri::async_runtime::spawn_blocking(move || {
-        bulk::run(
-            &[job_target],
-            permanent,
-            &Protected::for_this_pc(),
-            &root,
-            token.as_deref(),
-        )
+    // The log line is written by run_logged; the one-item page has nowhere to show a log error.
+    let (results, _) = tauri::async_runtime::spawn_blocking(move || {
+        run_logged(&[job_target], permanent, elevated, &root, token.as_deref())
     })
     .await
     .map_err(|err| err.to_string())??;
     let result = results
         .first()
         .ok_or("The delete returned no result.".to_string())?;
-
-    let run = format!("run-{}", transfer_core::now_ms());
-    let entries = log_entries(&results, permanent, elevated, &run);
-    // The delete happened, so a log that can't be written doesn't fail the call.
-    if let Err(err) = log::append(&report_core::logs_root(), &entries) {
-        eprintln!("The deletion log could not be written: {err}");
-    }
 
     let gone = matches!(result.outcome, Outcome::Done | Outcome::NotFound);
     let mut guard = lock(&state.tree)?;
@@ -288,31 +276,61 @@ fn single_error(result: &ItemResult) -> String {
     }
 }
 
-/// One `deletions.jsonl` line for each item the run tried, all sharing the run id.
-fn log_entries(
-    results: &[ItemResult],
+/// One `deletions.jsonl` line for an item the run tried.
+fn log_entry(
+    result: &ItemResult,
     permanent: bool,
     elevated: bool,
     run: &str,
-) -> Vec<LogEntry> {
+    user: &str,
+) -> LogEntry {
     let now = transfer_core::now_ms();
+    LogEntry {
+        time: transfer_core::format_utc(now),
+        time_ms: now,
+        user: user.to_string(),
+        elevated,
+        path: result.path.clone(),
+        size: result.size,
+        method: if permanent { "permanent" } else { "recycle" }.into(),
+        result: result.outcome.code().into(),
+        detail: result.message.clone(),
+        run: Some(run.to_string()),
+    }
+}
+
+/// Runs the deletes and appends each item's log line as soon as that item is done, so a crash
+/// or kill mid-run still leaves a record of what went. The deletes happened whether or not the
+/// log could be written, so a failed append is returned beside the results, not as an error.
+fn run_logged(
+    targets: &[Target],
+    permanent: bool,
+    elevated: bool,
+    root: &Path,
+    token: Option<&str>,
+) -> Result<(Vec<ItemResult>, Option<String>), String> {
+    let logs = report_core::logs_root();
+    let run = format!("run-{}", transfer_core::now_ms());
     let user = transfer_core::user_name();
-    let method = if permanent { "permanent" } else { "recycle" };
-    results
-        .iter()
-        .map(|result| LogEntry {
-            time: transfer_core::format_utc(now),
-            time_ms: now,
-            user: user.clone(),
-            elevated,
-            path: result.path.clone(),
-            size: result.size,
-            method: method.into(),
-            result: result.outcome.code().into(),
-            detail: result.message.clone(),
-            run: Some(run.to_string()),
-        })
-        .collect()
+    let mut log_error = None;
+    let results = bulk::run(
+        targets,
+        permanent,
+        &Protected::for_this_pc(),
+        root,
+        token,
+        &mut |result| {
+            let entry = log_entry(result, permanent, elevated, &run, &user);
+            if let Err(err) = log::append(&logs, std::slice::from_ref(&entry)) {
+                log_error
+                    .get_or_insert_with(|| format!("The deletion log could not be written: {err}"));
+            }
+        },
+    )?;
+    if let Some(message) = &log_error {
+        eprintln!("{message}");
+    }
+    Ok((results, log_error))
 }
 
 const NEEDS_ADMIN: &str =
@@ -390,28 +408,17 @@ pub async fn cleanup_delete_many(
     }
 
     let job_targets = targets.clone();
-    let job_root = root.clone();
-    let results = tauri::async_runtime::spawn_blocking(move || {
-        bulk::run(
+    let (results, log_error) = tauri::async_runtime::spawn_blocking(move || {
+        run_logged(
             &job_targets,
             permanent,
-            &Protected::for_this_pc(),
-            &job_root,
+            elevated,
+            &root,
             confirm_token.as_deref(),
         )
     })
     .await
     .map_err(|err| err.to_string())??;
-
-    let run = format!("run-{}", transfer_core::now_ms());
-    let entries = log_entries(&results, permanent, elevated, &run);
-    // The deletes happened, so a log that can't be written doesn't fail the call; the page shows it.
-    let log_error = log::append(&report_core::logs_root(), &entries)
-        .err()
-        .map(|err| format!("The deletion log could not be written: {err}"));
-    if let Some(message) = &log_error {
-        eprintln!("{message}");
-    }
 
     let mut guard = lock(&state.tree)?;
     let tree = guard.as_mut().ok_or(NO_RESULT)?;
@@ -654,21 +661,18 @@ mod tests {
     }
 
     #[test]
-    fn every_result_becomes_one_log_line_with_the_run_and_method() {
-        let results = [
-            result(Outcome::Done, None),
-            result(Outcome::Skipped, Some("left alone")),
-        ];
-        let entries = log_entries(&results, false, true, "run-1");
-        assert_eq!(entries.len(), 2);
-        assert!(entries.iter().all(|e| e.method == "recycle" && e.elevated));
-        assert!(entries.iter().all(|e| e.run.as_deref() == Some("run-1")));
-        assert_eq!(entries[0].result, "done");
-        assert_eq!(entries[1].result, "skipped");
-        assert_eq!(entries[1].detail.as_deref(), Some("left alone"));
-        assert_eq!(entries[1].size, 42);
+    fn a_result_becomes_a_log_line_with_the_run_and_method() {
+        let skipped = result(Outcome::Skipped, Some("left alone"));
+        let entry = log_entry(&skipped, false, true, "run-1", "tech");
+        assert_eq!((entry.method.as_str(), entry.elevated), ("recycle", true));
+        assert_eq!(entry.run.as_deref(), Some("run-1"));
+        assert_eq!(entry.user, "tech");
+        assert_eq!(entry.result, "skipped");
+        assert_eq!(entry.detail.as_deref(), Some("left alone"));
+        assert_eq!(entry.size, 42);
+        let done = result(Outcome::Done, None);
         assert_eq!(
-            log_entries(&results, true, false, "r")[0].method,
+            log_entry(&done, true, false, "r", "tech").method,
             "permanent"
         );
     }

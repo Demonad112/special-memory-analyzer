@@ -223,12 +223,15 @@ pub struct ItemResult {
 ///
 /// A run over [`BRAKE_ITEMS`] items or [`BRAKE_BYTES`] bytes is refused, before anything is
 /// touched, unless `token` is the one [`preview`] issued for these same targets.
+///
+/// `on_result` is called with each item's result right after that item was tried.
 pub fn run(
     targets: &[Target],
     permanent: bool,
     protected: &Protected,
     scan_root: &Path,
     token: Option<&str>,
+    on_result: &mut dyn FnMut(&ItemResult),
 ) -> Result<Vec<ItemResult>, String> {
     let size = targets.iter().map(|target| target.size).sum();
     if needs_brake(targets.len() as u64, size) {
@@ -244,19 +247,21 @@ pub fn run(
             ));
         }
     }
-    Ok(targets
-        .iter()
-        .map(|target| {
-            let (outcome, message) = delete_one(target, permanent, protected, scan_root);
-            ItemResult {
-                id: target.id,
-                path: target.path.display().to_string(),
-                size: target.size,
-                outcome,
-                message,
-            }
-        })
-        .collect())
+    let mut results = Vec::with_capacity(targets.len());
+    for target in targets {
+        let (outcome, message) = delete_one(target, permanent, protected, scan_root);
+        let result = ItemResult {
+            id: target.id,
+            path: target.path.display().to_string(),
+            size: target.size,
+            outcome,
+            message,
+        };
+        // Reported as each item finishes, so a crash mid-run still leaves a record of what went.
+        on_result(&result);
+        results.push(result);
+    }
+    Ok(results)
 }
 
 fn delete_one(
@@ -456,6 +461,7 @@ mod tests {
             &protected,
             root,
             None,
+            &mut |_| {},
         )
         .unwrap();
         let outcomes: Vec<Outcome> = results.iter().map(|result| result.outcome).collect();
@@ -487,6 +493,7 @@ mod tests {
             &Protected::default(),
             temp.path(),
             None,
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(results[0].outcome, Outcome::Skipped);
@@ -526,6 +533,7 @@ mod tests {
             &Protected::default(),
             temp.path(),
             None,
+            &mut |_| {},
         )
         .unwrap();
         assert!(results.iter().all(|result| result.outcome == Outcome::Done));
@@ -545,13 +553,29 @@ mod tests {
         let all = targets(&tree, picked);
 
         // No token, a made-up one, and one issued for a different selection: nothing is touched.
-        assert!(run(&all, true, &protected, root, None).is_err());
-        assert!(run(&all, true, &protected, root, Some("nope")).is_err());
+        assert!(run(&all, true, &protected, root, None, &mut |_| {}).is_err());
+        assert!(run(&all, true, &protected, root, Some("nope"), &mut |_| {}).is_err());
         let other = preview(&tree, &protected, &ids[1..]).brake.unwrap();
-        assert!(run(&all, true, &protected, root, Some(&other.token)).is_err());
+        assert!(run(
+            &all,
+            true,
+            &protected,
+            root,
+            Some(&other.token),
+            &mut |_| {}
+        )
+        .is_err());
         assert!(root.join("f0.bin").exists() && root.join("f200.bin").exists());
 
-        let results = run(&all, true, &protected, root, Some(&brake.token)).unwrap();
+        let results = run(
+            &all,
+            true,
+            &protected,
+            root,
+            Some(&brake.token),
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(results.len(), 201);
         assert!(results.iter().all(|result| result.outcome == Outcome::Done));
         assert!(!root.join("f0.bin").exists() && root.join("f201.bin").exists());
@@ -572,12 +596,12 @@ mod tests {
             big("a.bin", BRAKE_BYTES / 2 + 1),
             big("b.bin", BRAKE_BYTES / 2),
         ];
-        assert!(run(&two, true, &Protected::default(), root, None).is_err());
+        assert!(run(&two, true, &Protected::default(), root, None, &mut |_| {}).is_err());
         assert!(root.join("a.bin").exists() && root.join("b.bin").exists());
 
         // Exactly 1 GiB is not over it.
         let two = [big("a.bin", BRAKE_BYTES / 2), big("b.bin", BRAKE_BYTES / 2)];
-        assert!(run(&two, true, &Protected::default(), root, None).is_ok());
+        assert!(run(&two, true, &Protected::default(), root, None, &mut |_| {}).is_ok());
     }
 
     #[test]
@@ -637,7 +661,15 @@ mod tests {
         fs::remove_dir_all(root.join("a")).unwrap();
         dir_link(&root.join("a"), &other);
 
-        let results = run(&[target], true, &Protected::default(), &root, None).unwrap();
+        let results = run(
+            &[target],
+            true,
+            &Protected::default(),
+            &root,
+            None,
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(results[0].outcome, Outcome::Skipped);
         assert!(other.join("b/file.bin").exists());
     }
@@ -663,12 +695,53 @@ mod tests {
                 &Protected::default(),
                 &root,
                 None,
+                &mut |_| {},
             )
             .unwrap();
             assert_eq!(results[0].outcome, Outcome::Skipped);
         }
         assert!(outside.join("precious.bin").exists());
         assert!(fs::symlink_metadata(root.join("link")).is_ok());
+    }
+
+    #[test]
+    fn each_result_is_reported_as_soon_as_its_item_is_done() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("first.bin"));
+        write(&root.join("second.bin"));
+        let targets = [
+            Target {
+                id: 1,
+                path: root.join("first.bin"),
+                size: 5000,
+            },
+            Target {
+                id: 2,
+                path: root.join("second.bin"),
+                size: 5000,
+            },
+        ];
+
+        let mut seen = Vec::new();
+        let results = run(
+            &targets,
+            true,
+            &Protected::default(),
+            root,
+            None,
+            &mut |result| {
+                // At this point the item just handled is gone and the next one is not touched yet.
+                seen.push((
+                    result.id,
+                    root.join("first.bin").exists(),
+                    root.join("second.bin").exists(),
+                ));
+            },
+        )
+        .unwrap();
+        assert_eq!(seen, [(1, false, true), (2, false, false)]);
+        assert_eq!(results.len(), 2);
     }
 
     #[test]
@@ -707,6 +780,7 @@ mod tests {
             &Protected::default(),
             &root,
             None,
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(results[0].outcome, Outcome::Skipped);
@@ -740,6 +814,7 @@ mod tests {
             &Protected::default(),
             root,
             None,
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(results[0].outcome, Outcome::Done);
@@ -780,6 +855,7 @@ mod tests {
             &Protected::default(),
             root,
             None,
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(results[0].outcome, Outcome::InUse);
