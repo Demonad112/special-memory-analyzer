@@ -223,12 +223,15 @@ pub struct ItemResult {
 ///
 /// A run over [`BRAKE_ITEMS`] items or [`BRAKE_BYTES`] bytes is refused, before anything is
 /// touched, unless `token` is the one [`preview`] issued for these same targets.
+///
+/// `on_result` is called with each item's result right after that item was tried.
 pub fn run(
     targets: &[Target],
     permanent: bool,
     protected: &Protected,
     scan_root: &Path,
     token: Option<&str>,
+    on_result: &mut dyn FnMut(&ItemResult),
 ) -> Result<Vec<ItemResult>, String> {
     let size = targets.iter().map(|target| target.size).sum();
     if needs_brake(targets.len() as u64, size) {
@@ -244,19 +247,21 @@ pub fn run(
             ));
         }
     }
-    Ok(targets
-        .iter()
-        .map(|target| {
-            let (outcome, message) = delete_one(target, permanent, protected, scan_root);
-            ItemResult {
-                id: target.id,
-                path: target.path.display().to_string(),
-                size: target.size,
-                outcome,
-                message,
-            }
-        })
-        .collect())
+    let mut results = Vec::with_capacity(targets.len());
+    for target in targets {
+        let (outcome, message) = delete_one(target, permanent, protected, scan_root);
+        let result = ItemResult {
+            id: target.id,
+            path: target.path.display().to_string(),
+            size: target.size,
+            outcome,
+            message,
+        };
+        // Reported as each item finishes, so a crash mid-run still leaves a record of what went.
+        on_result(&result);
+        results.push(result);
+    }
+    Ok(results)
 }
 
 fn delete_one(
@@ -276,6 +281,12 @@ fn delete_one(
         return (
             Outcome::Skipped,
             Some("It is a shortcut or junction now, so it was left alone.".into()),
+        );
+    }
+    if has_reparse_ancestor(path, scan_root) {
+        return (
+            Outcome::Skipped,
+            Some("A folder above it is a shortcut or junction now, so it was left alone.".into()),
         );
     }
     let attempt = if permanent {
@@ -298,8 +309,19 @@ fn delete_one(
     }
 }
 
+/// True when a folder between `scan_root` (exclusive) and `path` (exclusive) is a link now. The
+/// scan saw plain folders; a swapped parent would send the delete through to another place.
+fn has_reparse_ancestor(path: &Path, scan_root: &Path) -> bool {
+    // Compare depths, not prefixes, so a differently cased root still stops the walk.
+    let root_depth = scan_root.components().count();
+    path.ancestors()
+        .skip(1)
+        .take_while(|ancestor| ancestor.components().count() > root_depth)
+        .any(is_reparse_point)
+}
+
 /// True for a symlink or junction (a Windows reparse point).
-pub fn is_reparse_point(path: &Path) -> bool {
+pub(crate) fn is_reparse_point(path: &Path) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -439,6 +461,7 @@ mod tests {
             &protected,
             root,
             None,
+            &mut |_| {},
         )
         .unwrap();
         let outcomes: Vec<Outcome> = results.iter().map(|result| result.outcome).collect();
@@ -470,6 +493,7 @@ mod tests {
             &Protected::default(),
             temp.path(),
             None,
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(results[0].outcome, Outcome::Skipped);
@@ -509,6 +533,7 @@ mod tests {
             &Protected::default(),
             temp.path(),
             None,
+            &mut |_| {},
         )
         .unwrap();
         assert!(results.iter().all(|result| result.outcome == Outcome::Done));
@@ -528,13 +553,29 @@ mod tests {
         let all = targets(&tree, picked);
 
         // No token, a made-up one, and one issued for a different selection: nothing is touched.
-        assert!(run(&all, true, &protected, root, None).is_err());
-        assert!(run(&all, true, &protected, root, Some("nope")).is_err());
+        assert!(run(&all, true, &protected, root, None, &mut |_| {}).is_err());
+        assert!(run(&all, true, &protected, root, Some("nope"), &mut |_| {}).is_err());
         let other = preview(&tree, &protected, &ids[1..]).brake.unwrap();
-        assert!(run(&all, true, &protected, root, Some(&other.token)).is_err());
+        assert!(run(
+            &all,
+            true,
+            &protected,
+            root,
+            Some(&other.token),
+            &mut |_| {}
+        )
+        .is_err());
         assert!(root.join("f0.bin").exists() && root.join("f200.bin").exists());
 
-        let results = run(&all, true, &protected, root, Some(&brake.token)).unwrap();
+        let results = run(
+            &all,
+            true,
+            &protected,
+            root,
+            Some(&brake.token),
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(results.len(), 201);
         assert!(results.iter().all(|result| result.outcome == Outcome::Done));
         assert!(!root.join("f0.bin").exists() && root.join("f201.bin").exists());
@@ -555,12 +596,12 @@ mod tests {
             big("a.bin", BRAKE_BYTES / 2 + 1),
             big("b.bin", BRAKE_BYTES / 2),
         ];
-        assert!(run(&two, true, &Protected::default(), root, None).is_err());
+        assert!(run(&two, true, &Protected::default(), root, None, &mut |_| {}).is_err());
         assert!(root.join("a.bin").exists() && root.join("b.bin").exists());
 
         // Exactly 1 GiB is not over it.
         let two = [big("a.bin", BRAKE_BYTES / 2), big("b.bin", BRAKE_BYTES / 2)];
-        assert!(run(&two, true, &Protected::default(), root, None).is_ok());
+        assert!(run(&two, true, &Protected::default(), root, None, &mut |_| {}).is_ok());
     }
 
     #[test]
@@ -595,6 +636,123 @@ mod tests {
         assert!(status.status.success(), "mklink /J failed");
     }
 
+    /// A directory link: a junction on Windows, a symlink elsewhere.
+    fn dir_link(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        junction(link, target);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[test]
+    fn a_parent_swapped_for_a_link_after_the_scan_is_refused_and_the_other_folder_is_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let other = temp.path().join("other");
+        write(&root.join("a/b/file.bin"));
+        write(&other.join("b/file.bin"));
+        let target = Target {
+            id: 1,
+            path: root.join("a/b/file.bin"),
+            size: 5000,
+        };
+
+        // Scan time: `a` is a plain folder. Delete time: it has become a link to `other`.
+        fs::remove_dir_all(root.join("a")).unwrap();
+        dir_link(&root.join("a"), &other);
+
+        let results = run(
+            &[target],
+            true,
+            &Protected::default(),
+            &root,
+            None,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(results[0].outcome, Outcome::Skipped);
+        assert!(other.join("b/file.bin").exists());
+    }
+
+    #[test]
+    fn a_one_item_run_on_a_link_is_skipped_and_the_target_survives() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        write(&outside.join("precious.bin"));
+        fs::create_dir_all(&root).unwrap();
+        dir_link(&root.join("link"), &outside);
+
+        let target = Target {
+            id: 1,
+            path: root.join("link"),
+            size: 0,
+        };
+        for permanent in [false, true] {
+            let results = run(
+                std::slice::from_ref(&target),
+                permanent,
+                &Protected::default(),
+                &root,
+                None,
+                &mut |_| {},
+            )
+            .unwrap();
+            assert_eq!(results[0].outcome, Outcome::Skipped);
+        }
+        assert!(outside.join("precious.bin").exists());
+        assert!(fs::symlink_metadata(root.join("link")).is_ok());
+    }
+
+    #[test]
+    fn each_result_is_reported_as_soon_as_its_item_is_done() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("first.bin"));
+        write(&root.join("second.bin"));
+        let targets = [
+            Target {
+                id: 1,
+                path: root.join("first.bin"),
+                size: 5000,
+            },
+            Target {
+                id: 2,
+                path: root.join("second.bin"),
+                size: 5000,
+            },
+        ];
+
+        let mut seen = Vec::new();
+        let results = run(
+            &targets,
+            true,
+            &Protected::default(),
+            root,
+            None,
+            &mut |result| {
+                // At this point the item just handled is gone and the next one is not touched yet.
+                seen.push((
+                    result.id,
+                    root.join("first.bin").exists(),
+                    root.join("second.bin").exists(),
+                ));
+            },
+        )
+        .unwrap();
+        assert_eq!(seen, [(1, false, true), (2, false, false)]);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn a_plain_parent_chain_is_not_a_reparse_ancestor() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        write(&root.join("a/b/file.bin"));
+        assert!(!has_reparse_ancestor(&root.join("a/b/file.bin"), &root));
+        assert!(!has_reparse_ancestor(&root.join("a"), &root));
+    }
+
     #[cfg(windows)]
     #[test]
     fn a_junction_in_the_selection_is_refused_and_its_target_survives() {
@@ -622,6 +780,7 @@ mod tests {
             &Protected::default(),
             &root,
             None,
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(results[0].outcome, Outcome::Skipped);
@@ -655,6 +814,7 @@ mod tests {
             &Protected::default(),
             root,
             None,
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(results[0].outcome, Outcome::Done);
@@ -695,6 +855,7 @@ mod tests {
             &Protected::default(),
             root,
             None,
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(results[0].outcome, Outcome::InUse);

@@ -278,7 +278,7 @@ pub fn clean(places: &Places, id: QuickId) -> Result<Cleaned, String> {
     Ok(total)
 }
 
-/// Walks `dir` (inside `target`), counting or removing what may go. Links are removed, never
+/// Walks `dir` (inside `target`), counting or removing what may go. Links are skipped, never
 /// followed. Emptied subfolders go too; `target` itself stays.
 fn sweep(
     targets: &[PathBuf],
@@ -297,6 +297,12 @@ fn sweep(
         let Ok(metadata) = fs::symlink_metadata(&path) else {
             continue;
         };
+        // Any reparse point (symlink, junction, cloud placeholder, other name surrogate) is left
+        // alone: it is never walked into, emptied or removed.
+        if crate::bulk::is_reparse_point(&path) {
+            total.skipped += 1;
+            continue;
+        }
         if metadata.is_dir() {
             // Old installers: only the files directly in Downloads.
             if id == QuickId::OldInstallers {
@@ -335,10 +341,6 @@ fn sweep(
         }
         let removed = if id == QuickId::OldInstallers {
             crate::os::recycle(&path).is_ok()
-        } else if metadata.file_type().is_symlink() {
-            fs::remove_file(&path)
-                .or_else(|_| fs::remove_dir(&path))
-                .is_ok()
         } else {
             fs::remove_file(&path).is_ok()
         };
@@ -370,6 +372,57 @@ mod tests {
         let file = fs::File::options().write(true).open(path).unwrap();
         file.set_modified(SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60))
             .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_in_a_target_are_skipped_and_what_they_point_to_survives() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("Temp");
+        let outside = temp.path().join("outside");
+        write(&outside.join("precious.bin"), 10);
+        write(&dir.join("old.log"), 10);
+        age(&dir.join("old.log"), 3);
+        std::os::unix::fs::symlink(&outside, dir.join("folder-link")).unwrap();
+        std::os::unix::fs::symlink(outside.join("precious.bin"), dir.join("file-link")).unwrap();
+        let places = Places {
+            temp: Some(dir.clone()),
+            ..Places::default()
+        };
+
+        let cleaned = clean(&places, QuickId::UserTemp).unwrap();
+        assert_eq!((cleaned.removed, cleaned.skipped), (1, 2));
+        assert!(fs::symlink_metadata(dir.join("folder-link")).is_ok());
+        assert!(fs::symlink_metadata(dir.join("file-link")).is_ok());
+        assert!(outside.join("precious.bin").exists());
+        assert!(!dir.join("old.log").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_in_a_target_is_skipped_and_its_target_is_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("Temp");
+        let outside = temp.path().join("outside");
+        write(&outside.join("precious.bin"), 10);
+        age(&outside.join("precious.bin"), 3);
+        fs::create_dir_all(&dir).unwrap();
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(dir.join("junction"))
+            .arg(&outside)
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "mklink /J failed");
+        let places = Places {
+            temp: Some(dir.clone()),
+            ..Places::default()
+        };
+
+        let cleaned = clean(&places, QuickId::UserTemp).unwrap();
+        assert_eq!((cleaned.removed, cleaned.skipped), (0, 1));
+        assert!(dir.join("junction").exists());
+        assert!(outside.join("precious.bin").exists());
     }
 
     #[test]
