@@ -31,6 +31,7 @@ import {
   appAdmin,
   canDelete,
   cancelScan,
+  escapeCancelsScan,
   cleanupJob,
   driveFor,
   drives,
@@ -332,6 +333,10 @@ function showToast(message: string): void {
   }, 4000)
 }
 
+function hasOpenDialog(): boolean {
+  return document.querySelector('dialog[open]') !== null
+}
+
 function cancel(): void {
   cancelScan().catch((err: unknown) => {
     showToast(errorMessage(err))
@@ -339,15 +344,13 @@ function cancel(): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape' && job.running) {
+  const covered = Boolean(menu.value) || Boolean(confirmEl.value?.open) || hasOpenDialog()
+  if (escapeCancelsScan(event.key, job.running, covered)) {
     cancel()
     return
   }
   const typing = event.target instanceof HTMLInputElement
-  if (typing || menu.value || confirmEl.value?.open || !job.overview) {
-    return
-  }
-  if (document.querySelector('dialog[open]')) {
+  if (typing || covered || !job.overview) {
     return
   }
   if (event.key === 'Delete') {

@@ -24,6 +24,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 import {
   cleanupJob,
   driveFor,
+  escapeCancelsScan,
   groupsIn,
   offeredItems,
   openFolder,
@@ -175,6 +176,15 @@ describe('cleanup scan', () => {
     expect(cleanupJob.overview?.root.size).toBe(40)
     expect(cleanupJob.trail.map((folder) => folder.name)).toEqual(['C:\\', 'Users'])
     expect(cleanupJob.rows.map((item) => item.name)).toEqual(['Public'])
+  })
+})
+
+describe('escapeCancelsScan', () => {
+  it('cancels only a running scan with nothing open on top of it', () => {
+    expect(escapeCancelsScan('Escape', true, false)).toBe(true)
+    expect(escapeCancelsScan('Escape', true, true)).toBe(false)
+    expect(escapeCancelsScan('Escape', false, false)).toBe(false)
+    expect(escapeCancelsScan('Enter', true, false)).toBe(false)
   })
 })
 

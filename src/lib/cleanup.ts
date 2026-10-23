@@ -196,6 +196,11 @@ async function scanFolder(path: string): Promise<void> {
   }
 }
 
+/** Escape cancels a running scan unless it is meant for a menu or dialog that is open. */
+export function escapeCancelsScan(key: string, running: boolean, covered: boolean): boolean {
+  return key === 'Escape' && running && !covered
+}
+
 export function cancelScan(): Promise<void> {
   return invoke('cleanup_cancel')
 }
