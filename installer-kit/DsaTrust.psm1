@@ -257,7 +257,77 @@ function Show-TrustCountdown {
     }
 }
 
+function ConvertTo-NormalThumbprint {
+    # Strips spaces, colons and dashes so a pasted thumbprint compares cleanly.
+    param([string]$Text)
+    if ($null -eq $Text) { return '' }
+    return ($Text -replace '[\s:-]', '').ToUpperInvariant()
+}
+
+function Test-DsaCertificate {
+    # Refuses anything but the short-lived, self-signed, code-signing-only certificate the release builds.
+    # Throws on the first failed check; -ExpectedThumbprint (from the release page) must match the full SHA-1.
+    param(
+        [Parameter(Mandatory)] [Security.Cryptography.X509Certificates.X509Certificate2]$Cert,
+        [string]$ExpectedThumbprint
+    )
+    $eku = @($Cert.Extensions | Where-Object { $_ -is [Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension] })
+    if ($eku.Count -ne 1) { throw 'Certificate refused: no enhanced key usage extension.' }
+    $oids = @($eku[0].EnhancedKeyUsages | ForEach-Object { $_.Value })
+    if ($oids.Count -ne 1 -or $oids[0] -ne '1.3.6.1.5.5.7.3.3') {
+        throw "Certificate refused: it must be for code signing only (found $($oids -join ', '))."
+    }
+    $basic = $Cert.Extensions | Where-Object { $_ -is [Security.Cryptography.X509Certificates.X509BasicConstraintsExtension] }
+    if ($basic -and $basic.CertificateAuthority) { throw 'Certificate refused: it is a certificate authority.' }
+    if ($Cert.Subject -cne 'CN=Deep Server Analyzer' -or $Cert.Issuer -cne $Cert.Subject) {
+        throw "Certificate refused: it must be self-signed as CN=Deep Server Analyzer (subject $($Cert.Subject), issuer $($Cert.Issuer))."
+    }
+    $now = [DateTime]::UtcNow
+    if ($Cert.NotAfter.ToUniversalTime() -le $now) { throw 'Certificate refused: it has expired.' }
+    if (($Cert.NotAfter - $Cert.NotBefore).TotalDays -gt 181) { throw 'Certificate refused: its lifetime is longer than 181 days.' }
+    if ($Cert.PublicKey.Oid.Value -ne '1.2.840.113549.1.1.1') { throw 'Certificate refused: the public key is not RSA.' }
+    $rsa = [Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPublicKey($Cert)
+    if ($null -eq $rsa -or $rsa.KeySize -lt 3072) { throw 'Certificate refused: the RSA key is shorter than 3072 bits.' }
+    if ($ExpectedThumbprint) {
+        if ((ConvertTo-NormalThumbprint $ExpectedThumbprint) -cne (ConvertTo-NormalThumbprint $Cert.Thumbprint)) {
+            throw "Certificate refused: its thumbprint $($Cert.Thumbprint) does not match the expected $ExpectedThumbprint."
+        }
+    }
+}
+
+function Initialize-DsaDataDir {
+    # Makes the data folder admin-only for writes. The SYSTEM task runs scripts from here, so Users must not be able to change them.
+    # A folder owned by anyone else is moved aside, because its owner could keep changing it.
+    $dir = Get-DsaDataDir
+    $trustedOwners = @('BUILTIN\Administrators', 'NT AUTHORITY\SYSTEM')
+    # Ownership checks need an elevated process (the installer always is). Unelevated test runs only get the DACL.
+    $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($elevated -and (Test-Path -LiteralPath $dir)) {
+        $owner = (Get-Acl -LiteralPath $dir).Owner
+        if ($trustedOwners -notcontains $owner) {
+            $aside = '{0}.untrusted-{1:yyyyMMddHHmmss}' -f $dir, (Get-Date)
+            Move-Item -LiteralPath $dir -Destination $aside
+            Write-TrustLog "Data folder was owned by $owner; moved aside to $aside" 'WARN'
+        }
+    }
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $admins = New-Object Security.Principal.SecurityIdentifier ([Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+    $system = New-Object Security.Principal.SecurityIdentifier ([Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+    $users = New-Object Security.Principal.SecurityIdentifier ([Security.Principal.WellKnownSidType]::BuiltinUsersSid, $null)
+    $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    $none = [Security.AccessControl.PropagationFlags]::None
+    $allow = [Security.AccessControl.AccessControlType]::Allow
+    $acl = New-Object Security.AccessControl.DirectorySecurity
+    if ($elevated) { $acl.SetOwner($admins) }
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @($admins, $system)) {
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule ($sid, 'FullControl', $inherit, $none, $allow)))
+    }
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule ($users, 'ReadAndExecute', $inherit, $none, $allow)))
+    Set-Acl -LiteralPath $dir -AclObject $acl
+}
+
 Export-ModuleMember -Function Get-DsaDataDir, Get-DsaExpiryPath, Write-TrustLog, ConvertTo-TrustHours, Get-CerThumbprint, `
     Test-Sha256Sums, Write-TrustExpiry, Read-TrustExpiry, Test-TrustDue, Add-TrustStores, `
     Remove-TrustStores, Register-TrustTask, Add-TrustHours, Test-TrustRemoved, Unregister-TrustTask, `
-    Remove-ActiveTrust, Format-Remaining, Show-TrustCountdown
+    Remove-ActiveTrust, Format-Remaining, Show-TrustCountdown, ConvertTo-NormalThumbprint, Test-DsaCertificate, Initialize-DsaDataDir

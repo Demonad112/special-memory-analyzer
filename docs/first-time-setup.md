@@ -66,8 +66,8 @@ and the kit still works.
 3. Windows asks **Do you want to allow this app to make changes?** Click **Yes**. This is expected:
    the installer needs administrator rights to trust the certificate.
 4. A small dark window opens, titled **Deep Server Analyzer installer**.
-5. Compare the start of the thumbprint in the window (for example `ABCD14B8D400...`) with the
-   thumbprint on the release page. They must match. If they do not, close the window and stop.
+5. The window shows the full thumbprint. Copy the thumbprint from the release page and paste it into the
+   box. The **Install** button stays grey until the two match. If they never match, close the window and stop.
 6. Click the blue **Install** button.
 7. A progress bar shows while the kit checks its own files, trusts the certificate and installs the
    app. This takes a few seconds to a minute.

@@ -118,13 +118,73 @@ try {
         Test-Sha256Sums -SumsPath $sumsPath -FilePaths @((Join-Path $scratch 'absent.bin'))
     }
 
+    # Certificate policy (DSA-004): throwaway certificates in the user store, deleted in finally.
+    $made = @()
+    try {
+        $subject = 'CN=Deep Server Analyzer'
+        $good = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation Cert:\CurrentUser\My `
+            -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(180)
+        $made += $good
+        $ca = New-SelfSignedCertificate -Subject $subject -CertStoreLocation Cert:\CurrentUser\My -KeyAlgorithm RSA -KeyLength 3072 `
+            -HashAlgorithm SHA256 -KeyUsage CertSign -TextExtension @('2.5.29.19={text}CA=true') -NotAfter (Get-Date).AddDays(30)
+        $made += $ca
+        $server = New-SelfSignedCertificate -Type SSLServerAuthentication -Subject $subject -CertStoreLocation Cert:\CurrentUser\My `
+            -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(30)
+        $made += $server
+        $weak = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation Cert:\CurrentUser\My `
+            -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(30)
+        $made += $weak
+        $long = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation Cert:\CurrentUser\My `
+            -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(400)
+        $made += $long
+        $other = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Someone Else' -CertStoreLocation Cert:\CurrentUser\My `
+            -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(30)
+        $made += $other
+
+        $accepted = $true
+        try { Test-DsaCertificate -Cert $good } catch { $accepted = $false }
+        Assert-True 'release-style code-signing certificate passes' $accepted
+        Assert-Throws 'CA certificate is refused' { Test-DsaCertificate -Cert $ca }
+        Assert-Throws 'server-auth certificate is refused' { Test-DsaCertificate -Cert $server }
+        Assert-Throws '2048-bit key is refused' { Test-DsaCertificate -Cert $weak }
+        Assert-Throws 'certificate valid for over 181 days is refused' { Test-DsaCertificate -Cert $long }
+        Assert-Throws 'other subject is refused' { Test-DsaCertificate -Cert $other }
+        Assert-Throws 'wrong expected thumbprint is refused' { Test-DsaCertificate -Cert $good -ExpectedThumbprint ('0' * 40) }
+        $spaced = ($good.Thumbprint.ToLowerInvariant() -replace '(..)', '$1 ').Trim()
+        $matched = $true
+        try { Test-DsaCertificate -Cert $good -ExpectedThumbprint $spaced } catch { $matched = $false }
+        Assert-True 'expected thumbprint matches ignoring case and spaces' $matched
+    }
+    finally {
+        foreach ($c in $made) { Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($c.Thumbprint)" -DeleteKey -ErrorAction SilentlyContinue }
+    }
+
+    # Data folder ACL (DSA-005): protected, Users cannot write.
+    $aclDir = Join-Path $scratch 'acl-data'
+    $env:DSA_TRUST_DIR = $aclDir
+    try {
+        Initialize-DsaDataDir
+        $acl = Get-Acl -LiteralPath $aclDir
+        Assert-True 'data folder does not inherit ACLs' $acl.AreAccessRulesProtected
+        $usersSid = New-Object Security.Principal.SecurityIdentifier ([Security.Principal.WellKnownSidType]::BuiltinUsersSid, $null)
+        $writeBits = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, WriteAttributes, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership'
+        $usersRules = @($acl.Access | Where-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]) -eq $usersSid })
+        $usersWrite = @($usersRules | Where-Object { $_.AccessControlType -eq 'Allow' -and ($_.FileSystemRights -band $writeBits) -ne 0 })
+        Assert-True 'BUILTIN\Users has no write right on the data folder' ($usersWrite.Count -eq 0)
+        Assert-True 'BUILTIN\Users can still read the data folder' ($usersRules.Count -gt 0)
+    }
+    finally {
+        $env:DSA_TRUST_DIR = $scratch
+        if (Test-Path -LiteralPath $aclDir) { & icacls.exe $aclDir /reset /T /C /Q | Out-Null }
+    }
+
     if ($Full) {
         Write-Host 'End-to-end (administrator, real stores and task)'
         $env:DSA_TRUST_DIR = $null
         $stage = Join-Path $scratch 'kit'
         New-Item -ItemType Directory -Path $stage | Out-Null
-        $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=DSA Kit Test' `
-            -CertStoreLocation Cert:\CurrentUser\My -KeyAlgorithm RSA -KeyLength 2048 `
+        $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Deep Server Analyzer' `
+            -CertStoreLocation Cert:\CurrentUser\My -KeyAlgorithm RSA -KeyLength 3072 `
             -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(2)
         $thumb = $cert.Thumbprint
         try {
@@ -152,7 +212,7 @@ try {
 
             $install = Join-Path $stage 'Install-DSA.ps1'
             $remove = Join-Path $stage 'Remove-Trust.ps1'
-            $installArgs = @('-NoPrompt', '-SkipInstall', '-TrustHours', '0.01')
+            $installArgs = @('-NoPrompt', '-SkipInstall', '-TrustHours', '0.01', '-ExpectedThumbprint', $thumb)
 
             $installCode = Invoke-KitScript $install $installArgs
             if ($installCode -ne 0) {
