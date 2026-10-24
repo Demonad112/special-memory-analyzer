@@ -17,8 +17,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
-/// Paths longer than this trip up Explorer and many programs (MAX_PATH minus the terminator).
-pub const LONG_PATH_LIMIT: usize = 259;
+pub use scan_core::names::{is_valid_windows_name, LONG_PATH_LIMIT};
 /// The pre-flight file lists at most this many issues; the count covers all of them.
 pub const MAX_LISTED_ISSUES: usize = 1000;
 
@@ -571,32 +570,6 @@ pub fn destination_path(destination: &Path, relative_path: &str) -> PathBuf {
         .split('/')
         .filter(|part| !part.is_empty())
         .fold(destination.to_path_buf(), |path, part| path.join(part))
-}
-
-const RESERVED_NAMES: [&str; 22] = [
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-];
-
-/// False for names Windows cannot create normally: reserved device names (also with an
-/// extension), a trailing dot or space, and characters such as `<>:"|?*`.
-pub fn is_valid_windows_name(name: &str) -> bool {
-    if name.is_empty() || name.ends_with('.') || name.ends_with(' ') {
-        return false;
-    }
-    if name
-        .chars()
-        .any(|ch| (ch as u32) < 32 || matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '\\'))
-    {
-        return false;
-    }
-    let stem = name
-        .split('.')
-        .next()
-        .unwrap_or(name)
-        .trim_end()
-        .to_ascii_uppercase();
-    !RESERVED_NAMES.contains(&stem.as_str())
 }
 
 /// Creates the destination if needed and writes and deletes a small file in it.
