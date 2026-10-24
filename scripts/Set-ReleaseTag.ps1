@@ -1,10 +1,13 @@
 [CmdletBinding()]
 param(
-    [string]$Version = 'v1.1.1'
+    [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
+
+# Without -Version, tag the version in package.json.
+if (-not $Version) { $Version = 'v' + (Get-Content package.json -Raw | ConvertFrom-Json).version }
 
 if ($Version -notmatch '^v\d+\.\d+\.\d+$') { throw "Version '$Version' must look like v1.2.3" }
 
