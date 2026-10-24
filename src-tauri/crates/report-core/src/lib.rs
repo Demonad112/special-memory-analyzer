@@ -16,7 +16,7 @@ pub use doc::{Branding, Document, Table, Tile, Tone, JOB_LABELS};
 pub use explorer::Explorer;
 pub use kinds::{
     CleanReport, CleanedItem, CompareReport, DuplicateItem, DuplicateTotals, FileItem, FolderItem,
-    MissingFile, Removed, StaleFolder, StaleTotals, TypeItem, UsageReport,
+    MissingFile, OwnerItem, OwnerTotals, Removed, StaleFolder, StaleTotals, TypeItem, UsageReport,
 };
 
 use serde::{Deserialize, Serialize};

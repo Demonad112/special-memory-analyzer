@@ -7,6 +7,7 @@ pub mod dupes;
 pub mod junk;
 pub mod log;
 mod os;
+pub mod owners;
 mod pathsafe;
 mod protect;
 pub mod quick;

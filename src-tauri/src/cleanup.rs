@@ -6,13 +6,14 @@ use cleanup_core::bulk::{self, ItemResult, Outcome, Preview, PreviewStatus, Targ
 use cleanup_core::dupes::{self, Found, Group, Skipped};
 use cleanup_core::junk::{self, JunkGroup};
 use cleanup_core::log::{self, LogEntry};
+use cleanup_core::owners::{self, OwnerIndex, OwnerTable};
 use cleanup_core::quick::{self, Places, QuickId, QuickWin};
 use cleanup_core::restore::{self, LastRun, RestoreResult};
 use cleanup_core::stale::{self, StaleFile, StaleReport};
 use cleanup_core::{Drive, Overview, Protected, Row};
 use report_core::{
     Body, CleanReport, CleanedItem, DuplicateItem, DuplicateTotals, FileItem, FolderItem, JobInfo,
-    Removed, StaleFolder, StaleTotals, TypeItem, UsageReport,
+    OwnerItem, OwnerTotals, Removed, StaleFolder, StaleTotals, TypeItem, UsageReport,
 };
 use scan_core::{clean_path, scan, CancelToken, NodeId, ScanProgress, ScanState, Tree};
 use serde::Serialize;
@@ -52,6 +53,9 @@ pub struct CleanupState {
     /// The last duplicate search on this scan's tree.
     dupes: Mutex<Option<Found>>,
     dupes_cancel: Mutex<Option<CancelToken>>,
+    /// The owner of each file of this scan, once "By owner" has run (D-15). Dropped by a new scan.
+    owners: Mutex<Option<OwnerIndex>>,
+    owners_cancel: Mutex<Option<CancelToken>>,
     /// Changes with every scan (under the `dupes` lock), so a search that started on the previous
     /// tree keeps nothing.
     scan_seq: AtomicU64,
@@ -106,10 +110,15 @@ pub async fn cleanup_scan(
     if let Some(search) = lock(&state.dupes_cancel)?.take() {
         search.cancel();
     }
+    if let Some(pass) = lock(&state.owners_cancel)?.take() {
+        pass.cancel();
+    }
     {
         let mut dupes = lock(&state.dupes)?;
+        let mut owners = lock(&state.owners)?;
         state.scan_seq.fetch_add(1, Ordering::SeqCst);
         dupes.take();
+        owners.take();
     }
     // Free the previous tree before building the next one, and write the removals the previous
     // scan's report is still waiting for.
@@ -231,6 +240,7 @@ fn usage_report(
         // Filled in when the user runs the panels (see `ReportWriter::amend`).
         duplicates: None,
         stale: None,
+        owners: None,
     }
 }
 
@@ -599,6 +609,149 @@ pub fn cleanup_dupes_cancel(state: State<'_, CleanupState>) -> Result<(), String
         cancel.cancel();
     }
     Ok(())
+}
+
+/// Reads the owner of every file in the current scan, streaming progress, and returns the owner
+/// table. On demand only (D-15): one security read per file is too slow for every scan. Like a
+/// scan it holds the scan guard, so it cannot overlap an elevated record. A new scan drops the
+/// result.
+#[tauri::command]
+pub async fn cleanup_owners_read(
+    app: AppHandle,
+    state: State<'_, CleanupState>,
+    record: State<'_, crate::record::RecordState>,
+    on_progress: Channel<owners::Progress>,
+) -> Result<OwnerTable, String> {
+    let _scan = record.scan_guard()?;
+    let seq = state.scan_seq.load(Ordering::SeqCst);
+    let cancel = CancelToken::new();
+    if let Some(previous) = lock(&state.owners_cancel)?.replace(cancel.clone()) {
+        previous.cancel();
+    }
+    lock(&state.owners)?.take();
+
+    let job_cancel = cancel.clone();
+    let index = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<CleanupState>();
+        // Ids are taken under the tree lock; paths are fetched a batch at a time, so the tree
+        // stays usable while the reads run.
+        let targets = with_tree(&state, |tree| Ok(owners::collect(tree)))?;
+        let paths = |ids: &[NodeId]| -> Vec<Option<PathBuf>> {
+            let Ok(tree) = state.tree.lock() else {
+                return vec![None; ids.len()];
+            };
+            let Some(tree) = tree
+                .as_ref()
+                .filter(|_| state.scan_seq.load(Ordering::SeqCst) == seq)
+            else {
+                return vec![None; ids.len()];
+            };
+            ids.iter()
+                .map(|&id| (tree.is_live(id) && !tree.node(id).lossy_name).then(|| tree.path(id)))
+                .collect()
+        };
+        let counters = owners::Counters::default();
+        let names = scan_core::security::SidNames::default();
+        thread::scope(|scope| {
+            let job = scope.spawn(|| {
+                owners::read_all(
+                    &targets,
+                    &paths,
+                    &owners::read_system,
+                    &names,
+                    &job_cancel,
+                    &counters,
+                )
+            });
+            while !job.is_finished() {
+                let _ = on_progress.send(counters.progress());
+                thread::sleep(PROGRESS_INTERVAL);
+            }
+            let _ = on_progress.send(counters.progress());
+            job.join()
+        })
+        .map_err(|_| "The owner pass stopped unexpectedly.".to_string())
+    })
+    .await
+    .map_err(|err| err.to_string())??;
+    let Some(index) = index.filter(|_| !cancel.is_cancelled()) else {
+        return Err(CANCELLED.into());
+    };
+    let mut slot = lock(&state.owners)?;
+    // A scan that started meanwhile replaced the tree these ids point into.
+    if state.scan_seq.load(Ordering::SeqCst) != seq {
+        return Err(CANCELLED.into());
+    }
+    let table = with_tree(&state, |tree| Ok(index.table(tree)))?;
+    let totals = owner_totals(&table);
+    *slot = Some(index);
+    drop(slot);
+    if let Some(err) = state
+        .report
+        .amend(move |report| report.owners = Some(Box::new(totals)))
+    {
+        report_core::applog::error(&report_warning(&err));
+    }
+    Ok(table)
+}
+
+#[tauri::command]
+pub fn cleanup_owners_cancel(state: State<'_, CleanupState>) -> Result<(), String> {
+    if let Some(cancel) = lock(&state.owners_cancel)?.as_ref() {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+const NO_OWNERS: &str = "The owner table is no longer available. Run By owner again.";
+
+/// The owner table for the files still in the scan, or `None` when the pass has not run on this
+/// scan. Deletes since the pass are reflected without reading anything again.
+#[tauri::command]
+pub fn cleanup_owners_table(state: State<'_, CleanupState>) -> Result<Option<OwnerTable>, String> {
+    let owners = lock(&state.owners)?;
+    let Some(index) = owners.as_ref() else {
+        return Ok(None);
+    };
+    with_tree(&state, |tree| Ok(Some(index.table(tree))))
+}
+
+/// What is directly inside folder `id`, counting only the files `owner` (an index of the owner
+/// table) owns.
+#[tauri::command]
+pub fn cleanup_owner_children(
+    state: State<'_, CleanupState>,
+    id: NodeId,
+    owner: u32,
+) -> Result<Vec<Row>, String> {
+    let owners = lock(&state.owners)?;
+    let index = owners.as_ref().ok_or(NO_OWNERS)?;
+    with_tree(&state, |tree| Ok(index.rows_for(tree, id, owner)))
+}
+
+/// Owners kept in a saved disk usage report.
+const REPORT_OWNERS: usize = 25;
+
+fn owner_totals(table: &OwnerTable) -> OwnerTotals {
+    OwnerTotals {
+        total_disk: table.total_disk,
+        total_files: table.total_files,
+        owners: table
+            .rows
+            .iter()
+            .take(REPORT_OWNERS)
+            .map(|row| OwnerItem {
+                name: row.name.clone(),
+                files: row.files,
+                disk: row.disk,
+                top_folders: row
+                    .top_folders
+                    .iter()
+                    .map(|folder| folder.name.clone())
+                    .collect(),
+            })
+            .collect(),
+    }
 }
 
 /// Groups most worth cleaning first.
