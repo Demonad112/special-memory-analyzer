@@ -377,7 +377,6 @@ mod imp {
         // through the file handle. That, unlike SetNamedSecurityInfoW, does not re-propagate
         // inherited entries to everything below a folder. Permissions and audit rules go first and
         // the owner separately, so an owner that can't be set doesn't lose the permissions.
-        let _ = (owner, group, dacl, sacl);
         let mut steps: Vec<(u32, u32, &str)> = Vec::new();
         if info & (DACL | SACL) != 0 {
             let access = WRITE_DAC
