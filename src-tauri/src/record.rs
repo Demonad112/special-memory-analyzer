@@ -52,6 +52,8 @@ impl RecordState {
         if let Ok(mut job) = self.0.lock() {
             job.take();
         }
+        // Back to ordinary access checks, so later scans see what the user would.
+        transfer_core::secure::disable_privileges();
     }
 
     fn remember_recovery(&self, run_id: &str, folder: &str) {
