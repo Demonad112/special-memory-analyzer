@@ -2,7 +2,7 @@ import { Channel, invoke, isTauri } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { ref, shallowReactive, watch } from 'vue'
 import { trackJob } from './busy'
-import { formatBytes, plural } from './format'
+import { formatBytes, formatDateTime, plural } from './format'
 import { errorMessage } from './errors'
 import { currentJob } from './job'
 
@@ -169,7 +169,7 @@ export function formatMissingList(list: MissingList, summary: DiffSummary, when:
     `Missing at destination: ${plural(summary.missing, 'file')} (${formatBytes(summary.missingBytes)})`,
     `Source: ${list.source}`,
     `Destination: ${list.destination}`,
-    `Compared: ${when.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}`,
+    `Compared: ${formatDateTime(when)}`,
   ]
   return [...header, '', ...list.paths].join('\r\n')
 }

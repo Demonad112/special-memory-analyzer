@@ -17,7 +17,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import { copyText } from '@/lib/clipboard'
 import { pickFolder } from '@/lib/compare'
 import { errorMessage } from '@/lib/errors'
-import { formatBytes, formatCount, plural } from '@/lib/format'
+import { formatBytes, formatCount, formatDateTime, plural } from '@/lib/format'
 import { exportReport, openReport, type ExportFormat } from '@/lib/reports'
 import {
   cancelRecord,
@@ -119,9 +119,7 @@ const stateText = computed(() => {
 })
 
 function when(ms: number | null | undefined): string {
-  return ms
-    ? new Date(ms).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
-    : '—'
+  return ms ? formatDateTime(ms) : '—'
 }
 
 async function retry(reason: FailureReason | null = null): Promise<void> {

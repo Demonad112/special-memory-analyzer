@@ -57,9 +57,11 @@ import {
 import { copyText } from '@/lib/clipboard'
 import { cleanPath, pickFolder } from '@/lib/compare'
 import { errorMessage } from '@/lib/errors'
+import { useElapsed } from '@/lib/useElapsed'
+import { useToast } from '@/lib/useToast'
 import { openReport } from '@/lib/reports'
 import { categoryLabels, categoryOfExtension, type Category } from '@/lib/fileTypes'
-import { formatBytes, formatDuration, plural } from '@/lib/format'
+import { formatBytes, formatDate, formatDuration, formatTime, plural } from '@/lib/format'
 
 const job = cleanupJob
 const folderInput = ref('')
@@ -101,15 +103,10 @@ const shownSize = computed(() => viewRows.value.reduce((sum, row) => sum + row.s
 const scannedDrive = computed(() => driveFor(job.path, drives.value))
 const percent = computed(() => scanPercent(job.progress?.bytes ?? 0, scannedDrive.value))
 
-// Elapsed time while a scan runs.
-const now = ref(Date.now())
-const ticker = setInterval(() => {
-  now.value = Date.now()
-}, 250)
-const elapsed = computed(() => {
-  const seconds = Math.max(0, Math.floor((now.value - job.startedAt) / 1000))
-  return `${String(Math.floor(seconds / 60))}:${String(seconds % 60).padStart(2, '0')}`
-})
+const elapsed = useElapsed(
+  () => job.startedAt,
+  () => job.running,
+)
 
 function scan(path: string): void {
   const clean = cleanPath(path)
@@ -347,19 +344,10 @@ function share(size: number, total: number): string {
 }
 
 function modified(ms: number | null): string {
-  return ms === null ? '' : new Date(ms).toLocaleDateString('en-US', { dateStyle: 'medium' })
+  return ms === null ? '' : formatDate(ms)
 }
 
-// Short confirmation or error at the bottom of the window.
-const toast = ref('')
-let toastTimer: ReturnType<typeof setTimeout> | undefined
-function showToast(message: string): void {
-  toast.value = message
-  clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => {
-    toast.value = ''
-  }, 4000)
-}
+const { toast, showToast } = useToast()
 
 function hasOpenDialog(): boolean {
   return document.querySelector('dialog[open]') !== null
@@ -402,8 +390,6 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
-  clearInterval(ticker)
-  clearTimeout(toastTimer)
 })
 </script>
 
@@ -549,9 +535,7 @@ onBeforeUnmount(() => {
           <p class="text-xs text-muted">Scan time</p>
           <p class="value">{{ formatDuration(job.elapsedMs) }}</p>
           <p class="detail">
-            {{
-              job.finishedAt?.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-            }}
+            {{ job.finishedAt && formatTime(job.finishedAt) }}
           </p>
         </div>
       </div>

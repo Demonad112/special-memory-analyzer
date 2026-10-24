@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { formatBytes, formatCount, formatDelta, formatDuration, plural } from './format'
+import {
+  formatBytes,
+  formatClock,
+  formatCount,
+  formatDate,
+  formatDateTime,
+  formatDelta,
+  formatDuration,
+  formatTime,
+  plural,
+} from './format'
 
 describe('formatBytes', () => {
   it('keeps small sizes in bytes', () => {
@@ -45,5 +55,21 @@ describe('counts and durations', () => {
     expect(formatDuration(850)).toBe('850 ms')
     expect(formatDuration(4200)).toBe('4.2 s')
     expect(formatDuration(185_000)).toBe('3 min 05 s')
+  })
+})
+
+describe('clock and date formats', () => {
+  it('formats a running timer', () => {
+    expect(formatClock(0)).toBe('0:00')
+    expect(formatClock(65_000)).toBe('1:05')
+    expect(formatClock(-5000)).toBe('0:00')
+  })
+
+  it('formats dates the same way everywhere', () => {
+    const when = new Date(2026, 9, 23, 17, 7)
+    expect(formatDateTime(when)).toBe('Oct 23, 2026, 5:07 PM')
+    expect(formatDate(when)).toBe('Oct 23, 2026')
+    expect(formatTime(when)).toBe('5:07 PM')
+    expect(formatDateTime(when.getTime())).toBe(formatDateTime(when))
   })
 })

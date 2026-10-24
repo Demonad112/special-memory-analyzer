@@ -16,6 +16,8 @@ import { computed, onBeforeUnmount, onMounted, ref, type Component } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import { errorMessage } from '@/lib/errors'
+import { formatDateTime } from '@/lib/format'
+import { useToast } from '@/lib/useToast'
 import { jobLabel } from '@/lib/job'
 import {
   deleteReport,
@@ -87,7 +89,7 @@ async function refresh(): Promise<void> {
 }
 
 function when(ms: number): string {
-  return new Date(ms).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+  return formatDateTime(ms)
 }
 
 async function open(entry: ReportEntry): Promise<void> {
@@ -136,21 +138,12 @@ async function confirmDelete(): Promise<void> {
   }
 }
 
-const toast = ref('')
-let toastTimer: ReturnType<typeof setTimeout> | undefined
-function showToast(message: string): void {
-  toast.value = message
-  clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => {
-    toast.value = ''
-  }, 4000)
-}
+const { toast, showToast } = useToast()
 
 onMounted(async () => {
   await pruneReports()
   await refresh()
 })
-onBeforeUnmount(() => clearTimeout(toastTimer))
 </script>
 
 <template>

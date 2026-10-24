@@ -8,7 +8,7 @@ import ShareSignIn from '@/components/ShareSignIn.vue'
 import PathField from '@/components/PathField.vue'
 import { ignoreJunk, loadPaths, pickFolder, savePaths } from '@/lib/compare'
 import { errorMessage } from '@/lib/errors'
-import { formatBytes, formatCount, plural } from '@/lib/format'
+import { formatBytes, formatCount, formatDateTime, plural } from '@/lib/format'
 import {
   bytesPerSecond,
   cancelRecord,
@@ -198,7 +198,7 @@ function stateText(run: RunSummary): string {
 }
 
 function when(ms: number): string {
-  return new Date(ms).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+  return formatDateTime(ms)
 }
 </script>
 
