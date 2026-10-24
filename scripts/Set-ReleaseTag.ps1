@@ -6,15 +6,18 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
-# Without -Version, tag the version in package.json.
-if (-not $Version) { $Version = 'v' + (Get-Content package.json -Raw | ConvertFrom-Json).version }
-
-if ($Version -notmatch '^v(\d+\.\d+\.\d+)(-test\.\d+)?$') { throw "Version '$Version' must look like v1.2.3 or v1.2.3-test.1" }
-$pkgVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-if ($Matches[1] -ne $pkgVersion) { throw "Version '$Version' does not match package.json ($pkgVersion). Bump the version first, or use v$pkgVersion or v$pkgVersion-test.N." }
+$formatError = "Version '$Version' must look like v1.2.3 or v1.2.3-test.1"
+if ($Version -and $Version -notmatch '^v\d+\.\d+\.\d+(-test\.\d+)?$') { throw $formatError }
 
 git fetch origin main --tags
 if ($LASTEXITCODE) { throw 'git fetch failed' }
+
+# The tag goes on origin/main, so check against its version, not the local checkout.
+$pkgVersion = (git show origin/main:package.json | Out-String | ConvertFrom-Json).version
+# Without -Version, tag the version in package.json.
+if (-not $Version) { $Version = "v$pkgVersion" }
+if ($Version -notmatch '^v(\d+\.\d+\.\d+)(-test\.\d+)?$') { throw $formatError }
+if ($Matches[1] -ne $pkgVersion) { throw "Version '$Version' does not match package.json on origin/main ($pkgVersion). Bump the version first, or use v$pkgVersion or v$pkgVersion-test.N." }
 
 if (git tag -l $Version) { throw "Tag $Version already exists locally" }
 if (git ls-remote --tags origin $Version) { throw "Tag $Version already exists on origin" }
