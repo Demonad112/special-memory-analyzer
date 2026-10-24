@@ -335,7 +335,7 @@ fn sweep(
         };
         // Any reparse point (symlink, junction, cloud placeholder, other name surrogate) is left
         // alone: it is never walked into, emptied or removed.
-        if crate::bulk::is_reparse_point(&path) {
+        if crate::pathsafe::is_reparse_point(&path) {
             total.skipped += 1;
             continue;
         }
