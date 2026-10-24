@@ -1,11 +1,15 @@
 [CmdletBinding()]
 param(
-    [string]$Version = 'v1.1.1',
-    [string]$OutDir = (Join-Path $env:USERPROFILE "Downloads\dsa-$Version")
+    [string]$Version,
+    [string]$OutDir
 )
 
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
+
+# Without -Version, use the version in package.json.
+if (-not $Version) { $Version = 'v' + (Get-Content package.json -Raw | ConvertFrom-Json).version }
+if (-not $OutDir) { $OutDir = Join-Path $env:USERPROFILE "Downloads\dsa-$Version" }
 
 # Wait for the release run for this tag to finish.
 $run = $null

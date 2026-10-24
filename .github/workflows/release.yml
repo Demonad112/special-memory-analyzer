@@ -197,12 +197,29 @@ jobs:
         run: |
           notes=$(mktemp)
           gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" --jq .body > "$notes"
+          # Put the matching CHANGELOG.md section first. No section for this version: notes unchanged.
+          ver="${GITHUB_REF_NAME#v}"
+          ver="${ver%%-*}"
+          # This job has no checkout, so read the file at the tagged commit through the API.
+          changelog=$(mktemp)
+          gh api -H "Accept: application/vnd.github.raw" "repos/$GITHUB_REPOSITORY/contents/CHANGELOG.md?ref=$GITHUB_SHA" > "$changelog" 2>/dev/null || : > "$changelog"
+          section=$(awk -v h="## $ver" '$0 == h { on = 1; next } /^## / { on = 0 } on' "$changelog")
+          if [ -n "$(printf '%s' "$section" | tr -d '[:space:]')" ]; then
+            { printf '%s\n' "$section"; printf '\n'; cat "$notes"; } > "$notes.new"
+            mv "$notes.new" "$notes"
+          fi
           {
             printf '\n## Signing certificate\n\n'
             printf 'Thumbprint (SHA-1): `%s`\n\n' "$THUMBPRINT"
             printf 'The certificate is ephemeral. Its private key was deleted after signing, so this release cannot be re-signed.\n'
           } >> "$notes"
+          # A tag with a suffix (v1.2.0-test.1) is a test build: pre-release, never "Latest".
+          flags=()
+          case "$GITHUB_REF_NAME" in
+            *-*) flags=(--prerelease --latest=false) ;;
+          esac
           gh release create "$GITHUB_REF_NAME" installer/*.exe kit/* SHA256SUMS-release.txt \
             --repo "$GITHUB_REPOSITORY" \
             --title "Deep Server Analyzer $GITHUB_REF_NAME" \
-            --notes-file "$notes"
+            --notes-file "$notes" \
+            "${flags[@]}"

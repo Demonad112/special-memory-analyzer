@@ -53,4 +53,23 @@ Steps:
    tick `release` → Approve and deploy.
 3. Run `scripts\Get-Release.ps1 -Version vX.Y.Z` to wait for the run and check `SHA256SUMS`.
 
-A tag whose release was rejected or never approved publishes nothing.
+A tag whose release was rejected or never approved publishes nothing. `-Version` can be left out
+for a final release: both scripts then use the version in `package.json`.
+
+### Test builds
+
+To try the pipeline before a final release, tag a test build with the same version plus `-test.N`:
+
+1. `scripts\Set-ReleaseTag.ps1 -Version v1.2.0-test.1`. The `X.Y.Z` part must equal the version in
+   `package.json`.
+2. Approve under Actions → the run → Review deployments, as above.
+3. `scripts\Get-Release.ps1 -Version v1.2.0-test.1`.
+
+`release.yml` publishes any tag containing `-` as a pre-release (`--prerelease --latest=false`), so
+a test build never becomes the "Latest" release. A plain `vX.Y.Z` tag is a normal latest release.
+
+Run the manual checks in [release-checklist.md](release-checklist.md) on the test build before the
+final tag.
+
+Known leftover: `v1.1.1-test.1` was created before this and is marked as the latest release. It has
+not been edited. To fix it by hand: `gh release edit v1.1.1-test.1 --prerelease`.
