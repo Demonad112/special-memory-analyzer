@@ -281,10 +281,8 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Written to a `.tmp` file and renamed, so a crash never leaves half a file.
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
-    fs::write(&tmp, text)?;
-    fs::rename(&tmp, path)?;
+    write_atomic(path, text.as_bytes())?;
     Ok(())
 }
 
