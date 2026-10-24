@@ -249,48 +249,97 @@ impl DiffTree {
 /// Compares `left` (source) with `right` (destination) by relative path and file size. Names are
 /// matched exactly first, then case-insensitively, as Windows treats them.
 pub fn compare(left: &Tree, right: &Tree) -> DiffTree {
-    let root = diff(String::new(), Some((left, 0)), Some((right, 0)));
+    let nodes = diff(Some((left, 0)), Some((right, 0)));
+    let root = &nodes[0];
     let summary = DiffSummary {
         left: DiffSide::of(left.root()),
         right: DiffSide::of(right.root()),
-        missing: root.node.missing,
-        missing_bytes: root.node.missing_bytes,
-        extra: root.node.extra,
-        different: root.node.different,
+        missing: root.missing,
+        missing_bytes: root.missing_bytes,
+        extra: root.extra,
+        different: root.different,
         left_errors: left.root().errors,
         right_errors: right.root().errors,
         left_cloud: left.root().cloud_files,
         right_cloud: right.root().cloud_files,
     };
-    DiffTree {
-        nodes: flatten(root),
-        summary,
-    }
-}
-
-struct Owned {
-    node: DiffNode,
-    children: Vec<Owned>,
+    DiffTree { nodes, summary }
 }
 
 type Pick<'a> = Option<(&'a Tree, NodeId)>;
 
-fn diff(name: String, left: Pick<'_>, right: Pick<'_>) -> Owned {
+/// Builds the flat node list breadth-first, so every node's children are next to each other, then
+/// fills in the totals from the last node backwards (a child always comes after its parent).
+/// Nothing recurses, so a very deep folder cannot overflow the stack.
+fn diff<'a>(root_left: Pick<'a>, root_right: Pick<'a>) -> Vec<DiffNode> {
+    let mut nodes = vec![new_node(String::new(), root_left, root_right)];
+    // Folders whose totals are the sum of their children's (both sides there, same kind).
+    let mut sums = vec![sums_children(root_left, root_right)];
+    let mut queue = VecDeque::from([(0usize, root_left, root_right)]);
+    while let Some((at, left, right)) = queue.pop_front() {
+        let mut pairs = pair_children(left, right);
+        let size = |side: Pick<'_>| side.map_or(0, |(tree, id)| tree.node(id).size);
+        let name = |left: Pick<'a>, right: Pick<'a>| -> &'a str {
+            left.or(right)
+                .map(|(tree, id)| tree.node(id).name.as_str())
+                .unwrap_or_default()
+        };
+        pairs.sort_by(|a, b| {
+            size(b.0)
+                .max(size(b.1))
+                .cmp(&size(a.0).max(size(a.1)))
+                .then_with(|| name(a.0, a.1).cmp(name(b.0, b.1)))
+        });
+        nodes[at].first_child = nodes.len() as NodeId;
+        nodes[at].child_count = pairs.len() as u32;
+        for pair in pairs {
+            let mut child = new_node(name(pair.0, pair.1).to_owned(), pair.0, pair.1);
+            child.parent = at as NodeId;
+            nodes.push(child);
+            sums.push(sums_children(pair.0, pair.1));
+            queue.push_back((nodes.len() - 1, pair.0, pair.1));
+        }
+    }
+
+    for at in (0..nodes.len()).rev().filter(|&at| sums[at]) {
+        let children = nodes[at].first_child as usize
+            ..(nodes[at].first_child + nodes[at].child_count) as usize;
+        let (mut missing, mut missing_bytes, mut extra, mut different) = (0, 0, 0, 0);
+        let mut any_change = false;
+        for child in &nodes[children] {
+            missing += child.missing;
+            missing_bytes += child.missing_bytes;
+            extra += child.extra;
+            different += child.different;
+            any_change |= child.status != DiffStatus::Same;
+        }
+        let node = &mut nodes[at];
+        (node.missing, node.missing_bytes, node.extra, node.different) =
+            (missing, missing_bytes, extra, different);
+        if any_change {
+            node.status = DiffStatus::Different;
+        }
+    }
+    nodes
+}
+
+/// True for a pair whose totals come from what is below it: present on both sides and not a
+/// file, not a file-versus-folder mismatch.
+fn sums_children(left: Pick<'_>, right: Pick<'_>) -> bool {
+    match (left, right) {
+        (Some((lt, l)), Some((rt, r))) => {
+            let (l, r) = (lt.node(l), rt.node(r));
+            l.kind == r.kind && l.kind != Kind::File
+        }
+        _ => false,
+    }
+}
+
+/// One pair of tree nodes as a diff node, without anything that depends on its children.
+fn new_node(name: String, left: Pick<'_>, right: Pick<'_>) -> DiffNode {
     let left_node = left.map(|(tree, id)| tree.node(id));
     let right_node = right.map(|(tree, id)| tree.node(id));
     let kind = left_node.or(right_node).map_or(Kind::Dir, |node| node.kind);
-
-    let children: Vec<Owned> = pair_children(left, right)
-        .into_iter()
-        .map(|(child_left, child_right)| {
-            let name = child_left
-                .or(child_right)
-                .map(|(tree, id)| tree.node(id).name.clone())
-                .unwrap_or_default();
-            diff(name, child_left, child_right)
-        })
-        .collect();
-
     let mut node = DiffNode {
         name,
         kind,
@@ -333,40 +382,14 @@ fn diff(name: String, left: Pick<'_>, right: Pick<'_>) -> Owned {
             node.missing_bytes = l.size;
             node.extra = r.files;
         }
-        (Some(l), Some(r)) if l.kind == Kind::File => {
-            if l.size != r.size {
-                node.status = DiffStatus::Different;
-                node.different = 1;
-            }
+        (Some(l), Some(r)) if l.kind == Kind::File && l.size != r.size => {
+            node.status = DiffStatus::Different;
+            node.different = 1;
         }
-        _ => {
-            for child in &children {
-                node.missing += child.node.missing;
-                node.missing_bytes += child.node.missing_bytes;
-                node.extra += child.node.extra;
-                node.different += child.node.different;
-            }
-            if children
-                .iter()
-                .any(|child| child.node.status != DiffStatus::Same)
-            {
-                node.status = DiffStatus::Different;
-            }
-        }
+        // Both folders (or links): the totals are filled in from the children afterwards.
+        _ => {}
     }
-
-    let mut children = children;
-    children.sort_by(|a, b| {
-        largest(&b.node)
-            .cmp(&largest(&a.node))
-            .then_with(|| a.node.name.cmp(&b.node.name))
-    });
-    Owned { node, children }
-}
-
-fn largest(node: &DiffNode) -> u64 {
-    let size = |side: Option<DiffSide>| side.map_or(0, |side| side.size);
-    size(node.left).max(size(node.right))
+    node
 }
 
 /// Children of a side, empty unless that side is a folder.
@@ -439,21 +462,6 @@ fn pair_children<'a>(left: Pick<'a>, right: Pick<'a>) -> Vec<(Pick<'a>, Pick<'a>
         }
     }
     pairs
-}
-
-fn flatten(root: Owned) -> Vec<DiffNode> {
-    let mut nodes = vec![root.node];
-    let mut queue = VecDeque::from([(0usize, root.children)]);
-    while let Some((id, children)) = queue.pop_front() {
-        nodes[id].first_child = nodes.len() as NodeId;
-        nodes[id].child_count = children.len() as u32;
-        for mut child in children {
-            child.node.parent = id as NodeId;
-            nodes.push(child.node);
-            queue.push_back((nodes.len() - 1, child.children));
-        }
-    }
-    nodes
 }
 
 #[cfg(test)]
@@ -711,5 +719,21 @@ mod tests {
         assert!(statuses.contains(&DiffStatus::OnlyRight), "{statuses:?}");
         assert!(!row(&rows, "same.bin").lossy_name);
         assert_eq!(row(&rows, "same.bin").status, DiffStatus::Same);
+    }
+
+    #[test]
+    fn comparing_trees_far_deeper_than_any_path_does_not_recurse() {
+        let left = crate::scan::test_support::deep_chain(200_000);
+        let right = crate::scan::test_support::deep_chain(200_000);
+        let same = compare(&left, &right);
+        assert_eq!(same.summary().missing, 0);
+        assert_eq!(same.len(), 200_002);
+
+        // A shorter chain on the right: the bottom file is missing there.
+        let shorter = crate::scan::test_support::deep_chain(199_999);
+        let diff = compare(&left, &shorter);
+        assert_eq!(diff.summary().missing, 1);
+        assert_eq!(diff.summary().missing_bytes, 7);
+        assert_eq!(diff.node(0).unwrap().status, DiffStatus::Different);
     }
 }

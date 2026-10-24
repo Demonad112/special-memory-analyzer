@@ -1,5 +1,4 @@
 use crate::list::{list_dir, Entry};
-use rayon::prelude::*;
 use serde::Serialize;
 use std::collections::{HashSet, VecDeque};
 use std::fmt;
@@ -7,7 +6,7 @@ use std::fs;
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Index of a node in a [`Tree`]. The root is always 0.
@@ -305,30 +304,37 @@ pub fn scan(root: &Path, state: &ScanState) -> Result<Tree, ScanError> {
         return Err(ScanError::NotADirectory(root.to_path_buf()));
     }
 
-    let mut tree = scan_dir(root, root.display().to_string(), state);
+    let mut slots = scan_slots(root, root.display().to_string(), state);
     if state.cancel.is_cancelled() {
         return Err(ScanError::Cancelled);
     }
-    if tree.node.error.is_some() && tree.children.is_empty() {
+    if slots[0].node.error.is_some() && slots[0].kids.is_empty() {
         return Err(ScanError::Unreadable {
             path: root.to_path_buf(),
-            message: tree.node.error.unwrap_or_default(),
+            message: slots[0].node.error.take().unwrap_or_default(),
         });
     }
-    count_hard_links_once(&mut tree);
-    total_up(&mut tree);
-    Ok(flatten(tree))
+    let order = preorder(&slots);
+    count_hard_links_once(&mut slots, &order);
+    total_up(&mut slots, &order);
+    Ok(flatten(slots))
 }
 
-/// A node with owned children, built during the walk and then flattened into a [`Tree`].
-struct Owned {
+/// Stack size of the scan's worker threads. The walk keeps no folder on the call stack (it is
+/// a queue of tasks), so this is a margin, not a requirement.
+const SCAN_STACK_BYTES: usize = 64 << 20;
+
+/// A node of the tree while it is being built, in a flat list: `kids` are indexes into it. Nothing
+/// is nested, so a folder thousands of levels deep neither recurses nor overflows the stack
+/// when it is built, summed or dropped.
+struct Slot {
     node: Node,
-    children: Vec<Owned>,
+    kids: Vec<u32>,
     /// Volume-unique id of a file, 0 when unknown; used to find hard links.
     file_id: u64,
 }
 
-impl Owned {
+impl Slot {
     fn leaf(entry: Entry) -> Self {
         let mut node = Node::new(entry.name, entry.kind);
         node.size = entry.size;
@@ -340,102 +346,96 @@ impl Owned {
         node.lossy_name = entry.lossy;
         Self {
             node,
-            children: Vec::new(),
+            kids: Vec::new(),
             file_id: entry.file_id,
         }
     }
-}
 
-/// A file with several names (hard links) takes disk space once. The first name in walk order
-/// keeps its size on disk; the others show 0, so no folder total counts the data twice. Files are
-/// matched on file id and size together, because not every file system hands out reliable ids.
-fn count_hard_links_once(root: &mut Owned) {
-    fn collect(dir: &Owned, ids: &mut Vec<(u64, u64)>) {
-        for child in &dir.children {
-            if child.node.kind == Kind::File && child.file_id != 0 {
-                ids.push((child.file_id, child.node.size));
-            }
-            collect(child, ids);
+    fn dir(name: String) -> Self {
+        Self {
+            node: Node::new(name, Kind::Dir),
+            kids: Vec::new(),
+            file_id: 0,
         }
     }
-    fn zero_repeats(
-        dir: &mut Owned,
-        repeated: &HashSet<(u64, u64)>,
-        seen: &mut HashSet<(u64, u64)>,
-    ) {
-        for child in &mut dir.children {
-            if child.node.kind == Kind::File && child.file_id != 0 {
-                let key = (child.file_id, child.node.size);
-                if repeated.contains(&key) {
-                    child.node.hard_linked = true;
-                    if !seen.insert(key) {
-                        child.node.disk = 0;
-                    }
-                }
-            }
-            zero_repeats(child, repeated, seen);
-        }
-    }
-
-    let mut ids = Vec::new();
-    collect(root, &mut ids);
-    ids.sort_unstable();
-    let repeated: HashSet<(u64, u64)> = ids
-        .windows(2)
-        .filter(|pair| pair[0] == pair[1])
-        .map(|pair| pair[0])
-        .collect();
-    if !repeated.is_empty() {
-        zero_repeats(root, &repeated, &mut HashSet::new());
-    }
 }
 
-/// Adds every child into its folder and sorts each folder's children, largest first.
-fn total_up(dir: &mut Owned) {
-    let own_error = u64::from(dir.node.error.is_some());
-    for child in &mut dir.children {
-        total_up(child);
-    }
-    let node = &mut dir.node;
-    node.errors = own_error;
-    for child in &dir.children {
-        node.size += child.node.size;
-        node.disk += child.node.disk;
-        node.files += child.node.files;
-        node.dirs += child.node.dirs + u64::from(child.node.kind == Kind::Dir);
-        node.cloud_files += child.node.cloud_files;
-        node.cloud_bytes += child.node.cloud_bytes;
-        node.errors += child.node.errors;
-    }
-    dir.children.sort_by(|a, b| {
-        b.node
-            .size
-            .cmp(&a.node.size)
-            .then_with(|| a.node.name.cmp(&b.node.name))
-    });
+/// What the parallel walk shares: ids are handed out as folders are read, and each folder
+/// leaves its slots in `done`.
+struct Walk<'a> {
+    state: &'a ScanState,
+    next: AtomicU32,
+    done: Mutex<Vec<Vec<(u32, Slot)>>>,
 }
 
-fn scan_dir(path: &Path, name: String, state: &ScanState) -> Owned {
-    let mut dir = Owned {
-        node: Node::new(name, Kind::Dir),
-        children: Vec::new(),
-        file_id: 0,
+/// Walks the folder in parallel on a pool with a large stack, and returns the slots with the
+/// root at index 0. Folders are tasks, not recursive calls, so depth never reaches the stack.
+fn scan_slots(root: &Path, name: String, state: &ScanState) -> Vec<Slot> {
+    let walk = Walk {
+        state,
+        next: AtomicU32::new(1),
+        done: Mutex::new(Vec::new()),
+    };
+    let run = || {
+        rayon::scope(|scope| scan_dir(scope, &walk, root.to_path_buf(), name, 0));
+    };
+    match rayon::ThreadPoolBuilder::new()
+        .stack_size(SCAN_STACK_BYTES)
+        .thread_name(|index| format!("scan-{index}"))
+        .build()
+    {
+        Ok(pool) => pool.install(run),
+        // No threads to be had: the global pool still walks it.
+        Err(_) => run(),
+    }
+    let batches = walk
+        .done
+        .into_inner()
+        .unwrap_or_else(|err| err.into_inner());
+    let total = walk.next.into_inner() as usize;
+    let mut slots: Vec<Option<Slot>> = Vec::new();
+    slots.resize_with(total, || None);
+    for (id, slot) in batches.into_iter().flatten() {
+        slots[id as usize] = Some(slot);
+    }
+    slots
+        .into_iter()
+        .map(|slot| slot.expect("every reserved id was filled"))
+        .collect()
+}
+
+/// Reads one folder, queues a task for each subfolder, and files its own slots under `done`.
+fn scan_dir<'a>(
+    scope: &rayon::Scope<'a>,
+    walk: &'a Walk<'a>,
+    path: PathBuf,
+    name: String,
+    id: u32,
+) {
+    let state = walk.state;
+    let mut dir = Slot::dir(name);
+    let finish = |dir: Slot, mut batch: Vec<(u32, Slot)>| {
+        batch.push((id, dir));
+        walk.done
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .push(batch);
     };
     if state.cancel.is_cancelled() {
-        return dir;
+        return finish(dir, Vec::new());
     }
     state.dirs.fetch_add(1, Ordering::Relaxed);
     if let Ok(mut current) = state.current.try_lock() {
         *current = path.display().to_string();
     }
 
-    let listing = match list_dir(path) {
+    let listing = match list_dir(&path) {
         Ok(listing) => listing,
         Err(err) => {
             dir.node.error = Some(err.to_string());
             dir.node.error_code = err.raw_os_error();
             dir.node.errors = 1;
-            return dir;
+            return finish(dir, Vec::new());
         }
     };
     if let Some(err) = &listing.error {
@@ -443,6 +443,7 @@ fn scan_dir(path: &Path, name: String, state: &ScanState) -> Owned {
         dir.node.error_code = err.raw_os_error();
     }
 
+    let mut leaves = Vec::new();
     let mut subdirs = Vec::new();
     let mut files = 0;
     let mut bytes = 0;
@@ -452,12 +453,12 @@ fn scan_dir(path: &Path, name: String, state: &ScanState) -> Owned {
         }
         if entry.kind == Kind::Dir && entry.lossy {
             // No path can be built from the name, so the folder is listed but not entered.
-            let mut folder = Owned::leaf(entry);
+            let mut folder = Slot::leaf(entry);
             folder.node.error = Some(
                 "The folder name has characters that are not valid Unicode, so it was not opened."
                     .to_owned(),
             );
-            dir.children.push(folder);
+            leaves.push(folder);
         } else if entry.kind == Kind::Dir {
             subdirs.push((path.join(&entry.name), entry.name));
         } else {
@@ -465,31 +466,118 @@ fn scan_dir(path: &Path, name: String, state: &ScanState) -> Owned {
                 files += 1;
                 bytes += entry.size;
             }
-            dir.children.push(Owned::leaf(entry));
+            leaves.push(Slot::leaf(entry));
         }
     }
     state.files.fetch_add(files, Ordering::Relaxed);
     state.bytes.fetch_add(bytes, Ordering::Relaxed);
 
-    let subdirs: Vec<Owned> = subdirs
-        .into_par_iter()
-        .map(|(path, name)| scan_dir(&path, name, state))
+    // Children keep their listing order: files and unopened folders first, then subfolders.
+    let count = leaves.len() + subdirs.len();
+    let base = walk.next.fetch_add(count as u32, Ordering::Relaxed);
+    dir.kids = (base..base + count as u32).collect();
+    let mut batch = Vec::with_capacity(leaves.len() + 1);
+    for (index, leaf) in leaves.into_iter().enumerate() {
+        batch.push((base + index as u32, leaf));
+    }
+    let first_subdir = base + batch.len() as u32;
+    finish(dir, batch);
+    for (index, (path, name)) in subdirs.into_iter().enumerate() {
+        let child = first_subdir + index as u32;
+        scope.spawn(move |scope| scan_dir(scope, walk, path, name, child));
+    }
+}
+
+/// Slot indexes in walk order: a folder, then everything in its first child, and so on. Parents
+/// always come before their children.
+fn preorder(slots: &[Slot]) -> Vec<u32> {
+    let mut order = Vec::with_capacity(slots.len());
+    let mut stack = vec![0u32];
+    while let Some(at) = stack.pop() {
+        order.push(at);
+        stack.extend(slots[at as usize].kids.iter().rev());
+    }
+    order
+}
+
+/// A file with several names (hard links) takes disk space once. The first name in walk order
+/// keeps its size on disk; the others show 0, so no folder total counts the data twice. Files are
+/// matched on file id and size together, because not every file system hands out reliable ids.
+fn count_hard_links_once(slots: &mut [Slot], order: &[u32]) {
+    let key = |slot: &Slot| {
+        (slot.node.kind == Kind::File && slot.file_id != 0)
+            .then_some((slot.file_id, slot.node.size))
+    };
+    let mut ids: Vec<(u64, u64)> = order
+        .iter()
+        .filter_map(|&at| key(&slots[at as usize]))
         .collect();
-    dir.children.extend(subdirs);
-    dir
+    ids.sort_unstable();
+    let repeated: HashSet<(u64, u64)> = ids
+        .windows(2)
+        .filter(|pair| pair[0] == pair[1])
+        .map(|pair| pair[0])
+        .collect();
+    if repeated.is_empty() {
+        return;
+    }
+    let mut seen = HashSet::new();
+    for &at in order {
+        let slot = &mut slots[at as usize];
+        let Some(key) = key(slot) else { continue };
+        if repeated.contains(&key) {
+            slot.node.hard_linked = true;
+            if !seen.insert(key) {
+                slot.node.disk = 0;
+            }
+        }
+    }
+}
+
+/// Adds every child into its folder and sorts each folder's children, largest first. Children
+/// come after their parent in `order`, so going backwards finishes every child first.
+fn total_up(slots: &mut [Slot], order: &[u32]) {
+    for &at in order.iter().rev() {
+        let mut kids = std::mem::take(&mut slots[at as usize].kids);
+        let mut node = std::mem::replace(
+            &mut slots[at as usize].node,
+            Node::new(String::new(), Kind::Dir),
+        );
+        node.errors = u64::from(node.error.is_some());
+        for &kid in &kids {
+            let child = &slots[kid as usize].node;
+            node.size += child.size;
+            node.disk += child.disk;
+            node.files += child.files;
+            node.dirs += child.dirs + u64::from(child.kind == Kind::Dir);
+            node.cloud_files += child.cloud_files;
+            node.cloud_bytes += child.cloud_bytes;
+            node.errors += child.errors;
+        }
+        kids.sort_by(|&a, &b| {
+            let (a, b) = (&slots[a as usize].node, &slots[b as usize].node);
+            b.size.cmp(&a.size).then_with(|| a.name.cmp(&b.name))
+        });
+        slots[at as usize].node = node;
+        slots[at as usize].kids = kids;
+    }
 }
 
 /// Breadth-first, so every node's children end up next to each other.
-fn flatten(root: Owned) -> Tree {
+fn flatten(slots: Vec<Slot>) -> Tree {
+    let mut slots: Vec<Option<Slot>> = slots.into_iter().map(Some).collect();
+    let mut take = |at: u32| slots[at as usize].take().expect("each slot is placed once");
+    let root = take(0);
     let mut nodes = vec![root.node];
-    let mut queue = VecDeque::from([(0usize, root.children)]);
-    while let Some((id, children)) = queue.pop_front() {
+    let mut queue = VecDeque::from([(0usize, root.kids)]);
+    while let Some((id, kids)) = queue.pop_front() {
         nodes[id].first_child = nodes.len() as NodeId;
-        nodes[id].child_count = children.len() as u32;
-        for mut child in children {
+        nodes[id].child_count = kids.len() as u32;
+        for kid in kids {
+            let mut child = take(kid);
             child.node.parent = id as NodeId;
             nodes.push(child.node);
-            queue.push_back((nodes.len() - 1, child.children));
+            queue.push_back((nodes.len() - 1, child.kids));
         }
     }
     Tree { nodes }
@@ -507,6 +595,34 @@ pub fn is_junk(name: &str, is_dir: bool) -> bool {
         "thumbs.db" | "ehthumbs.db" | "desktop.ini" | ".ds_store"
     ) || name.starts_with("~$")
         || name.ends_with(".tmp")
+}
+
+/// Trees too deep to build on disk.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// `depth` folders inside each other, with a 7-byte file at the bottom, built without a walk.
+    pub(crate) fn deep_chain(depth: u32) -> Tree {
+        let mut nodes = Vec::new();
+        for level in 0..=depth {
+            let mut node = Node::new(format!("d{level}"), Kind::Dir);
+            node.size = 7;
+            node.disk = 7;
+            node.files = 1;
+            node.dirs = u64::from(depth - level);
+            node.parent = level.saturating_sub(1);
+            node.first_child = level + 1;
+            node.child_count = 1;
+            nodes.push(node);
+        }
+        let mut file = Node::new("bottom.bin".into(), Kind::File);
+        (file.size, file.disk, file.files) = (7, 7, 1);
+        file.parent = depth;
+        nodes.push(file);
+        nodes[depth as usize].first_child = depth + 1;
+        Tree { nodes }
+    }
 }
 
 #[cfg(test)]
@@ -896,5 +1012,40 @@ mod tests {
         assert!(tree.node(id).error.is_some());
         assert_eq!(tree.root().errors, 1);
         assert_eq!(tree.root().size, 3);
+    }
+
+    #[test]
+    fn a_folder_over_a_thousand_levels_deep_is_scanned_and_summed() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut deepest = temp.path().to_path_buf();
+        // Stays under the 4096-character path limit Linux enforces.
+        for _ in 0..1_200 {
+            deepest.push("d");
+        }
+        if fs::create_dir_all(&deepest).is_err() {
+            return; // this file system or path limit cannot hold it
+        }
+        write(&deepest.join("bottom.bin"), 11);
+        write(&temp.path().join("top.bin"), 5);
+
+        let tree = scan_ok(temp.path());
+
+        assert_eq!(tree.root().size, 16);
+        assert_eq!(tree.root().files, 2);
+        assert_eq!(tree.root().dirs, 1_200);
+        let mut at = 0;
+        for _ in 0..1_200 {
+            at = tree.child_by_name(at, "d").unwrap();
+        }
+        assert_eq!(tree.node(at).size, 11);
+        assert_eq!(tree.path(at), deepest);
+    }
+
+    #[test]
+    fn an_in_memory_tree_far_deeper_than_any_path_is_held_and_dropped() {
+        let tree = test_support::deep_chain(300_000);
+        assert_eq!(tree.len(), 300_002);
+        assert_eq!(tree.root().dirs, 300_000);
+        drop(tree);
     }
 }
