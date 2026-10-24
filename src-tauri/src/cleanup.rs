@@ -269,9 +269,16 @@ pub async fn cleanup_delete(
     })?;
 
     let job_target = target.clone();
-    // The log line is written by run_logged; the one-item page has nowhere to show a log error.
-    let (results, _) = tauri::async_runtime::spawn_blocking(move || {
-        run_logged(&[job_target], permanent, elevated, &root, token.as_deref())
+    // Logged without a run id: "Restore last cleanup" covers bulk runs only.
+    let (results, log_error) = tauri::async_runtime::spawn_blocking(move || {
+        run_logged(
+            &[job_target],
+            false,
+            permanent,
+            elevated,
+            &root,
+            token.as_deref(),
+        )
     })
     .await
     .map_err(|err| err.to_string())??;
@@ -304,8 +311,18 @@ pub async fn cleanup_delete(
         return Err(single_error(result));
     }
     let mut overview = overview;
-    overview.warning = warning.map(|err| report_warning(&err));
+    overview.warning = single_warning(log_error, warning);
     Ok(overview)
+}
+
+/// The deletion-log error and the saved-report error of a one-item delete, as the one warning
+/// the page can show.
+fn single_warning(log_error: Option<String>, report_error: Option<String>) -> Option<String> {
+    let parts: Vec<String> = log_error
+        .into_iter()
+        .chain(report_error.map(|err| report_warning(&err)))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" "))
 }
 
 /// What the page shows when a one-item delete did not take the item.
@@ -325,7 +342,7 @@ fn log_entry(
     result: &ItemResult,
     permanent: bool,
     elevated: bool,
-    run: &str,
+    run: Option<&str>,
     user: &str,
 ) -> LogEntry {
     LogEntry {
@@ -333,7 +350,7 @@ fn log_entry(
         size: result.size,
         result: result.outcome.code().into(),
         detail: result.message.clone(),
-        run: Some(run.to_string()),
+        run: run.map(str::to_string),
         ..stamped(
             transfer_core::now_ms(),
             user,
@@ -378,17 +395,20 @@ fn quick_log_entry(
 }
 
 /// Runs the deletes and appends each item's log line as soon as that item is done, so a crash
-/// or kill mid-run still leaves a record of what went. The deletes happened whether or not the
+/// or kill mid-run still leaves a record of what went. A bulk run stamps its lines with a run id
+/// (what "Restore last cleanup" groups by); a single delete passes `bulk = false` and is logged
+/// without one. The deletes happened whether or not the
 /// log could be written, so a failed append is returned beside the results, not as an error.
 fn run_logged(
     targets: &[Target],
+    bulk: bool,
     permanent: bool,
     elevated: bool,
     root: &Path,
     token: Option<&str>,
 ) -> Result<(Vec<ItemResult>, Option<String>), String> {
     let logs = report_core::logs_root();
-    let run = format!("run-{}", transfer_core::now_ms());
+    let run = bulk.then(|| format!("run-{}", transfer_core::now_ms()));
     let user = transfer_core::user_name();
     let mut log_error = None;
     let results = bulk::run(
@@ -398,7 +418,7 @@ fn run_logged(
         root,
         token,
         &mut |result| {
-            let entry = log_entry(result, permanent, elevated, &run, &user);
+            let entry = log_entry(result, permanent, elevated, run.as_deref(), &user);
             if let Err(err) = log::append(&logs, std::slice::from_ref(&entry)) {
                 log_error
                     .get_or_insert_with(|| format!("The deletion log could not be written: {err}"));
@@ -489,6 +509,7 @@ pub async fn cleanup_delete_many(
     let (results, log_error) = tauri::async_runtime::spawn_blocking(move || {
         run_logged(
             &job_targets,
+            true,
             permanent,
             elevated,
             &root,
@@ -766,9 +787,57 @@ mod tests {
     }
 
     #[test]
+    fn a_single_delete_is_logged_but_never_becomes_the_last_run() {
+        let bulk = |time_ms, path: &str| LogEntry {
+            path: path.into(),
+            time_ms,
+            ..log_entry(
+                &result(Outcome::Done, None),
+                false,
+                true,
+                Some("run-1"),
+                "t",
+            )
+        };
+        let single = LogEntry {
+            path: "C:\\scan\\single".into(),
+            time_ms: 9_000,
+            ..log_entry(&result(Outcome::Done, None), false, true, None, "t")
+        };
+        assert_eq!(single.run, None);
+        assert_eq!(single.result, "done");
+
+        let entries = [bulk(1_000, "C:\\a"), bulk(1_001, "C:\\b"), single];
+        let last: Vec<&str> = restore::last_run(&entries)
+            .into_iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert_eq!(last, ["C:\\a", "C:\\b"]);
+    }
+
+    #[test]
+    fn a_one_item_delete_shows_log_and_report_errors_in_one_warning() {
+        assert_eq!(single_warning(None, None), None);
+        let log_only = single_warning(
+            Some("The deletion log could not be written: x".into()),
+            None,
+        );
+        assert_eq!(
+            log_only.as_deref(),
+            Some("The deletion log could not be written: x")
+        );
+        let both = single_warning(Some("log".into()), Some("disk".into())).unwrap();
+        assert!(both.starts_with("log "), "{both}");
+        assert!(
+            both.contains("The saved report is out of date: disk"),
+            "{both}"
+        );
+    }
+
+    #[test]
     fn a_result_becomes_a_log_line_with_the_run_and_method() {
         let skipped = result(Outcome::Skipped, Some("left alone"));
-        let entry = log_entry(&skipped, false, true, "run-1", "tech");
+        let entry = log_entry(&skipped, false, true, Some("run-1"), "tech");
         assert_eq!((entry.method.as_str(), entry.elevated), ("recycle", true));
         assert_eq!(entry.run.as_deref(), Some("run-1"));
         assert_eq!(entry.user, "tech");
@@ -777,7 +846,7 @@ mod tests {
         assert_eq!(entry.size, 42);
         let done = result(Outcome::Done, None);
         assert_eq!(
-            log_entry(&done, true, false, "r", "tech").method,
+            log_entry(&done, true, false, Some("r"), "tech").method,
             "permanent"
         );
     }
