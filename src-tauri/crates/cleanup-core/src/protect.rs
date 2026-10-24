@@ -218,12 +218,20 @@ fn add_canonical(list: &mut Vec<String>) {
     }
 }
 
-/// `path` with its parent folder resolved (short names, `subst`, links); the last name is kept
-/// as written, so a link itself is judged as the link. None when the parent does not resolve.
+/// `path` with its folders resolved (short names, `subst`, links); the last name is kept as
+/// written, so a link itself is judged as the link. Folders that are gone are kept as written
+/// below the nearest one that resolves. None when no folder above it resolves.
 fn resolved_parent(path: &Path) -> Option<String> {
     let name = path.file_name()?;
-    let parent = scan_core::canonical_root(path.parent()?).ok()?;
-    Some(normalize(&parent.join(name).to_string_lossy()))
+    let parent = path.parent()?;
+    for ancestor in parent.ancestors() {
+        let Ok(resolved) = scan_core::canonical_root(ancestor) else {
+            continue;
+        };
+        let rest = parent.strip_prefix(ancestor).ok()?;
+        return Some(normalize(&resolved.join(rest).join(name).to_string_lossy()));
+    }
+    None
 }
 
 /// Names of the folders in the profile that start with a dot.
