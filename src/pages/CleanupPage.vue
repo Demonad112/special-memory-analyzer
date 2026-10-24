@@ -24,6 +24,7 @@ import DuplicatesPanel from '@/components/DuplicatesPanel.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import JobFields from '@/components/JobFields.vue'
 import JunkPanel from '@/components/JunkPanel.vue'
+import OwnersPanel from '@/components/OwnersPanel.vue'
 import PathField from '@/components/PathField.vue'
 import QuickWins from '@/components/QuickWins.vue'
 import RestoreLast from '@/components/RestoreLast.vue'
@@ -48,6 +49,7 @@ import {
   rowsByNode,
   rowsFor,
   runScan,
+  setOwnerFilter,
   scanPercent,
   setSizeMode,
   shownBytes,
@@ -182,6 +184,7 @@ function askDelete(item: PickedItem | null, permanent: boolean): void {
 function onRemoved(): void {
   picked.value = null
   void refreshDrives()
+  void ownersEl.value?.reload()
 }
 
 // Several items at once: tick rows, then review the dry run in the bulk dialog.
@@ -191,6 +194,7 @@ const restoreEl = ref<InstanceType<typeof RestoreLast> | null>(null)
 const junkEl = ref<InstanceType<typeof JunkPanel> | null>(null)
 const dupesEl = ref<InstanceType<typeof DuplicatesPanel> | null>(null)
 const staleEl = ref<InstanceType<typeof StalePanel> | null>(null)
+const ownersEl = ref<InstanceType<typeof OwnersPanel> | null>(null)
 watch(
   () => [job.overview, job.trail.length],
   () => {
@@ -230,6 +234,7 @@ function onBulkFinished(): void {
   void junkEl.value?.reload()
   void dupesEl.value?.reload()
   void staleEl.value?.reload()
+  void ownersEl.value?.reload()
   void restoreEl.value?.reload()
 }
 
@@ -602,6 +607,24 @@ onBeforeUnmount(() => {
         </template>
       </div>
 
+      <p
+        v-if="job.ownerFilter"
+        class="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-stroke bg-subtle px-3 py-1.5 text-[13px]"
+        role="status"
+      >
+        <span>
+          Showing only the files owned by <strong>{{ job.ownerFilter.name }}</strong
+          >. Sizes count just those files; deleting a folder still deletes everything in it.
+        </span>
+        <button
+          type="button"
+          class="ml-auto h-7 rounded-md border border-stroke bg-card px-3 hover:bg-card-hover"
+          @click="setOwnerFilter(null).catch((err) => showToast(errorMessage(err)))"
+        >
+          Show all files
+        </button>
+      </p>
+
       <CleanupBrowser
         :rows="viewRows"
         :picked-id="picked?.id ?? null"
@@ -737,6 +760,11 @@ onBeforeUnmount(() => {
         ref="staleEl"
         class="mt-6"
         @review="reviewIds"
+      />
+
+      <OwnersPanel
+        ref="ownersEl"
+        class="mt-6"
       />
     </div>
 

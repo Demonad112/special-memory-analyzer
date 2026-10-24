@@ -112,6 +112,9 @@ pub(super) fn disk_usage(report: &UsageReport, meta: Vec<(String, String)>) -> D
     if let Some(stale) = &report.stale {
         tables.push(stale_table(stale, report.size));
     }
+    if let Some(owners) = &report.owners {
+        tables.push(owners_table(owners));
+    }
     let explorer_on = report
         .explorer
         .as_ref()
@@ -212,6 +215,46 @@ fn duplicates_table(dupes: &DuplicateTotals) -> Table {
                 String::new()
             }
         ),
+        ..Table::default()
+    }
+}
+
+fn owners_table(owners: &OwnerTotals) -> Table {
+    Table {
+        heading: format!(
+            "Space by owner: {} in {}",
+            format_bytes(owners.total_disk),
+            plural(owners.total_files, "file")
+        ),
+        columns: vec![
+            "Owner".into(),
+            "Space".into(),
+            "Files".into(),
+            "Share".into(),
+            "Most of it in".into(),
+        ],
+        numeric: vec![false, true, true, true, false],
+        rows: owners
+            .owners
+            .iter()
+            .map(|owner| {
+                let share = if owners.total_disk > 0 {
+                    format!("{:.1}%", owner.disk as f64 * 100.0 / owners.total_disk as f64)
+                } else {
+                    String::new()
+                };
+                vec![
+                    owner.name.clone(),
+                    format_bytes(owner.disk),
+                    format_count(owner.files),
+                    share,
+                    owner.top_folders.join("; "),
+                ]
+            })
+            .collect(),
+        size_col: Some(1),
+        row_bytes: owners.owners.iter().map(|owner| owner.disk).collect(),
+        footnote: "Owner of each file as Windows records it. Online-only files are listed with the owner but take no space here.".into(),
         ..Table::default()
     }
 }

@@ -96,6 +96,31 @@ pub struct UsageReport {
     /// The last stale data report shown for this scan. Absent when none was shown.
     #[serde(default)]
     pub stale: Option<Box<StaleTotals>>,
+    /// The owner table, when "By owner" was run on this scan. Absent when it was not.
+    #[serde(default)]
+    pub owners: Option<Box<OwnerTotals>>,
+}
+
+/// Space by owner in a Disk Cleanup scan.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OwnerTotals {
+    /// Space on disk and files of the whole scan, for the share column.
+    pub total_disk: u64,
+    pub total_files: u64,
+    /// Most space first (at most 25).
+    pub owners: Vec<OwnerItem>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OwnerItem {
+    /// Account name, `SID (account not found)` or `Unknown (no access)`.
+    pub name: String,
+    pub files: u64,
+    pub disk: u64,
+    /// The first-level folders holding most of it (at most 3).
+    pub top_folders: Vec<String>,
 }
 
 /// Duplicate files found in a Disk Cleanup scan.

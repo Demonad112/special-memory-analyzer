@@ -142,6 +142,8 @@ export const cleanupJob = reactive({
   notice: '',
   /** The scan's saved report on the Reports page. */
   reportId: null as string | null,
+  /** When set, folders list only the files this owner owns (see `OwnersPanel`). */
+  ownerFilter: null as OwnerFilter | null,
 })
 
 /** This PC's drives, for the drive tiles on Home and Disk Cleanup. */
@@ -178,6 +180,7 @@ async function scanFolder(path: string): Promise<void> {
     error: '',
     notice: '',
     reportId: null,
+    ownerFilter: null,
   })
   navSeq++
   const onProgress = new Channel<ScanProgress>()
@@ -241,10 +244,45 @@ export function cancelScan(): Promise<void> {
 /** Counts navigations so a slow earlier one cannot overwrite a newer one. */
 let navSeq = 0
 
+/** Which owner the folder view is limited to: an index of the owner table. */
+export interface OwnerFilter {
+  index: number
+  name: string
+}
+
+/** The command and arguments that list a folder, limited to one owner when a filter is set. */
+export function childrenCall(
+  id: number,
+  filter: OwnerFilter | null,
+): { command: string; args: Record<string, number> } {
+  return filter
+    ? { command: 'cleanup_owner_children', args: { id, owner: filter.index } }
+    : { command: 'cleanup_children', args: { id } }
+}
+
+function childrenOf(id: number): Promise<CleanupRow[]> {
+  const { command, args } = childrenCall(id, cleanupJob.ownerFilter)
+  return invoke<CleanupRow[]>(command, args)
+}
+
+/** Limits the folder view to one owner's files, or lifts the limit; shows the same folder again. */
+export async function setOwnerFilter(filter: OwnerFilter | null): Promise<void> {
+  cleanupJob.ownerFilter = filter
+  const shown = cleanupJob.trail.at(-1)
+  if (!shown) {
+    return
+  }
+  const seq = ++navSeq
+  const rows = await childrenOf(shown.id)
+  if (seq === navSeq) {
+    cleanupJob.rows = rows
+  }
+}
+
 /** Shows what is inside `row`, a folder in the shown one. */
 export async function openFolder(row: CleanupRow): Promise<void> {
   const seq = ++navSeq
-  const rows = await invoke<CleanupRow[]>('cleanup_children', { id: row.id })
+  const rows = await childrenOf(row.id)
   if (seq !== navSeq) {
     return
   }
@@ -259,7 +297,7 @@ export async function openTrail(index: number): Promise<void> {
     return
   }
   const seq = ++navSeq
-  const rows = await invoke<CleanupRow[]>('cleanup_children', { id: folder.id })
+  const rows = await childrenOf(folder.id)
   if (seq !== navSeq) {
     return
   }
@@ -281,7 +319,7 @@ export async function removeItem(id: number, permanent: boolean): Promise<void> 
   const shown = cleanupJob.trail.at(-1)
   if (shown) {
     const seq = ++navSeq
-    const rows = await invoke<CleanupRow[]>('cleanup_children', { id: shown.id })
+    const rows = await childrenOf(shown.id)
     if (seq === navSeq) {
       cleanupJob.rows = rows
     }
@@ -602,7 +640,7 @@ export async function removeMany(
   const shown = cleanupJob.trail.at(-1)
   if (shown) {
     const seq = ++navSeq
-    const rows = await invoke<CleanupRow[]>('cleanup_children', { id: shown.id })
+    const rows = await childrenOf(shown.id)
     if (seq === navSeq) {
       cleanupJob.rows = rows
     }
@@ -791,6 +829,61 @@ export function tickedDisk(groups: DupeGroup[], ticked: ReadonlySet<number>): nu
     .flatMap((group) => group.members)
     .filter((member) => ticked.has(member.id))
     .reduce((sum, member) => sum + member.disk, 0)
+}
+
+export type OwnerKind = 'known' | 'notFound' | 'unreadable'
+
+export interface OwnerFolder {
+  id: number
+  name: string
+  disk: number
+}
+
+export interface OwnerRow {
+  /** What `OwnerFilter.index` takes. */
+  index: number
+  sid: string | null
+  name: string
+  kind: OwnerKind
+  files: number
+  /** Space on disk. */
+  disk: number
+  topFolders: OwnerFolder[]
+}
+
+export interface OwnerTable {
+  totalDisk: number
+  totalFiles: number
+  rows: OwnerRow[]
+}
+
+export interface OwnerProgress {
+  done: number
+  total: number
+}
+
+/** Reads the owner of every file in the scan (on demand); progress about every 100 ms. */
+export function readOwners(progress: (progress: OwnerProgress) => void): Promise<OwnerTable> {
+  const onProgress = new Channel<OwnerProgress>()
+  onProgress.onmessage = progress
+  return trackJob(() => invoke<OwnerTable>('cleanup_owners_read', { onProgress }))
+}
+
+export function cancelOwners(): Promise<void> {
+  return invoke('cleanup_owners_cancel')
+}
+
+/** The table as it is after deletes; null when the pass has not run on this scan. */
+export function loadOwnerTable(): Promise<OwnerTable | null> {
+  return invoke<OwnerTable | null>('cleanup_owners_table')
+}
+
+/** One line for the progress of the owner pass. */
+export function ownerProgressLine(progress: OwnerProgress | null): string {
+  if (!progress || progress.total === 0) {
+    return 'Reading owners…'
+  }
+  return `Reading owners: ${String(progress.done)} of ${String(progress.total)} files…`
 }
 
 /** The ages the stale report offers, in years; 3 is the default. */

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, type Component } from 'vue'
 import DuplicatesPanel from '@/components/DuplicatesPanel.vue'
 import JunkPanel from '@/components/JunkPanel.vue'
+import OwnersPanel from '@/components/OwnersPanel.vue'
 import QuickWins from '@/components/QuickWins.vue'
 import StalePanel from '@/components/StalePanel.vue'
 
@@ -24,6 +25,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 
 import {
+  childrenCall,
   cleanupJob,
   driveFor,
   escapeCancelsScan,
@@ -59,6 +61,9 @@ import {
   dupeProgressLine,
   lastAccessNote,
   loadStale,
+  ownerProgressLine,
+  setOwnerFilter,
+  type OwnerTable,
   type StaleReport,
   findDuplicates,
   groupsWithoutCopy,
@@ -848,5 +853,98 @@ describe('stale data', () => {
     const boxes = host.querySelectorAll('input[type="checkbox"]')
     expect(boxes).toHaveLength(2)
     expect(host.querySelectorAll('input[type="checkbox"]:checked')).toHaveLength(0)
+  })
+})
+
+describe('space by owner', () => {
+  const table: OwnerTable = {
+    totalDisk: 1000,
+    totalFiles: 7,
+    rows: [
+      {
+        index: 2,
+        sid: 'S-1-5-21-1',
+        name: 'CORP\\alice',
+        kind: 'known',
+        files: 5,
+        disk: 750,
+        topFolders: [{ id: 3, name: 'C:\\Shares\\a', disk: 600 }],
+      },
+      {
+        index: 0,
+        sid: null,
+        name: 'Unknown (no access)',
+        kind: 'unreadable',
+        files: 2,
+        disk: 250,
+        topFolders: [],
+      },
+    ],
+  }
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+  afterEach(() => {
+    core.invoke.mockReset()
+    cleanupJob.ownerFilter = null
+    cleanupJob.trail = []
+    document.body.innerHTML = ''
+  })
+
+  it('lists a folder through the owner command only while a filter is set', () => {
+    expect(childrenCall(5, null)).toEqual({ command: 'cleanup_children', args: { id: 5 } })
+    expect(childrenCall(5, { index: 2, name: 'alice' })).toEqual({
+      command: 'cleanup_owner_children',
+      args: { id: 5, owner: 2 },
+    })
+  })
+
+  it('shows the same folder again when the filter changes', async () => {
+    cleanupJob.trail = [row(0, 'C:\\', 100), row(3, 'a', 60)]
+    core.invoke.mockResolvedValue([row(4, 'x', 10)])
+    await setOwnerFilter({ index: 2, name: 'alice' })
+    expect(core.invoke).toHaveBeenLastCalledWith('cleanup_owner_children', { id: 3, owner: 2 })
+    expect(cleanupJob.rows.map((r) => r.id)).toEqual([4])
+    await setOwnerFilter(null)
+    expect(core.invoke).toHaveBeenLastCalledWith('cleanup_children', { id: 3 })
+  })
+
+  it('words the progress', () => {
+    expect(ownerProgressLine(null)).toBe('Reading owners…')
+    expect(ownerProgressLine({ done: 3, total: 10 })).toBe('Reading owners: 3 of 10 files…')
+  })
+
+  it('reads owners only when asked, then filters by the clicked owner', async () => {
+    core.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'cleanup_owners_read':
+          return Promise.resolve(table)
+        case 'cleanup_owner_children':
+          return Promise.resolve([])
+        default:
+          return Promise.reject(new Error(command))
+      }
+    })
+    cleanupJob.trail = [row(0, 'C:\\', 1000)]
+    const host = document.createElement('div')
+    document.body.append(host)
+    createApp(OwnersPanel).mount(host)
+    await settle()
+    expect(core.invoke).not.toHaveBeenCalled()
+
+    const byOwner = [...host.querySelectorAll('button')].find((b) =>
+      b.textContent?.includes('By owner'),
+    )
+    byOwner?.click()
+    await settle()
+    expect(core.invoke).toHaveBeenCalledWith('cleanup_owners_read', expect.anything())
+    expect(host.textContent).toContain('CORP\\alice')
+    expect(host.textContent).toContain('75%')
+    expect(host.textContent).toContain('Unknown (no access)')
+
+    const alice = [...host.querySelectorAll('button')].find((b) => b.textContent?.includes('alice'))
+    alice?.click()
+    await settle()
+    expect(cleanupJob.ownerFilter).toEqual({ index: 2, name: 'CORP\\alice' })
+    expect(core.invoke).toHaveBeenLastCalledWith('cleanup_owner_children', { id: 0, owner: 2 })
   })
 })

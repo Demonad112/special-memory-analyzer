@@ -686,12 +686,73 @@ fn readiness_says_when_files_in_use_were_not_checked() {
 fn usage_reports_without_duplicate_or_stale_fields_load_and_export_as_before() {
     let old: UsageReport =
         serde_json::from_str(r#"{"path":"C:\\","size":10,"files":1,"removed":[]}"#).unwrap();
-    assert_eq!((old.duplicates.clone(), old.stale.clone()), (None, None));
+    assert_eq!(
+        (
+            old.duplicates.clone(),
+            old.stale.clone(),
+            old.owners.clone()
+        ),
+        (None, None, None)
+    );
     let doc = document(&saved(Body::DiskUsage(old)));
     let headings: Vec<&str> = doc.tables.iter().map(|t| t.heading.as_str()).collect();
     assert_eq!(headings, ["Largest files", "Biggest folders", "File types"]);
     assert!(!doc.html("", "").contains("Duplicates"));
     assert!(!doc.csv().contains("Stale data"));
+    assert!(!doc.html("", "").contains("Space by owner"));
+}
+
+#[test]
+fn usage_report_shows_the_owner_table() {
+    let report = UsageReport {
+        path: r"D:\Shares".into(),
+        size: 10_000,
+        owners: Some(Box::new(OwnerTotals {
+            total_disk: 8_000,
+            total_files: 12,
+            owners: vec![
+                OwnerItem {
+                    name: r"CORP\alice".into(),
+                    files: 9,
+                    disk: 6_000,
+                    top_folders: vec![r"D:\Shares\a".into(), r"D:\Shares\b".into()],
+                },
+                OwnerItem {
+                    name: "Unknown (no access)".into(),
+                    files: 3,
+                    disk: 2_000,
+                    top_folders: Vec::new(),
+                },
+            ],
+        })),
+        ..UsageReport::default()
+    };
+    let again: UsageReport =
+        serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
+    assert_eq!(again, report);
+
+    let doc = document(&saved(Body::DiskUsage(report)));
+    let table = doc
+        .tables
+        .iter()
+        .find(|t| t.heading.starts_with("Space by owner"))
+        .unwrap();
+    assert_eq!(
+        table.heading,
+        format!("Space by owner: {} in 12 files", format_bytes(8_000))
+    );
+    assert_eq!(
+        table.rows[0],
+        [
+            r"CORP\alice".to_string(),
+            format_bytes(6_000),
+            "9".to_string(),
+            "75.0%".to_string(),
+            r"D:\Shares\a; D:\Shares\b".to_string(),
+        ]
+    );
+    assert_eq!(table.rows[1][3], "25.0%");
+    assert!(doc.html("", "").contains("Unknown (no access)"));
 }
 
 #[test]
