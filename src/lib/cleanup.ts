@@ -201,6 +201,22 @@ export function escapeCancelsScan(key: string, running: boolean, covered: boolea
   return key === 'Escape' && running && !covered
 }
 
+/** The tab an arrow, Home or End key moves to in a row of `count` tabs, or null for other keys. */
+export function nextTabIndex(key: string, index: number, count: number): number | null {
+  switch (key) {
+    case 'ArrowRight':
+      return (index + 1) % count
+    case 'ArrowLeft':
+      return (index - 1 + count) % count
+    case 'Home':
+      return 0
+    case 'End':
+      return count - 1
+    default:
+      return null
+  }
+}
+
 export function cancelScan(): Promise<void> {
   return invoke('cleanup_cancel')
 }

@@ -25,6 +25,7 @@ import {
   cleanupJob,
   driveFor,
   escapeCancelsScan,
+  nextTabIndex,
   groupsIn,
   offeredItems,
   openFolder,
@@ -185,6 +186,17 @@ describe('escapeCancelsScan', () => {
     expect(escapeCancelsScan('Escape', true, true)).toBe(false)
     expect(escapeCancelsScan('Escape', false, false)).toBe(false)
     expect(escapeCancelsScan('Enter', true, false)).toBe(false)
+  })
+})
+
+describe('nextTabIndex', () => {
+  it('moves with the arrow keys, wrapping, and jumps with Home and End', () => {
+    expect(nextTabIndex('ArrowRight', 0, 2)).toBe(1)
+    expect(nextTabIndex('ArrowRight', 1, 2)).toBe(0)
+    expect(nextTabIndex('ArrowLeft', 0, 2)).toBe(1)
+    expect(nextTabIndex('Home', 1, 2)).toBe(0)
+    expect(nextTabIndex('End', 0, 2)).toBe(1)
+    expect(nextTabIndex('a', 0, 2)).toBeNull()
   })
 })
 
