@@ -467,8 +467,9 @@ async function reveal(relativePath: string, side: RevealSide): Promise<void> {
           v-if="totals.notCopied > shownRows"
           class="mt-2 text-[13px] text-muted"
         >
-          Showing the first {{ formatCount(shownRows) }}. Retry and Copy missed to… cover all of
-          them<template v-if="totals.notCopied > (details?.notCopied.length ?? 0)"
+          Showing {{ formatCount(shownRows) }} of {{ formatCount(totals.notCopied) }}; the full list
+          is in the CSV. Retry and Copy missed to… cover all of them<template
+            v-if="totals.notCopied > (details?.notCopied.length ?? 0)"
             >; Copy list covers the first
             {{ formatCount(details?.notCopied.length ?? 0) }}</template
           >.

@@ -60,19 +60,24 @@ export function formatClock(ms: number): string {
   return `${String(Math.floor(seconds / 60))}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-/** "Oct 23, 2026, 5:07 PM": the one date-and-time format used in the app. */
+/** "Oct 23, 2026, 5:07 PM" (en-US shown): the one date-and-time format used in the app, in the user locale. Saved reports stay en-US. */
 export function formatDateTime(when: Date | number): string {
+  return new Date(when).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+/** "Oct 23, 2026, 5:07 PM" in en-US whatever the locale: for text that leaves the app (pasted lists, reports). */
+export function formatReportDateTime(when: Date | number): string {
   return new Date(when).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
 /** "Oct 23, 2026". */
 export function formatDate(when: Date | number): string {
-  return new Date(when).toLocaleDateString('en-US', { dateStyle: 'medium' })
+  return new Date(when).toLocaleDateString(undefined, { dateStyle: 'medium' })
 }
 
 /** "5:07 PM". */
 export function formatTime(when: Date | number): string {
-  return new Date(when).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  return new Date(when).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
 }
 
 /** `size` as a share of `total`: "42%", one decimal under 10% ("3.5%"), "0%" for an empty total. */

@@ -6,6 +6,7 @@ import {
   formatDate,
   formatDateTime,
   formatDelta,
+  formatReportDateTime,
   formatDuration,
   formatTime,
   percentShare,
@@ -66,12 +67,17 @@ describe('clock and date formats', () => {
     expect(formatClock(-5000)).toBe('0:00')
   })
 
-  it('formats dates the same way everywhere', () => {
+  it('formats dates in the user locale, the same way everywhere', () => {
     const when = new Date(2026, 9, 23, 17, 7)
-    expect(formatDateTime(when)).toBe('Oct 23, 2026, 5:07 PM')
-    expect(formatDate(when)).toBe('Oct 23, 2026')
-    expect(formatTime(when)).toBe('5:07 PM')
+    expect(formatDateTime(when)).toBe(
+      when.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }),
+    )
+    expect(formatDate(when)).toBe(when.toLocaleDateString(undefined, { dateStyle: 'medium' }))
+    expect(formatTime(when)).toBe(
+      when.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
+    )
     expect(formatDateTime(when.getTime())).toBe(formatDateTime(when))
+    expect(formatReportDateTime(when)).toBe('Oct 23, 2026, 5:07 PM')
   })
 })
 

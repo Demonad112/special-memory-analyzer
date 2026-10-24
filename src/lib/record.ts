@@ -1,7 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { reactive } from 'vue'
 import { trackJob } from './busy'
-import { formatBytes, formatDateTime, plural } from './format'
+import { formatBytes, formatReportDateTime, plural } from './format'
 import { currentJob, type JobInfo } from './job'
 
 /** Copy: Deep Server Analyzer copies. Watch: another program copies and Deep Server Analyzer checks what arrives. */
@@ -347,7 +347,7 @@ export function formatNotCopiedList(details: RunDetails): string {
     `Not copied: ${plural(summary.totals.notCopied, 'item')} (${formatBytes(summary.totals.notCopiedBytes)})`,
     `Source: ${summary.settings.source}`,
     `Destination: ${summary.settings.destination}`,
-    `Recorded: ${formatDateTime(summary.createdAtMs)}`,
+    `Recorded: ${formatReportDateTime(summary.createdAtMs)}`,
   ]
   const rows = details.notCopied.map(
     (item) => `${item.relativePath.replaceAll('/', '\\')}\t${reasonTitle(item.reason)}`,
