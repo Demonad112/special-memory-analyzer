@@ -52,4 +52,63 @@ mod tests {
         assert!(!has_reparse_ancestor(&root.join("a/b/file.bin"), &root));
         assert!(!has_reparse_ancestor(&root.join("a"), &root));
     }
+
+    /// A directory link: a junction on Windows (`mklink /J`, no privilege needed), a symlink elsewhere.
+    fn dir_link(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "mklink /J failed");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[test]
+    fn normalize_folds_case_slashes_prefixes_and_trailing_separators() {
+        assert_eq!(normalize(r"C:\Users\Sam\"), r"c:\users\sam");
+        assert_eq!(normalize("C:/Users/Sam"), r"c:\users\sam");
+        assert_eq!(normalize(r"\\?\C:\Users"), r"c:\users");
+        assert_eq!(normalize(r"\\?\UNC\Server\Share\"), r"\\server\share");
+        assert_eq!(normalize("  C:\\Temp  "), r"c:\temp");
+    }
+
+    #[test]
+    fn a_link_is_a_reparse_point_and_a_plain_folder_or_missing_path_is_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        fs::create_dir_all(&real).unwrap();
+        let link = temp.path().join("link");
+        dir_link(&link, &real);
+        assert!(is_reparse_point(&link));
+        assert!(!is_reparse_point(&real));
+        assert!(!is_reparse_point(&temp.path().join("missing")));
+    }
+
+    #[test]
+    fn a_link_above_the_path_is_a_reparse_ancestor_but_the_root_itself_is_not_checked() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let other = temp.path().join("other");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(other.join("deep")).unwrap();
+        fs::write(other.join("deep/file.bin"), b"x").unwrap();
+        dir_link(&root.join("swapped"), &other);
+        assert!(has_reparse_ancestor(
+            &root.join("swapped/deep/file.bin"),
+            &root
+        ));
+        // The link itself is not its own ancestor: callers test it with `is_reparse_point`.
+        assert!(!has_reparse_ancestor(&root.join("swapped"), &root));
+        // A link at or above the scan root is outside the walk.
+        assert!(!has_reparse_ancestor(
+            &root.join("swapped/deep/file.bin"),
+            &root.join("swapped")
+        ));
+    }
 }

@@ -328,18 +328,34 @@ fn log_entry(
     run: &str,
     user: &str,
 ) -> LogEntry {
-    let now = transfer_core::now_ms();
+    LogEntry {
+        path: result.path.clone(),
+        size: result.size,
+        result: result.outcome.code().into(),
+        detail: result.message.clone(),
+        run: Some(run.to_string()),
+        ..stamped(
+            transfer_core::now_ms(),
+            user,
+            elevated,
+            if permanent { "permanent" } else { "recycle" },
+        )
+    }
+}
+
+/// A log line with who, when and how filled in; the caller sets the rest.
+fn stamped(now: u64, user: &str, elevated: bool, method: &str) -> LogEntry {
     LogEntry {
         time: transfer_core::format_utc(now),
         time_ms: now,
         user: user.to_string(),
         elevated,
-        path: result.path.clone(),
-        size: result.size,
-        method: if permanent { "permanent" } else { "recycle" }.into(),
-        result: result.outcome.code().into(),
-        detail: result.message.clone(),
-        run: Some(run.to_string()),
+        path: String::new(),
+        size: 0,
+        method: method.into(),
+        result: String::new(),
+        detail: None,
+        run: None,
     }
 }
 
@@ -352,18 +368,12 @@ fn quick_log_entry(
     elevated: bool,
     user: &str,
 ) -> LogEntry {
-    let now = transfer_core::now_ms();
     LogEntry {
-        time: transfer_core::format_utc(now),
-        time_ms: now,
-        user: user.to_string(),
-        elevated,
         path: target.to_string_lossy().into_owned(),
         size: done.freed,
-        method: id.log_method().into(),
         result: "done".into(),
         detail: Some(format!("{} files, quick cleanup {id:?}", done.removed)),
-        run: None,
+        ..stamped(transfer_core::now_ms(), user, elevated, id.log_method())
     }
 }
 
@@ -546,16 +556,11 @@ pub async fn cleanup_restore_last() -> Result<Vec<RestoreResult>, String> {
         let logged: Vec<LogEntry> = results
             .iter()
             .map(|result| LogEntry {
-                time: transfer_core::format_utc(now),
-                time_ms: now,
-                user: user.clone(),
-                elevated,
                 path: result.path.clone(),
                 size: result.size,
-                method: "restore".into(),
                 result: result.outcome.code().into(),
                 detail: result.message.clone(),
-                run: None,
+                ..stamped(now, &user, elevated, "restore")
             })
             .collect();
         if let Err(err) = log::append(&logs, &logged) {
