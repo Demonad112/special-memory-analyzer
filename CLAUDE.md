@@ -63,6 +63,7 @@ Run quality and tests before opening a PR. Scope tests to the touched files when
 - Long jobs are `async` + `spawn_blocking`, stream progress about every 100 ms, and keep big results in managed state. The UI loads one folder level at a time.
 - Every new saved-report field needs `#[serde(default)]`.
 - Disk Cleanup deletes go to the Recycle Bin by default, and every deletion is appended to `Logs\deletions.jsonl`.
+- App errors go through `report_core::applog::error` (not `eprintln!`) so they reach `Logs\app.log`, 1 MB x 3.
 - Apache-2.0 only: never copy source from GPL tools such as WinDirStat.
 - Data lives in `%LOCALAPPDATA%\Deep Server Analyzer`. Overrides: `DEEP_SERVER_ANALYZER_RECORDS_DIR`, `_REPORTS_DIR`, `_LOGS_DIR`.
 - Refresh the report explorer fixture with `UPDATE_FIXTURES=1 cargo test -p report-core explorer_fixture`.

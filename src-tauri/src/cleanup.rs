@@ -406,7 +406,7 @@ fn run_logged(
         },
     )?;
     if let Some(message) = &log_error {
-        eprintln!("{message}");
+        report_core::applog::error(message);
     }
     Ok((results, log_error))
 }
@@ -564,7 +564,7 @@ pub async fn cleanup_restore_last() -> Result<Vec<RestoreResult>, String> {
             })
             .collect();
         if let Err(err) = log::append(&logs, &logged) {
-            eprintln!("The deletion log could not be written: {err}");
+            report_core::applog::error(&format!("The deletion log could not be written: {err}"));
         }
         Ok(results)
     })
@@ -642,7 +642,9 @@ pub async fn cleanup_quick_clean(ids: Vec<QuickId>, job: JobInfo) -> Result<Quic
                 let mut log_target = |target: &Path, done: &quick::Cleaned| {
                     let entry = quick_log_entry(id, target, done, elevated, &user);
                     if let Err(err) = log::append(&logs, std::slice::from_ref(&entry)) {
-                        eprintln!("The deletion log could not be written: {err}");
+                        report_core::applog::error(&format!(
+                            "The deletion log could not be written: {err}"
+                        ));
                     }
                 };
                 match quick::clean_with(&places, id, &mut log_target) {
