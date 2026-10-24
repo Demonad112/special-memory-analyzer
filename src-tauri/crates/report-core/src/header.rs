@@ -70,12 +70,25 @@ pub(crate) struct ReadinessHeader {
     pub long_paths: u64,
     pub unreadable: u64,
     pub links: u64,
+    pub in_use: InUseHeader,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct InUseHeader {
+    pub in_use: u64,
+    pub unreadable: u64,
 }
 
 impl ReadinessHeader {
     /// Something to fix or look at before the copy; matches `ReadinessReport::has_problems`.
     pub(crate) fn has_problems(&self) -> bool {
-        self.name_problems + self.long_paths + self.unreadable > 0
+        self.name_problems
+            + self.long_paths
+            + self.unreadable
+            + self.in_use.in_use
+            + self.in_use.unreadable
+            > 0
     }
 }
 
@@ -129,6 +142,10 @@ impl Header {
                 long_paths: report.long_paths,
                 unreadable: report.unreadable,
                 links: report.links,
+                in_use: InUseHeader {
+                    in_use: report.in_use.in_use,
+                    unreadable: report.in_use.unreadable,
+                },
             }),
         };
         Self {
@@ -433,6 +450,16 @@ mod tests {
         let row = header_entry(read_text(text).unwrap());
         assert_eq!(row.id, "from-name");
         assert_eq!(row.subject, "G:\\");
+    }
+
+    #[test]
+    fn a_readiness_report_with_files_in_use_is_a_problem() {
+        let text = format!(
+            r#"{{{ENVELOPE},"body":{{"kind":"readiness","data":{{"source":"S","inUse":{{"status":"checked","inUse":2}}}}}}}}"#
+        );
+        let row = header_entry(read_text(&text).unwrap());
+        assert_eq!(row.headline, "2 files in use");
+        assert!(row.problem);
     }
 
     #[test]

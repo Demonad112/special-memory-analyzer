@@ -125,6 +125,7 @@ pub async fn readiness_start(
     path: String,
     destination: String,
     target: TargetProfile,
+    check_in_use: bool,
     job: JobInfo,
     on_event: Channel<ReadinessEvent>,
 ) -> Result<ReadinessResult, String> {
@@ -132,6 +133,7 @@ pub async fn readiness_start(
     let options = Options {
         target,
         destination_root: destination_root(&destination)?,
+        check_in_use,
     };
     // Held until the check is done: an elevated record and a scan must not overlap.
     let _scan = record.scan_guard()?;

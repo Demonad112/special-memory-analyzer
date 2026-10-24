@@ -6,7 +6,7 @@ import { errorMessage } from './errors'
 import { currentJob } from './job'
 
 export type TargetProfile = 'fileServer' | 'sharePoint'
-export type ProblemKind = 'name' | 'longPath' | 'unreadable' | 'link' | 'other'
+export type ProblemKind = 'name' | 'longPath' | 'inUse' | 'unreadable' | 'link' | 'other'
 
 export const targetLabels: Record<TargetProfile, string> = {
   fileServer: 'File server (NTFS)',
@@ -17,6 +17,7 @@ export const targetLabels: Record<TargetProfile, string> = {
 export const kindHeadings: Record<ProblemKind, string> = {
   name: 'Names',
   longPath: 'Long paths',
+  inUse: 'In use',
   unreadable: 'Could not be read',
   link: 'Links (not followed)',
   other: 'Other',
@@ -29,6 +30,8 @@ export interface RowProblem {
   hint: string
   /** The item cannot be created at the target; the rest are warnings. */
   blocker: boolean
+  /** In use: the programs Restart Manager named. */
+  holders: { app: string; pid: number }[]
 }
 
 /** A file or folder with problems at or below it. */
@@ -64,11 +67,26 @@ export interface ReadinessReport {
   problemsTotal: number
   elapsedMs: number
   counts: RuleCount[]
+  inUse: InUseSummary
+}
+
+export interface InUseSummary {
+  status: 'off' | 'checked' | 'notSupported' | 'other'
+  checked: number
+  inUse: number
+  unreadable: number
+  /** Links and online-only files: never opened. */
+  skipped: number
+  holdersAsked: number
 }
 
 export interface ReadinessProgress {
-  phase: 'scan' | 'names'
+  phase: 'scan' | 'names' | 'inUse'
   scan: ScanProgress
+  /** In-use pass: files to open, opened so far, found in use. */
+  toCheck: number
+  checked: number
+  inUse: number
 }
 
 export interface ReadinessResult {
@@ -85,9 +103,7 @@ type ReadinessEvent = { kind: 'progress'; progress: ReadinessProgress }
 export const CANCELLED = 'cancelled'
 
 export function startReadiness(
-  path: string,
-  destination: string,
-  target: TargetProfile,
+  form: ReadinessForm,
   onProgress: (progress: ReadinessProgress) => void,
 ): Promise<ReadinessResult> {
   const onEvent = new Channel<ReadinessEvent>()
@@ -96,9 +112,10 @@ export function startReadiness(
   }
   return trackJob(() =>
     invoke<ReadinessResult>('readiness_start', {
-      path,
-      destination,
-      target,
+      path: form.path,
+      destination: form.destination,
+      target: form.target,
+      checkInUse: form.checkInUse,
       job: currentJob(),
       onEvent,
     }),
@@ -184,6 +201,8 @@ export interface ReadinessForm {
   path: string
   destination: string
   target: TargetProfile
+  /** Open every file to find the ones in use. On unless turned off. */
+  checkInUse: boolean
 }
 
 const formKey = 'analyzer-readiness'
@@ -192,17 +211,18 @@ export function loadForm(): ReadinessForm {
   try {
     const saved: unknown = JSON.parse(localStorage.getItem(formKey) ?? 'null')
     if (saved && typeof saved === 'object') {
-      const { path, destination, target } = saved as Record<string, unknown>
+      const { path, destination, target, checkInUse } = saved as Record<string, unknown>
       return {
         path: typeof path === 'string' ? path : '',
         destination: typeof destination === 'string' ? destination : '',
         target: target === 'sharePoint' ? 'sharePoint' : 'fileServer',
+        checkInUse: checkInUse !== false,
       }
     }
   } catch {
     // Unreadable storage: start empty.
   }
-  return { path: '', destination: '', target: 'fileServer' }
+  return { path: '', destination: '', target: 'fileServer', checkInUse: true }
 }
 
 export function saveForm(form: ReadinessForm): void {
@@ -257,7 +277,7 @@ export async function runReadinessJob(form: ReadinessForm): Promise<void> {
     startedAt: Date.now(),
   })
   try {
-    const result = await startReadiness(form.path, form.destination, form.target, (update) => {
+    const result = await startReadiness(form, (update) => {
       readinessJob.progress = update
     })
     Object.assign(readinessJob, {

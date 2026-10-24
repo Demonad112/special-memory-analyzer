@@ -513,6 +513,7 @@ fn readiness_report() -> ReadinessReport {
         rule: rule.into(),
         hint: format!("fix {path}"),
         blocker,
+        ..Problem::default()
     };
     let count = |kind, rule: &str, count, blocker| RuleCount {
         kind,
@@ -601,4 +602,82 @@ fn a_readiness_report_without_problems_is_good() {
     assert_eq!(doc.verdict, Some(Verdict::Good));
     assert_eq!(doc.tables.len(), 1);
     assert!(doc.notes[0].contains("measured at the source"));
+}
+
+#[test]
+fn readiness_in_use_section_names_the_holder_and_the_moment() {
+    use migrate_core::{InUseStatus, InUseSummary, Problem, ProblemKind, RuleCount};
+    let report = ReadinessReport {
+        source: r"F:\Mail".into(),
+        counts: vec![RuleCount {
+            kind: ProblemKind::InUse,
+            rule: "inUse".into(),
+            count: 1,
+            blocker: false,
+        }],
+        problems: vec![Problem {
+            path: "a.pst".into(),
+            kind: ProblemKind::InUse,
+            rule: "inUse".into(),
+            hint: "Held by OUTLOOK.EXE (PID 4120): close it".into(),
+            ..Problem::default()
+        }],
+        in_use: InUseSummary {
+            status: InUseStatus::Checked,
+            checked: 9,
+            in_use: 1,
+            skipped: 2,
+            ..InUseSummary::default()
+        },
+        ..ReadinessReport::default()
+    };
+    let saved = saved(Body::Readiness(report));
+    let row = entry(&saved);
+    assert_eq!(row.headline, "1 file in use");
+    assert!(row.problem);
+    let doc = document(&saved);
+    assert_eq!(doc.verdict, Some(Verdict::Bad));
+    let table = doc
+        .tables
+        .iter()
+        .find(|table| table.heading == "Files in use")
+        .unwrap();
+    assert_eq!(table.rows[0][1], "Open in another program");
+    assert!(table.rows[0][2].contains("OUTLOOK.EXE (PID 4120)"));
+    let in_use = doc
+        .tiles
+        .iter()
+        .find(|tile| tile.label == "In use")
+        .unwrap();
+    assert_eq!(in_use.value, "1 file");
+    assert!(doc.notes.iter().any(|note| note.contains("moment in time")
+        && note.contains("9 files")
+        && note.contains("2 items (links and online-only files)")));
+    assert!(doc
+        .csv()
+        .contains("In use,Open in another program,a.pst,File,No,"));
+}
+
+#[test]
+fn readiness_says_when_files_in_use_were_not_checked() {
+    use migrate_core::{InUseStatus, InUseSummary};
+    for (status, says) in [
+        (InUseStatus::Off, "turned off"),
+        (InUseStatus::NotSupported, "not checked on this system"),
+    ] {
+        let doc = document(&saved(Body::Readiness(ReadinessReport {
+            in_use: InUseSummary {
+                status,
+                ..InUseSummary::default()
+            },
+            ..ReadinessReport::default()
+        })));
+        assert!(doc.notes.iter().any(|note| note.contains(says)), "{says}");
+        let tile = doc
+            .tiles
+            .iter()
+            .find(|tile| tile.label == "In use")
+            .unwrap();
+        assert_eq!(tile.value, "Not checked");
+    }
 }

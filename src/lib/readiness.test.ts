@@ -56,6 +56,14 @@ function result(rows: ReadinessRow[] = []): ReadinessResult {
       problemsTotal: 1,
       elapsedMs: 5,
       counts: [],
+      inUse: {
+        status: 'checked',
+        checked: 1,
+        inUse: 0,
+        unreadable: 0,
+        skipped: 0,
+        holdersAsked: 0,
+      },
     },
     root: row(0, 'F:\\Finance', true),
     rows,
@@ -82,15 +90,25 @@ describe('readiness commands', () => {
   it('starts a check with the job and forwards progress', async () => {
     core.invoke.mockResolvedValue(result())
     const onProgress = vi.fn()
-    await startReadiness('F:\\Finance', 'D:\\Shares', 'sharePoint', onProgress)
+    await startReadiness(
+      { path: 'F:\\Finance', destination: 'D:\\Shares', target: 'sharePoint', checkInUse: false },
+      onProgress,
+    )
     expect(core.invoke).toHaveBeenCalledWith('readiness_start', {
       path: 'F:\\Finance',
       destination: 'D:\\Shares',
       target: 'sharePoint',
+      checkInUse: false,
       job: { client: '', ticket: '', technician: '' },
       onEvent: core.channels[0],
     })
-    const progress = { phase: 'names', scan: { files: 3, dirs: 1, bytes: 9, current: 'x' } }
+    const progress = {
+      phase: 'inUse',
+      scan: { files: 3, dirs: 1, bytes: 9, current: 'x' },
+      toCheck: 3,
+      checked: 1,
+      inUse: 0,
+    }
     core.channels[0]?.onmessage({ kind: 'progress', progress })
     expect(onProgress).toHaveBeenCalledWith(progress)
   })
@@ -142,16 +160,23 @@ describe('visibleRows', () => {
 
 describe('the remembered form', () => {
   it('round-trips and falls back to the file server profile', () => {
-    expect(loadForm()).toEqual({ path: '', destination: '', target: 'fileServer' })
-    saveForm({ path: 'F:\\x', destination: 'D:\\y', target: 'sharePoint' })
-    expect(loadForm()).toEqual({ path: 'F:\\x', destination: 'D:\\y', target: 'sharePoint' })
+    const empty = { path: '', destination: '', target: 'fileServer', checkInUse: true }
+    expect(loadForm()).toEqual(empty)
+    const form = {
+      path: 'F:\\x',
+      destination: 'D:\\y',
+      target: 'sharePoint',
+      checkInUse: false,
+    } as const
+    saveForm(form)
+    expect(loadForm()).toEqual(form)
     localStorage.setItem('analyzer-readiness', '{"path":3,"target":"cloud"}')
-    expect(loadForm()).toEqual({ path: '', destination: '', target: 'fileServer' })
+    expect(loadForm()).toEqual(empty)
   })
 })
 
 describe('readinessJob', () => {
-  const form = { path: 'F:\\x', destination: '', target: 'fileServer' } as const
+  const form = { path: 'F:\\x', destination: '', target: 'fileServer', checkInUse: true } as const
 
   it('keeps the result and its top rows', async () => {
     core.invoke.mockResolvedValue(result([row(1, 'a')]))

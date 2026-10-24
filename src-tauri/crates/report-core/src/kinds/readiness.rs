@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::header::ReadinessHeader;
-use migrate_core::{rule_label, Problem, ProblemKind};
+use migrate_core::{rule_label, InUseStatus, Problem, ProblemKind};
 use scan_core::TargetProfile;
 
 pub(super) fn subject(source: &str, destination_root: &str) -> String {
@@ -22,8 +22,17 @@ pub(super) fn headline(report: &ReadinessHeader) -> String {
     if report.long_paths > 0 {
         parts.push(plural(report.long_paths, "long path"));
     }
+    if report.in_use.in_use > 0 {
+        parts.push(format!("{} in use", plural(report.in_use.in_use, "file")));
+    }
     if report.unreadable > 0 {
         parts.push(plural(report.unreadable, "unreadable folder"));
+    }
+    if report.in_use.unreadable > 0 {
+        parts.push(format!(
+            "{} could not be opened",
+            plural(report.in_use.unreadable, "file")
+        ));
     }
     if parts.is_empty() {
         parts.push("No problems found".to_string());
@@ -45,6 +54,7 @@ fn kind_label(kind: ProblemKind) -> &'static str {
     match kind {
         ProblemKind::Name => "Name",
         ProblemKind::LongPath => "Long path",
+        ProblemKind::InUse => "In use",
         ProblemKind::Unreadable => "Unreadable",
         ProblemKind::Link => "Link",
         ProblemKind::Other => "Other",
@@ -103,6 +113,7 @@ pub(super) fn document(report: &ReadinessReport, mut meta: Vec<(String, String)>
             plural(report.cloud_files, "cloud file")
         ));
     }
+    notes.push(in_use_note(report));
 
     let rules = Table {
         heading: "Problems by rule".into(),
@@ -242,6 +253,7 @@ pub(super) fn document(report: &ReadinessReport, mut meta: Vec<(String, String)>
                 &format!("Over {limit} characters"),
                 Tone::Warn,
             ),
+            in_use_tile(report),
             tile(
                 "Links",
                 if report.links > 0 {
@@ -268,5 +280,42 @@ fn display_path(problem: &Problem) -> String {
         format!("{}\\", problem.path)
     } else {
         problem.path.clone()
+    }
+}
+
+/// What the in-use pass did, in one sentence.
+fn in_use_note(report: &ReadinessReport) -> String {
+    let pass = &report.in_use;
+    match pass.status {
+        InUseStatus::Checked => format!(
+            "Files in use: {} opened for read during this check and closed at once, so this is a moment in time. Close the programs listed before the copy, or record the copy in Watch mode. Opening a file can update its last access time on NTFS.{}",
+            plural(pass.checked, "file"),
+            if pass.skipped > 0 {
+                format!(
+                    " {} (links and online-only files) were not opened.",
+                    plural(pass.skipped, "item")
+                )
+            } else {
+                String::new()
+            }
+        ),
+        InUseStatus::NotSupported => "Files in use were not checked on this system.".into(),
+        InUseStatus::Off | InUseStatus::Other => {
+            "Files in use were not checked (turned off for this check).".into()
+        }
+    }
+}
+
+fn in_use_tile(report: &ReadinessReport) -> Tile {
+    let pass = &report.in_use;
+    match pass.status {
+        InUseStatus::Checked => count_tile(
+            "In use",
+            pass.in_use,
+            "file",
+            "Close them or use Watch mode",
+            Tone::Warn,
+        ),
+        _ => tile("In use", "Not checked".into(), String::new(), Tone::Plain),
     }
 }

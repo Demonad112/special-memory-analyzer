@@ -60,6 +60,27 @@ const rows = computed(() =>
 )
 const rootOwn = computed(() => readinessJob.root?.own ?? [])
 const targets = Object.entries(targetLabels) as [TargetProfile, string][]
+const phaseText = computed(() => {
+  switch (readinessJob.progress?.phase) {
+    case 'names':
+      return 'Checking names…'
+    case 'inUse':
+      return 'Looking for files in use…'
+    default:
+      return 'Reading the folder…'
+  }
+})
+const inUseText = computed(() => {
+  const pass = report.value?.inUse
+  switch (pass?.status) {
+    case 'checked':
+      return `${plural(pass.checked, 'file')} opened to look for files in use.`
+    case 'notSupported':
+      return 'Files in use were not checked on this system.'
+    default:
+      return 'Files in use were not checked.'
+  }
+})
 
 async function start(): Promise<void> {
   if (!canStart.value) {
@@ -152,7 +173,7 @@ function rowIcon(row: ReadinessRow): typeof File {
     <div class="flex items-start justify-between gap-6">
       <PageHeader
         title="Migration readiness"
-        summary="Check a folder before you move it: names the target cannot hold and paths that will be too long there."
+        summary="Check a folder before you move it: names the target cannot hold, paths that will be too long there, and files in use."
       />
       <button
         v-if="!running"
@@ -212,6 +233,14 @@ function rowIcon(row: ReadinessRow): typeof File {
         />
         {{ label }}
       </label>
+      <label class="ml-auto flex items-center gap-2 text-muted">
+        <input
+          v-model="form.checkInUse"
+          type="checkbox"
+          class="size-4 accent-accent"
+        />
+        Find files in use (opens each file for read; slower on big shares)
+      </label>
     </fieldset>
     <JobFields
       class="mt-3"
@@ -243,11 +272,22 @@ function rowIcon(row: ReadinessRow): typeof File {
       <div class="flex items-center justify-between gap-4">
         <p class="flex items-center gap-2 font-semibold">
           <LoaderCircle class="size-4 animate-spin text-accent" />
-          {{ readinessJob.progress?.phase === 'names' ? 'Checking names…' : 'Reading the folder…' }}
+          {{ phaseText }}
         </p>
         <p class="text-xs text-muted tabular-nums">{{ elapsed }} · Esc to cancel</p>
       </div>
-      <p class="mt-3 tabular-nums">
+      <p
+        v-if="readinessJob.progress?.phase === 'inUse'"
+        class="mt-3 tabular-nums"
+      >
+        {{ readinessJob.progress.checked.toLocaleString() }} of
+        {{ plural(readinessJob.progress.toCheck, 'file') }} opened ·
+        {{ readinessJob.progress.inUse.toLocaleString() }} in use
+      </p>
+      <p
+        v-else
+        class="mt-3 tabular-nums"
+      >
         {{ plural(readinessJob.progress?.scan.files ?? 0, 'file') }} ·
         {{ formatBytes(readinessJob.progress?.scan.bytes ?? 0) }}
       </p>
@@ -255,7 +295,11 @@ function rowIcon(row: ReadinessRow): typeof File {
         class="truncate text-xs text-faint"
         :title="readinessJob.progress?.scan.current"
       >
-        {{ readinessJob.progress?.scan.current || ' ' }}
+        {{
+          readinessJob.progress?.phase === 'inUse'
+            ? ' '
+            : readinessJob.progress?.scan.current || ' '
+        }}
       </p>
     </section>
 
@@ -313,6 +357,18 @@ function rowIcon(row: ReadinessRow): typeof File {
         <template v-if="report.cloudFiles > 0">
           {{ plural(report.cloudFiles, 'online-only file') }} checked by name only.
         </template>
+        {{ inUseText }}
+      </p>
+      <p
+        v-if="report.inUse.inUse > 0"
+        class="mt-3 flex items-start gap-2 rounded-lg border border-stroke bg-card px-4 py-3 text-[13px]"
+      >
+        <Info class="mt-0.5 size-4 shrink-0 text-warning" />
+        <span>
+          {{ plural(report.inUse.inUse, 'file') }} {{ report.inUse.inUse === 1 ? 'was' : 'were' }}
+          open in another program during this check. This is a moment in time: close the program
+          before the copy, or copy with another tool and record it in Watch mode.
+        </span>
       </p>
 
       <p

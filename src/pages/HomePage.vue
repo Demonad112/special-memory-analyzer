@@ -85,7 +85,8 @@ const summary = computed(() =>
           />
         </span>
         <span class="text-[13px] text-muted"
-          >Before a move: find names the target cannot hold and paths that will be too long.</span
+          >Before a move: find names the target cannot hold, paths that will be too long and files
+          in use.</span
         >
       </span>
     </RouterLink>
