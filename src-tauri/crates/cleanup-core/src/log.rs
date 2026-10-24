@@ -7,9 +7,15 @@ use std::io::{self, Write};
 use std::path::Path;
 
 pub const LOG_FILE: &str = "deletions.jsonl";
-const ROTATED_FILE: &str = "deletions.1.jsonl";
-/// The log is moved aside (replacing the previous copy) once it reaches this size.
+/// How many full logs are kept next to the current one, as `deletions.1.jsonl` (newest) to
+/// `deletions.5.jsonl` (oldest): about 30 MB of history in all.
+const ROTATIONS: u32 = 5;
+/// The log is moved aside once it reaches this size.
 pub const MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+fn rotated_name(n: u32) -> String {
+    format!("deletions.{n}.jsonl")
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,17 +46,33 @@ pub struct LogEntry {
     pub run: Option<String>,
 }
 
+/// Moves the full log to `deletions.1.jsonl`, shifting the older copies up one place. The oldest
+/// copy ages out. Stops at the first copy that cannot move, so no kept entry is overwritten.
+fn rotate(dir: &Path, file: &Path) -> io::Result<()> {
+    let _ = fs::remove_file(dir.join(rotated_name(ROTATIONS)));
+    for n in (1..ROTATIONS).rev() {
+        let from = dir.join(rotated_name(n));
+        if from.exists() {
+            fs::rename(&from, dir.join(rotated_name(n + 1)))?;
+        }
+    }
+    fs::rename(file, dir.join(rotated_name(1)))
+}
+
 /// Appends `entries` to `<dir>/deletions.jsonl`, creating the folder, and rotates a full log.
 pub fn append(dir: &Path, entries: &[LogEntry]) -> io::Result<()> {
+    append_limited(dir, entries, MAX_BYTES)
+}
+
+fn append_limited(dir: &Path, entries: &[LogEntry], max_bytes: u64) -> io::Result<()> {
     if entries.is_empty() {
         return Ok(());
     }
     fs::create_dir_all(dir)?;
     let file = dir.join(LOG_FILE);
-    if fs::metadata(&file).is_ok_and(|meta| meta.len() >= MAX_BYTES) {
+    if fs::metadata(&file).is_ok_and(|meta| meta.len() >= max_bytes) {
         // A failed rotation must not lose the new entries: keep appending to the big file.
-        let _ = fs::remove_file(dir.join(ROTATED_FILE));
-        let _ = fs::rename(&file, dir.join(ROTATED_FILE));
+        let _ = rotate(dir, &file);
     }
     let mut text = String::new();
     for entry in entries {
@@ -64,11 +86,13 @@ pub fn append(dir: &Path, entries: &[LogEntry]) -> io::Result<()> {
         .write_all(text.as_bytes())
 }
 
-/// Every entry still on disk, oldest first: the rotated copy, then the current log. A line that
-/// does not parse is skipped, so one bad line never hides the rest.
+/// Every entry still on disk, oldest first: the rotated copies from the oldest, then the current
+/// log. A line that does not parse is skipped, so one bad line never hides the rest.
 pub fn read_all(dir: &Path) -> Vec<LogEntry> {
-    [ROTATED_FILE, LOG_FILE]
-        .iter()
+    (1..=ROTATIONS)
+        .rev()
+        .map(rotated_name)
+        .chain([LOG_FILE.to_owned()])
         .filter_map(|name| fs::read_to_string(dir.join(name)).ok())
         .flat_map(|text| {
             text.lines()
@@ -129,11 +153,59 @@ mod tests {
         append(temp.path(), &[entry("fresh")]).unwrap();
 
         assert_eq!(
-            fs::metadata(temp.path().join(ROTATED_FILE)).unwrap().len(),
+            fs::metadata(temp.path().join(rotated_name(1)))
+                .unwrap()
+                .len(),
             MAX_BYTES
         );
         let text = fs::read_to_string(temp.path().join(LOG_FILE)).unwrap();
         assert_eq!(text.lines().count(), 1);
+    }
+
+    fn counted(n: u32) -> LogEntry {
+        entry(&format!("item-{n}"))
+    }
+
+    #[test]
+    fn five_rotated_logs_are_kept_and_read_oldest_first() {
+        let temp = tempfile::tempdir().unwrap();
+        // One entry per file: every append after the first finds a full log and rotates.
+        for n in 0..8 {
+            append_limited(temp.path(), &[counted(n)], 1).unwrap();
+        }
+
+        for kept in 1..=ROTATIONS {
+            assert!(temp.path().join(rotated_name(kept)).exists(), "{kept}");
+        }
+        assert!(!temp.path().join(rotated_name(ROTATIONS + 1)).exists());
+        // Items 0 and 1 aged out of the five rotated files; 2..=6 are rotated, 7 is current.
+        let paths: Vec<String> = read_all(temp.path())
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
+        assert_eq!(
+            paths,
+            ["item-2", "item-3", "item-4", "item-5", "item-6", "item-7"]
+        );
+    }
+
+    #[test]
+    fn a_rotation_that_cannot_shift_keeps_every_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let line = |n: u32| format!("{}\n", serde_json::to_string(&counted(n)).unwrap());
+        fs::write(temp.path().join(rotated_name(4)), line(0)).unwrap();
+        fs::write(temp.path().join(LOG_FILE), line(1)).unwrap();
+        // A folder in the oldest slot cannot be replaced, so deletions.4 cannot move up.
+        let blocker = temp.path().join(rotated_name(ROTATIONS));
+        fs::create_dir(&blocker).unwrap();
+        fs::write(blocker.join("keep"), b"x").unwrap();
+        append_limited(temp.path(), &[counted(2)], 1).unwrap();
+
+        let paths: Vec<String> = read_all(temp.path())
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
+        assert_eq!(paths, ["item-0", "item-1", "item-2"]);
     }
 
     #[test]
@@ -145,7 +217,7 @@ mod tests {
             ..entry("two")
         })
         .unwrap();
-        fs::write(temp.path().join(ROTATED_FILE), format!("{old}\n")).unwrap();
+        fs::write(temp.path().join(rotated_name(1)), format!("{old}\n")).unwrap();
         fs::write(temp.path().join(LOG_FILE), format!("not json\n{new}\n")).unwrap();
 
         let all = read_all(temp.path());
