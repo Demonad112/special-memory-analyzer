@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, ChevronRight, History } from '@lucide/vue'
+import { ArrowRight, ChevronRight, History, ListChecks } from '@lucide/vue'
 import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import DriveTiles from '@/components/DriveTiles.vue'
@@ -64,6 +64,32 @@ const summary = computed(() =>
         <span class="mt-1 text-[13px] leading-5 text-muted">{{ tool.summary }}</span>
       </RouterLink>
     </div>
+    <RouterLink
+      to="/compare/readiness"
+      class="group mt-4 flex items-center gap-4 rounded-lg border border-stroke bg-card px-5 py-3 shadow-xs transition-colors hover:bg-card-hover"
+    >
+      <span
+        class="grid size-9 shrink-0 place-items-center rounded-lg bg-accent/12 text-accent"
+        aria-hidden="true"
+      >
+        <ListChecks
+          class="size-4.5"
+          :stroke-width="1.75"
+        />
+      </span>
+      <span class="min-w-0 flex-1">
+        <span class="flex items-center gap-1 font-semibold">
+          Migration readiness
+          <ChevronRight
+            class="size-4 text-faint transition-transform group-hover:translate-x-0.5"
+          />
+        </span>
+        <span class="text-[13px] text-muted"
+          >Before a move: find names the target cannot hold, paths that will be too long and files
+          in use.</span
+        >
+      </span>
+    </RouterLink>
 
     <section
       v-if="drives.length > 0"

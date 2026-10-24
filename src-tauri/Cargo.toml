@@ -1,5 +1,12 @@
 [workspace]
-members = [".", "crates/cleanup-core", "crates/report-core", "crates/scan-core", "crates/transfer-core"]
+members = [
+  ".",
+  "crates/cleanup-core",
+  "crates/migrate-core",
+  "crates/report-core",
+  "crates/scan-core",
+  "crates/transfer-core",
+]
 resolver = "2"
 
 [package]
@@ -23,6 +30,7 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 cleanup-core = { path = "crates/cleanup-core" }
+migrate-core = { path = "crates/migrate-core" }
 report-core = { path = "crates/report-core" }
 scan-core = { path = "crates/scan-core" }
 serde = { version = "1.0.228", features = ["derive"] }

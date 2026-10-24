@@ -726,6 +726,7 @@ name = "deep-server-analyzer"
 version = "1.2.0"
 dependencies = [
  "cleanup-core",
+ "migrate-core",
  "report-core",
  "scan-core",
  "serde",
@@ -2141,6 +2142,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "migrate-core"
+version = "1.0.0"
+dependencies = [
+ "scan-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2945,6 +2956,7 @@ name = "report-core"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
+ "migrate-core",
  "scan-core",
  "serde",
  "serde_json",

@@ -4,6 +4,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import CleanupPage from './pages/CleanupPage.vue'
 import ComparePage from './pages/ComparePage.vue'
 import HomePage from './pages/HomePage.vue'
+import ReadinessPage from './pages/ReadinessPage.vue'
 import ReportsPage from './pages/ReportsPage.vue'
 import RecordPage from './pages/RecordPage.vue'
 import RecordReportPage from './pages/RecordReportPage.vue'
@@ -52,6 +53,7 @@ export const router = createRouter({
   routes: [
     { path: '/', component: HomePage },
     { path: '/compare', component: ComparePage },
+    { path: '/compare/readiness', component: ReadinessPage },
     { path: '/compare/record', component: RecordPage },
     { path: '/compare/record/:id', component: RecordReportPage, props: true },
     { path: '/cleanup', component: CleanupPage },

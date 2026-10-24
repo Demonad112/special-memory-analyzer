@@ -34,6 +34,7 @@ pub(crate) enum BodyHeader {
     Compare(CompareHeader),
     DiskUsage(UsageHeader),
     Cleanup(CleanHeader),
+    Readiness(ReadinessHeader),
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -57,6 +58,38 @@ pub(crate) struct UsageHeader {
 #[serde(default)]
 pub(crate) struct RemovedSize {
     pub size: u64,
+}
+
+/// The readiness totals; the problem list after them is skipped, not kept.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct ReadinessHeader {
+    pub source: String,
+    pub destination_root: String,
+    pub name_problems: u64,
+    pub long_paths: u64,
+    pub unreadable: u64,
+    pub links: u64,
+    pub in_use: InUseHeader,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct InUseHeader {
+    pub in_use: u64,
+    pub unreadable: u64,
+}
+
+impl ReadinessHeader {
+    /// Something to fix or look at before the copy; matches `ReadinessReport::has_problems`.
+    pub(crate) fn has_problems(&self) -> bool {
+        self.name_problems
+            + self.long_paths
+            + self.unreadable
+            + self.in_use.in_use
+            + self.in_use.unreadable
+            > 0
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -101,6 +134,18 @@ impl Header {
                         freed: item.freed,
                     })
                     .collect(),
+            }),
+            Body::Readiness(report) => BodyHeader::Readiness(ReadinessHeader {
+                source: report.source.clone(),
+                destination_root: report.destination_root.clone(),
+                name_problems: report.name_problems,
+                long_paths: report.long_paths,
+                unreadable: report.unreadable,
+                links: report.links,
+                in_use: InUseHeader {
+                    in_use: report.in_use.in_use,
+                    unreadable: report.in_use.unreadable,
+                },
             }),
         };
         Self {
@@ -256,6 +301,12 @@ impl<'de> DeserializeSeed<'de> for DataSeed<'_> {
                 self.found.borrow_mut().body = Some(BodyHeader::Cleanup(data));
                 Ok(())
             }
+            // Read whole; the problem list is skipped field by field without being kept.
+            "readiness" => {
+                let data = ReadinessHeader::deserialize(deserializer)?;
+                self.found.borrow_mut().body = Some(BodyHeader::Readiness(data));
+                Ok(())
+            }
             "compare" | "diskUsage" => deserializer.deserialize_map(self),
             other => Err(de::Error::custom(format!("unknown report kind {other}"))),
         }
@@ -401,6 +452,29 @@ mod tests {
         assert_eq!(row.subject, "G:\\");
     }
 
+    #[test]
+    fn a_readiness_report_with_files_in_use_is_a_problem() {
+        let text = format!(
+            r#"{{{ENVELOPE},"body":{{"kind":"readiness","data":{{"source":"S","inUse":{{"status":"checked","inUse":2}}}}}}}}"#
+        );
+        let row = header_entry(read_text(&text).unwrap());
+        assert_eq!(row.headline, "2 files in use");
+        assert!(row.problem);
+    }
+
+    #[test]
+    fn a_readiness_report_lists_without_keeping_its_problems() {
+        let text = format!(
+            r#"{{{ENVELOPE},"body":{{"kind":"readiness","data":{{"source":"S","problems":[{{"path":"a","rule":"reserved"}}],"nameProblems":1,"destinationRoot":"D:\\x"}}}}}}"#
+        );
+        let row = header_entry(read_text(&text).unwrap());
+        assert_eq!(row.kind, crate::ReportKind::Readiness);
+        assert_eq!(row.subject, r"S → D:\x");
+        assert!(row.problem);
+    }
+
+    /// A build without the readiness kind (1.2.0, or this one reverted) skips such a report in
+    /// the list: its header does not parse, and `list` drops what does not parse.
     #[test]
     fn unreadable_reports_are_errors() {
         assert!(read_text("{ nope").is_err());

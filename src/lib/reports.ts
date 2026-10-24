@@ -4,7 +4,7 @@ import { ref, watch } from 'vue'
 import type { JobInfo } from './job'
 import { brand, csvJobDetails } from './job'
 
-export type ReportKind = 'compare' | 'record' | 'diskUsage' | 'cleanup'
+export type ReportKind = 'compare' | 'record' | 'diskUsage' | 'cleanup' | 'readiness'
 export type ExportFormat = 'html' | 'csv'
 
 /** One saved report or record, as listed on the Reports page. */
@@ -24,6 +24,7 @@ export const kindLabels: Record<ReportKind, string> = {
   record: 'Record',
   diskUsage: 'Disk usage',
   cleanup: 'Cleanup',
+  readiness: 'Readiness',
 }
 
 export function listReports(): Promise<ReportEntry[]> {

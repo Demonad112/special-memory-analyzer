@@ -383,6 +383,13 @@ function shortPath(path: string): string {
         class="mt-1.5 flex shrink-0 gap-2"
       >
         <RouterLink
+          to="/compare/readiness"
+          class="inline-flex h-8 items-center rounded-md border border-stroke bg-card px-4 hover:bg-card-hover"
+          title="Before you move a folder: list the names the target cannot hold and the paths that will be too long"
+        >
+          Readiness
+        </RouterLink>
+        <RouterLink
           to="/compare/record"
           class="inline-flex h-8 items-center rounded-md border border-stroke bg-card px-4 hover:bg-card-hover"
           title="Copy the source to the destination, or watch another program copy it, and list every file that did not make it"
