@@ -302,6 +302,11 @@ pub fn copy_file(
             ),
         ));
     }
+    // Verify the part file first so a bad copy never replaces an existing destination.
+    if let Err(failure) = verify(&part, bytes, source_time, hash.as_deref()) {
+        let _ = fs::remove_file(&part);
+        return Err(failure);
+    }
     // A read-only file that is being replaced would make the rename fail.
     meta::clear_read_only(destination);
     if let Err(error) = fs::rename(&part, destination) {
@@ -309,7 +314,6 @@ pub fn copy_file(
         return Err(CopyFailure::io(&error, Side::Destination));
     }
 
-    verify(destination, bytes, source_time, hash.as_deref())?;
     let mut warnings = wanted_meta
         .map(|wanted| meta::apply(source, destination, &wanted, &options.preserve))
         .unwrap_or_default();
@@ -398,6 +402,8 @@ fn write_part(
         total += read as u64;
         on_bytes(read as u64);
     }
+    #[cfg(test)]
+    tests::corrupt_part(&mut output)?;
     if let Some(time) = source_time {
         output
             .set_modified(time)
@@ -499,6 +505,22 @@ pub fn times_match(left: Option<SystemTime>, right: Option<SystemTime>) -> bool 
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+
+    thread_local! {
+        static CORRUPT_NEXT_PART: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Test hook for `write_part`: flips the first byte of the part file once armed.
+    pub(super) fn corrupt_part(output: &mut File) -> Result<(), CopyFailure> {
+        use std::io::{Seek, SeekFrom};
+        if CORRUPT_NEXT_PART.with(|armed| armed.replace(false)) {
+            output
+                .seek(SeekFrom::Start(0))
+                .and_then(|_| output.write_all(&[0xFF]))
+                .map_err(|error| CopyFailure::io(&error, Side::Destination))?;
+        }
+        Ok(())
+    }
 
     fn no_retry() -> CopyOptions {
         CopyOptions {
@@ -711,6 +733,25 @@ mod tests {
             CopyOutcome::SkippedIdentical
         );
         assert!(!dir.path("out/a (4).txt").exists());
+    }
+
+    #[test]
+    fn a_hash_mismatch_under_overwrite_leaves_the_existing_destination_intact() {
+        let dir = TempDir::new("copy-verify-before-rename");
+        let source = dir.write("a.txt", b"new content");
+        let destination = dir.write("out/a.txt", b"old content");
+        let options = CopyOptions {
+            verify: VerifyLevel::Hash,
+            conflict: ConflictPolicy::Overwrite,
+            ..no_retry()
+        };
+        CORRUPT_NEXT_PART.with(|armed| armed.set(true));
+
+        let failure = copy(&source, &destination, &options).unwrap_err();
+
+        assert_eq!(failure.reason, FailureReason::VerifyMismatch);
+        assert_eq!(fs::read(&destination).unwrap(), b"old content");
+        assert!(!part_path(&destination).exists());
     }
 
     #[test]
