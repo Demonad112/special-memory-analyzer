@@ -24,6 +24,7 @@ pub enum LogStatus {
     Succeeded,
     Cancelled,
     Failed,
+    Warning,
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +100,7 @@ impl RunStore {
 
     /// Manifest rows in the order they were written.
     pub fn manifest<T: DeserializeOwned>(&self) -> Result<impl Iterator<Item = Result<T>>> {
-        read_jsonl(&self.dir.join(MANIFEST_FILE))
+        read_jsonl(self, &self.dir.join(MANIFEST_FILE))
     }
 
     /// Appends to `results.jsonl`, flushing each row so a crash loses at most the file in flight.
@@ -114,7 +115,7 @@ impl RunStore {
         if !path.is_file() {
             return Ok(latest);
         }
-        for row in read_jsonl::<ItemResult>(&path)? {
+        for row in read_jsonl::<ItemResult>(self, &path)? {
             let row = row?;
             latest.insert(row.relative_path.clone(), row);
         }
@@ -217,7 +218,12 @@ pub struct JsonlWriter {
 impl JsonlWriter {
     fn create(path: &Path, append: bool) -> Result<Self> {
         let file = if append {
-            OpenOptions::new().create(true).append(true).open(path)?
+            let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+            // A torn last row has no newline; start the next row on its own line.
+            if ends_without_newline(path) {
+                file.write_all(b"\n")?;
+            }
+            file
         } else {
             File::create(path)?
         };
@@ -242,16 +248,59 @@ impl JsonlWriter {
     }
 }
 
-fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Result<impl Iterator<Item = Result<T>>> {
-    let reader = BufReader::new(File::open(path)?);
-    Ok(reader.lines().filter_map(|line| match line {
-        Ok(line) if line.trim().is_empty() => None,
-        Ok(line) => Some(
-            serde_json::from_str(&line)
-                .map_err(|error| TransferError::BadRun(format!("Bad row in run file: {error}"))),
-        ),
-        Err(error) => Some(Err(error.into())),
+/// Rows of a `.jsonl` file. A line that does not parse is an error, except when it is the last
+/// non-empty line: that is a write torn by a crash, so it is skipped and noted in the audit log.
+fn read_jsonl<T: DeserializeOwned>(
+    store: &RunStore,
+    path: &Path,
+) -> Result<impl Iterator<Item = Result<T>>> {
+    let mut lines = BufReader::new(File::open(path)?).lines().peekable();
+    let store = store.clone();
+    let file = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(std::iter::from_fn(move || loop {
+        let line = match lines.next()? {
+            Ok(line) => line,
+            Err(error) => return Some(Err(error.into())),
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str(&line) {
+            Ok(row) => return Some(Ok(row)),
+            Err(error) => {
+                // Blank lines after it do not make it a middle line.
+                while matches!(lines.peek(), Some(Ok(next)) if next.trim().is_empty()) {
+                    lines.next();
+                }
+                if lines.peek().is_some() {
+                    return Some(Err(TransferError::BadRun(format!(
+                        "Bad row in run file: {error}"
+                    ))));
+                }
+                store.audit(
+                    "read-run-file",
+                    LogStatus::Warning,
+                    format!("Ignored an incomplete last row in {file}"),
+                    &[("file", file.clone().into())],
+                );
+                return None;
+            }
+        }
     }))
+}
+
+fn ends_without_newline(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let mut last = [0_u8; 1];
+    file.seek(SeekFrom::End(-1))
+        .and_then(|_| file.read_exact(&mut last))
+        .is_ok_and(|()| last[0] != b'\n')
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
@@ -355,6 +404,53 @@ mod tests {
         for id in ["", "..", "../x", "a\\b", "C:x"] {
             assert!(RunStore::open(&dir.path("runs"), id).is_err(), "{id}");
         }
+    }
+
+    fn good_rows(store: &RunStore) {
+        let mut writer = store.results_writer().unwrap();
+        writer
+            .write(&ItemResult::done("a.txt", 1, ItemStatus::Copied))
+            .unwrap();
+        writer
+            .write(&ItemResult::done("b.txt", 2, ItemStatus::Copied))
+            .unwrap();
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn a_torn_last_row_is_skipped_and_noted_in_the_audit_log() {
+        let dir = TempDir::new("store-torn");
+        let store = RunStore::create(&dir.path("runs")).unwrap();
+        good_rows(&store);
+        let path = store.dir().join(RESULTS_FILE);
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(br#"{"relativePath":"c.txt","sta"#).unwrap();
+        drop(file);
+
+        assert_eq!(store.latest_results().unwrap().len(), 2);
+        let audit = fs::read_to_string(store.dir().join(AUDIT_FILE)).unwrap();
+        assert!(audit.contains("warning"), "{audit}");
+
+        // A row appended later starts on a fresh line instead of joining the torn one.
+        let mut writer = store.results_writer().unwrap();
+        writer
+            .write(&ItemResult::done("d.txt", 4, ItemStatus::Copied))
+            .unwrap();
+        writer.finish().unwrap();
+        assert_eq!(store.latest_results().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_bad_row_in_the_middle_is_still_an_error() {
+        let dir = TempDir::new("store-bad-middle");
+        let store = RunStore::create(&dir.path("runs")).unwrap();
+        good_rows(&store);
+        let path = store.dir().join(RESULTS_FILE);
+        let text = fs::read_to_string(&path).unwrap();
+        let (first, rest) = text.split_once('\n').unwrap();
+        fs::write(&path, format!("{first}\n{{\"torn\n{rest}")).unwrap();
+
+        assert!(store.latest_results().is_err());
     }
 
     #[test]
