@@ -19,6 +19,7 @@ pub(crate) struct Entry {
     /// Space the file takes on the disk. 0 for folders, links and online-only cloud files.
     pub disk: u64,
     pub modified_ms: Option<u64>,
+    pub accessed_ms: Option<u64>,
     /// An online-only cloud placeholder (OneDrive and similar).
     pub cloud: bool,
     /// Volume-unique file id (0 when the file system has none). Two entries with the same id and
@@ -93,11 +94,8 @@ fn list_dir_std(path: &Path) -> io::Result<Listing> {
                         kind: Kind::File,
                         size,
                         disk: if cloud { 0 } else { std_disk(&metadata) },
-                        modified_ms: metadata
-                            .modified()
-                            .ok()
-                            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map(|since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX)),
+                        modified_ms: epoch_ms(metadata.modified()),
+                        accessed_ms: epoch_ms(metadata.accessed()),
                         cloud,
                         file_id: std_file_id(&metadata),
                         lossy,
@@ -112,6 +110,13 @@ fn list_dir_std(path: &Path) -> io::Result<Listing> {
     Ok(listing)
 }
 
+/// A file time as ms since 1970; `None` when the system has none or it is before 1970.
+fn epoch_ms(time: io::Result<std::time::SystemTime>) -> Option<u64> {
+    time.ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+}
+
 fn plain(name: String, kind: Kind) -> Entry {
     Entry {
         name,
@@ -119,6 +124,7 @@ fn plain(name: String, kind: Kind) -> Entry {
         size: 0,
         disk: 0,
         modified_ms: None,
+        accessed_ms: None,
         cloud: false,
         file_id: 0,
         lossy: false,
@@ -179,6 +185,10 @@ fn is_link_tag(tag: u32) -> bool {
     tag & TAG_NAME_SURROGATE != 0
 }
 
+/// The path as NUL-terminated UTF-16 for Win32 calls, `\\?\`-prefixed when long.
+#[cfg(windows)]
+pub(crate) use nt::wide as wide_path;
+
 #[cfg(windows)]
 mod nt {
     use super::{is_link_tag, plain, Entry, Listing};
@@ -215,7 +225,9 @@ mod nt {
 
     /// Files up to this size may live in the MFT record and really take no space of their own.
     const SMALL_FILE: u64 = 4096;
-    /// Offsets inside `FILE_ID_FULL_DIR_INFORMATION`.
+    /// Offsets inside `FILE_ID_FULL_DIR_INFORMATION`: last access time at 16, last write time
+    /// at 24, end of file at 40, allocation at 48, attributes at 56, name length at 60, file id
+    /// at 72, and the name from here.
     const HEADER: usize = 80;
 
     #[repr(C)]
@@ -258,7 +270,7 @@ mod nt {
     }
 
     /// The path as UTF-16 with a trailing NUL. Very long paths get the `\\?\` prefix.
-    fn wide(path: &Path) -> Vec<u16> {
+    pub(crate) fn wide(path: &Path) -> Vec<u16> {
         let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
         let verbatim: Vec<u16> = r"\\?\".encode_utf16().collect();
         if wide.len() >= 240 && !wide.starts_with(&verbatim) {
@@ -458,6 +470,7 @@ mod nt {
             size,
             disk,
             modified_ms: filetime_ms(read_u64(bytes, at + 24)),
+            accessed_ms: filetime_ms(read_u64(bytes, at + 16)),
             cloud,
             file_id: read_u64(bytes, at + 72),
             lossy: false,

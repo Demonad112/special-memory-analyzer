@@ -6,11 +6,18 @@ license = "Apache-2.0"
 description = "Folder size tree scanner and size-based folder comparison for Deep Server Analyzer."
 
 [dependencies]
+blake3 = "1.8"
 rayon = "1.12"
 serde = { version = "1.0.228", features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_RestartManager",
+] }
 
 [dev-dependencies]
 tempfile = "3.27"

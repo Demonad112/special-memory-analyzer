@@ -116,6 +116,10 @@ pub struct Node {
     pub error_code: Option<i32>,
     /// Files: last modified time, in ms since 1970.
     pub modified_ms: Option<u64>,
+    /// Files: last access time, in ms since 1970, from the same listing as the modified time.
+    /// Windows often does not keep it up to date (`NtfsDisableLastAccessUpdate`), so it is only
+    /// ever an extra filter, never the main rule.
+    pub accessed_ms: Option<u64>,
     /// Files: another name for the same data exists in this scan (hard link). Only the first name
     /// keeps its [`Node::disk`].
     pub hard_linked: bool,
@@ -145,6 +149,7 @@ impl Node {
             error: None,
             error_code: None,
             modified_ms: None,
+            accessed_ms: None,
             hard_linked: false,
             lossy_name: false,
             first_child: 0,
@@ -343,6 +348,7 @@ impl Slot {
         node.cloud_files = u64::from(entry.cloud);
         node.cloud_bytes = if entry.cloud { entry.size } else { 0 };
         node.modified_ms = entry.modified_ms;
+        node.accessed_ms = entry.accessed_ms;
         node.lossy_name = entry.lossy;
         Self {
             node,
@@ -653,6 +659,8 @@ mod tests {
         let root = tree.root();
         let file = tree.child_by_name(0, "a.bin").unwrap();
         assert!(tree.node(file).modified_ms.is_some());
+        assert!(tree.node(file).accessed_ms.is_some());
+        assert!(tree.node(0).accessed_ms.is_none(), "folders carry no times");
         assert_eq!(root.size, 60);
         assert_eq!(root.files, 3);
         assert_eq!(root.dirs, 3);
@@ -665,6 +673,30 @@ mod tests {
         let empty = tree.child_by_name(0, "empty").unwrap();
         assert_eq!(tree.node(empty).size, 0);
         assert!(!tree.node(empty).has_children());
+    }
+
+    #[test]
+    fn file_times_come_from_the_listing() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("old.bin");
+        write(&path, 3);
+        let accessed_ms = 1_577_836_800_000; // 2020-01-01
+        let modified_ms = 1_420_070_400_000; // 2015-01-01
+        let times = fs::FileTimes::new()
+            .set_accessed(UNIX_EPOCH + Duration::from_millis(accessed_ms))
+            .set_modified(UNIX_EPOCH + Duration::from_millis(modified_ms));
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(times)
+            .unwrap();
+
+        let tree = scan_ok(temp.path());
+        let file = tree.node(tree.child_by_name(0, "old.bin").unwrap());
+        assert_eq!(file.modified_ms, Some(modified_ms));
+        assert_eq!(file.accessed_ms, Some(accessed_ms));
     }
 
     #[test]
