@@ -1120,12 +1120,29 @@ mod tests {
             assert!(owners.contains(&owner), "{owner} not in {owners:?}");
             assert!(!descriptor.protected);
             assert!(!descriptor.null_dacl);
-            assert!(
-                descriptor.aces.iter().any(|ace| ace.inherited),
-                "{descriptor:?}"
-            );
-            let sddl = descriptor.sddl.unwrap();
+            // Whether the entries are inherited depends on the temp folder's own ACL, so check the
+            // decoding against Windows' SDDL text entry by entry instead: `(A;OICI;FA;;;SY)`.
+            let sddl = descriptor.sddl.clone().unwrap();
             assert!(sddl.starts_with("O:"), "{sddl}");
+            let dacl = &sddl[sddl.find("D:").unwrap()..];
+            let entries: Vec<Vec<&str>> = dacl
+                .split('(')
+                .skip(1)
+                .map(|entry| entry.trim_end_matches(')').split(';').collect())
+                .collect();
+            assert!(!entries.is_empty(), "{sddl}");
+            assert_eq!(entries.len(), descriptor.aces.len(), "{sddl}");
+            for (entry, ace) in entries.iter().zip(&descriptor.aces) {
+                let kind = match entry[0] {
+                    "A" => AceKind::Allow,
+                    "D" => AceKind::Deny,
+                    _ => AceKind::Other,
+                };
+                assert_eq!(ace.kind, kind, "{sddl}");
+                assert_eq!(ace.inherited, entry[1].contains("ID"), "{sddl}");
+                assert_eq!(ace.applies_to.subfolders, entry[1].contains("CI"), "{sddl}");
+                assert_eq!(ace.applies_to.files, entry[1].contains("OI"), "{sddl}");
+            }
 
             let file = read(&folder.join("f.txt"), What::Owner).unwrap();
             assert_eq!(file.owner, Some(owner));
