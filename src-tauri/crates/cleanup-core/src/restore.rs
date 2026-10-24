@@ -2,6 +2,7 @@
 //! original path and moved back. Nothing is ever overwritten.
 
 use crate::log::LogEntry;
+use crate::protect::Protected;
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -150,12 +151,17 @@ fn key(path: &str) -> String {
 }
 
 /// Puts each item of the last run back where it was, using `bin` (what the Recycle Bin holds).
-/// One item failing does not stop the rest.
-pub fn restore_last(entries: &[LogEntry], bin: &[BinItem]) -> Vec<RestoreResult> {
+/// One item failing does not stop the rest. Nothing is put back into a place `protected` keeps:
+/// the log is a user-writable file, so a line in it is not proof the item came from there.
+pub fn restore_last(
+    entries: &[LogEntry],
+    bin: &[BinItem],
+    protected: &Protected,
+) -> Vec<RestoreResult> {
     last_run(entries)
         .into_iter()
         .map(|entry| {
-            let (outcome, message) = restore_one(entry, bin);
+            let (outcome, message) = restore_one(entry, bin, protected);
             RestoreResult {
                 path: entry.path.clone(),
                 size: entry.size,
@@ -166,7 +172,11 @@ pub fn restore_last(entries: &[LogEntry], bin: &[BinItem]) -> Vec<RestoreResult>
         .collect()
 }
 
-fn restore_one(entry: &LogEntry, bin: &[BinItem]) -> (RestoreOutcome, Option<String>) {
+fn restore_one(
+    entry: &LogEntry,
+    bin: &[BinItem],
+    protected: &Protected,
+) -> (RestoreOutcome, Option<String>) {
     if entry.method != "recycle" {
         return (
             RestoreOutcome::Permanent,
@@ -192,6 +202,12 @@ fn restore_one(entry: &LogEntry, bin: &[BinItem]) -> (RestoreOutcome, Option<Str
     };
 
     let target = Path::new(&entry.path);
+    if let Err(reason) = protected.check(target, &drive_root(&entry.path)) {
+        return (
+            RestoreOutcome::Failed,
+            Some(format!("It was not put back. {reason}")),
+        );
+    }
     if fs::symlink_metadata(target).is_ok() {
         return (
             RestoreOutcome::Exists,
@@ -212,6 +228,27 @@ fn restore_one(entry: &LogEntry, bin: &[BinItem]) -> (RestoreOutcome, Option<Str
             RestoreOutcome::Failed,
             Some(format!("Could not move it back: {err}")),
         ),
+    }
+}
+
+/// `C:\` for `C:\a\b`, `\\host\share` for a share path: the widest folder a restore may land in.
+fn drive_root(path: &str) -> PathBuf {
+    let path = path.replace('/', "\\");
+    if let Some(unc) = path.strip_prefix("\\\\") {
+        let mut parts = unc.split('\\');
+        return PathBuf::from(format!(
+            "\\\\{}\\{}",
+            parts.next().unwrap_or_default(),
+            parts.next().unwrap_or_default()
+        ));
+    }
+    match path.split_once('\\') {
+        Some((drive, _)) => PathBuf::from(format!("{drive}\\")),
+        // Not a Windows path (the tests run elsewhere too): its filesystem root.
+        None => Path::new(&path)
+            .ancestors()
+            .last()
+            .map_or_else(|| PathBuf::from(&path), Path::to_path_buf),
     }
 }
 
@@ -340,7 +377,7 @@ mod tests {
             entry(&perm, Some("r"), 1_500, "permanent", "done"),
         ];
 
-        let results = restore_last(&entries, &items);
+        let results = restore_last(&entries, &items, &Protected::default());
         let outcomes: Vec<RestoreOutcome> = results.iter().map(|r| r.outcome).collect();
         assert_eq!(
             outcomes,
@@ -358,7 +395,7 @@ mod tests {
         assert!(bin.join("$R2").exists());
 
         // Running it again finds nothing left to put back.
-        let again = restore_last(&entries, &items);
+        let again = restore_last(&entries, &items, &Protected::default());
         assert_eq!(again[0].outcome, RestoreOutcome::Exists);
     }
 
@@ -375,7 +412,7 @@ mod tests {
         ];
         let entries = [entry(&path, Some("r"), 5_400, "recycle", "done")];
 
-        let results = restore_last(&entries, &items);
+        let results = restore_last(&entries, &items, &Protected::default());
         assert_eq!(results[0].outcome, RestoreOutcome::Restored);
         assert_eq!(fs::read_to_string(&path).unwrap(), "$Rthis");
     }
@@ -395,7 +432,41 @@ mod tests {
         let results = restore_last(
             &[entry(&path, Some("r"), 10, "recycle", "done")],
             &[shouted],
+            &Protected::default(),
         );
         assert_eq!(results[0].outcome, RestoreOutcome::Restored);
+    }
+
+    #[test]
+    fn a_target_in_a_protected_folder_is_refused_and_nothing_is_moved_or_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        let system = temp.path().join("Windows");
+        fs::create_dir_all(&bin).unwrap();
+        fs::create_dir_all(&system).unwrap();
+        let planted = system.join("System32").join("evil.dll");
+        let items = [in_bin(&bin, "$Revil", &planted, 1_000)];
+        let entries = [entry(&planted, Some("r"), 1_200, "recycle", "done")];
+        let protected = Protected::new(&[&system.to_string_lossy()], &[], &[]);
+
+        let results = restore_last(&entries, &items, &protected);
+        assert_eq!(results[0].outcome, RestoreOutcome::Failed);
+        assert!(results[0]
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("won't delete"));
+        assert!(items[0].stored.exists());
+        assert!(!planted.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn the_widest_folder_a_restore_may_land_in_is_the_drive_or_share() {
+        assert_eq!(drive_root(r"C:\a\b.txt"), PathBuf::from(r"C:\"));
+        assert_eq!(drive_root("d:/x/y"), PathBuf::from(r"d:\"));
+        assert_eq!(
+            drive_root(r"\\srv\share\dir\f"),
+            PathBuf::from(r"\\srv\share")
+        );
     }
 }

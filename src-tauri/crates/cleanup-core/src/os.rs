@@ -152,16 +152,43 @@ pub fn delete_permanently(path: &Path) -> Result<(), String> {
     result.map_err(|err| format!("Could not delete {}: {err}", path.display()))
 }
 
-/// What is in the Recycle Bin on every drive. Bin folders of other users that this account may
-/// not read are skipped.
+/// What is in the current user's Recycle Bin on every drive. Other users' bin folders are not
+/// read: a restore must only move back what this account recycled.
 #[cfg(windows)]
 pub fn recycle_bin_items() -> Result<Vec<crate::BinItem>, String> {
+    let sid = current_sid()?;
     Ok(drives()
         .iter()
-        .filter_map(|drive| fs::read_dir(format!("{}$Recycle.Bin", drive.path)).ok())
-        .flat_map(|users| users.flatten())
-        .flat_map(|user| crate::restore::bin_items_in(&user.path()))
+        .map(|drive| std::path::PathBuf::from(format!("{}$Recycle.Bin", drive.path)).join(&sid))
+        .flat_map(|dir| crate::restore::bin_items_in(&dir))
         .collect())
+}
+
+/// The SID of the user this process runs as, from `whoami /user`.
+#[cfg(windows)]
+fn current_sid() -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let output = std::process::Command::new("whoami")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|err| format!("Could not find your Recycle Bin: {err}"))?;
+    sid_from_whoami(&String::from_utf8_lossy(&output.stdout))
+        .ok_or_else(|| "Could not find your Recycle Bin: no user SID.".to_string())
+}
+
+/// The `S-1-…` field of `"DOMAIN\user","S-1-5-21-…"`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn sid_from_whoami(output: &str) -> Option<String> {
+    output
+        .split(',')
+        .map(|field| field.trim().trim_matches('"'))
+        .find(|field| {
+            field.starts_with("S-1-")
+                && field.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
+        .map(str::to_string)
 }
 
 #[cfg(not(windows))]
@@ -325,5 +352,21 @@ mod tests {
             .find(|drive| drive.path.eq_ignore_ascii_case(&format!("{system}\\")))
             .expect("system drive listed");
         assert!(drive.total >= drive.free && drive.total > 0);
+    }
+}
+
+#[cfg(test)]
+mod sid_tests {
+    use super::sid_from_whoami;
+
+    #[test]
+    fn the_sid_is_read_from_whoami_csv_and_nothing_else_is_accepted() {
+        assert_eq!(
+            sid_from_whoami("\"SERVER\\Tech User\",\"S-1-5-21-111-222-333-1001\"\r\n").as_deref(),
+            Some("S-1-5-21-111-222-333-1001")
+        );
+        assert_eq!(sid_from_whoami("ERROR: Access denied"), None);
+        assert_eq!(sid_from_whoami("\"a\",\"..\\S-1-5\""), None);
+        assert_eq!(sid_from_whoami(""), None);
     }
 }

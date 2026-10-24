@@ -502,7 +502,8 @@ pub async fn cleanup_restore_last() -> Result<Vec<RestoreResult>, String> {
         if restore::last_run(&entries).is_empty() {
             return Err("There is no cleanup to restore.".to_string());
         }
-        let results = restore::restore_last(&entries, &cleanup_core::recycle_bin_items()?);
+        let results =
+            restore::restore_last(&entries, &cleanup_core::recycle_bin_items()?, &protected());
 
         let now = transfer_core::now_ms();
         let user = transfer_core::user_name();
