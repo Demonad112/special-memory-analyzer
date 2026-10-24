@@ -32,8 +32,9 @@ DECISIONS FOR THIS BATCH (2026-10-23, do not re-ask):
   - DSA-018 / Q-deps: APPROVED. Bump vite to the latest 8.3.x (>= 8.3.3). `pnpm why vite` must show one version,
     `corepack pnpm audit --prod` must report 0, and `corepack pnpm check` and `corepack pnpm build` must pass. Try
     `corepack pnpm tauri build` too, and report whether it built or ASR blocked it.
-  - DSA-064: the owner has NOT created the `release` environment yet. Document the settings only. Do NOT add
-    `environment: release` to release.yml. Leave the row open with "docs done; owner applies the settings".
+  - DSA-064: the owner CREATED the `release` environment (required reviewer Demonad112, `v*` tags only) and the
+    `release-tags` tag ruleset on 2026-10-23. Add `environment: release` to the `release` job in release.yml (not the
+    `installer` job), document the settings and the approval step in docs/install.md → "Releasing", and mark it fixed.
   - DSA-065: homepage is https://github.com/Demonad112/special-memory-analyzer. HANDOFF.md stays untracked: add it
     to .gitignore and .prettierignore.
   - DSA-062: report dates stay en-US, UI dates use the user locale; show the 500-row cap.
@@ -52,7 +53,7 @@ copy GPL source. Report formats change additively only (Q5).
 CHECKS: run `corepack pnpm check` and `corepack pnpm build`. Report failures as they are; never skip or weaken a test.
 
 DELIVERY: push early; open a DRAFT PR titled "B11: Docs, deps, polish (DSA-018, 058, 062, 064, 065, 066, 068)" with the
-IDs done, a "Not done yet" list (DSA-064 owner settings belong there), a "Windows-only, verified by CI only" section,
+IDs done, a "Not done yet" list, a "Windows-only, verified by CI only" section,
 the `pnpm audit --prod` result, ending "🤖 Generated with [Claude Code](https://claude.com/claude-code)".
 Watch CI (`gh run list`, `gh run view <id> --log-failed`) and fix failures. When every ID is done and CI is green,
 `gh pr ready`. DO NOT MERGE, tag, release or force-push. Never run installer-kit/tests/Test-Kit.ps1 -Full.

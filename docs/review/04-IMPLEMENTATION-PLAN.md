@@ -365,7 +365,12 @@ Run this alone, after B01–B09. Make pure moves first, then cleanups. **One com
 1. **DSA-065.** Fix the README install text and the `tauri.conf.json` `homepage` (Q4: `Demonad112/special-memory-analyzer`). `HANDOFF.md` stays untracked (Q10). Make sure it is in `.prettierignore` and `.gitignore`.
 2. **DSA-058.** Q8: remove the dead `lint-staged` block and the stray `eslint-disable` comment. No ESLint.
 3. **DSA-062.** Q7: report dates stay `en-US`, and UI dates use the user locale (`undefined`). Make the 500-row cap visible ("Showing 500 of N; the full list is in the CSV"), if it is not already.
-4. **DSA-064.** Owner action, not done by the session. Document the GitHub settings in `docs/install.md` → "Releasing": environment `release` with the owner as required reviewer, and a tag ruleset for `v*` limited to the owner. Do **not** add `environment: release` to `release.yml` in this batch, or the workflow will wait forever until the owner creates the environment. Leave DSA-064 open with the note "docs done; owner applies the settings, then adds `environment: release`".
+4. **DSA-064.** The owner applied the GitHub settings on 2026-10-23:
+   - environment `release`, with `Demonad112` as required reviewer (self-review allowed) and deployments from `v*` tags only;
+   - tag ruleset `release-tags` on `refs/tags/v*` that restricts creation, update and deletion and blocks force pushes, with Repository admin able to bypass;
+   - the `Default` branch ruleset retargeted to the default branch (`main`).
+
+   Add `environment: release` to the `release` job (the publishing job, `needs: installer`) in `.github/workflows/release.yml`, and leave the `installer` job without it. Document the settings and the approval step ("Actions → run → Review deployments → Approve") in `docs/install.md` → "Releasing", then mark DSA-064 fixed.
 5. **DSA-068.** Q8 approved `@vue/test-utils`. Add it and write `BulkDeleteDialog.test.ts` (the permanent confirm, Escape blocked while deleting, and the token passed through).
 6. **DSA-066.** Write `docs/signing-options.md` comparing the current kit with Azure Trusted Signing. No code, no paid service (Q2).
 7. **DSA-018.** Q-deps approved 2026-10-23: bump `vite` to the latest 8.3.x (≥ 8.3.3). Check `pnpm why vite` shows one version, `corepack pnpm audit --prod` reports 0, and `corepack pnpm check` and `corepack pnpm build` pass. CI must be green before the PR is marked ready.
