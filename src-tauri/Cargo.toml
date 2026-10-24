@@ -1,5 +1,12 @@
 [workspace]
-members = [".", "crates/cleanup-core", "crates/report-core", "crates/scan-core", "crates/transfer-core"]
+members = [
+  ".",
+  "crates/cleanup-core",
+  "crates/migrate-core",
+  "crates/report-core",
+  "crates/scan-core",
+  "crates/transfer-core",
+]
 resolver = "2"
 
 [package]
