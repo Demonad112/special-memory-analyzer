@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, type Component } from 'vue'
 import DuplicatesPanel from '@/components/DuplicatesPanel.vue'
 import JunkPanel from '@/components/JunkPanel.vue'
+import GrowthPanel from '@/components/GrowthPanel.vue'
 import OwnersPanel from '@/components/OwnersPanel.vue'
 import QuickWins from '@/components/QuickWins.vue'
 import StalePanel from '@/components/StalePanel.vue'
@@ -27,6 +28,12 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 import {
   childrenCall,
   cleanupJob,
+  deleteHistory,
+  forecastLine,
+  keepHistory,
+  loadGrowth,
+  type Growth,
+  type History,
   driveFor,
   escapeCancelsScan,
   nextTabIndex,
@@ -128,6 +135,7 @@ describe('cleanup scan', () => {
 
     expect(core.invoke).toHaveBeenCalledWith('cleanup_scan', {
       job: { client: '', ticket: '', technician: '' },
+      history: true,
       path: 'C:\\',
       onProgress: core.channels[0],
     })
@@ -946,5 +954,112 @@ describe('space by owner', () => {
     await settle()
     expect(cleanupJob.ownerFilter).toEqual({ index: 2, name: 'CORP\\alice' })
     expect(core.invoke).toHaveBeenLastCalledWith('cleanup_owner_children', { id: 0, owner: 2 })
+  })
+})
+
+describe('scan history', () => {
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+  const history: History = {
+    root: 'D:\\Shares',
+    snapshots: [
+      { takenMs: 2_000, size: 900, driveUsed: 500, driveTotal: 1000, current: true },
+      { takenMs: 1_000, size: 700, driveUsed: 400, driveTotal: 1000, current: false },
+    ],
+    forecast: { kind: 'full', days: 140, perDay: 5, windowDays: 90, points: 4 },
+    nowMs: 3_000,
+  }
+  const growth: Growth = {
+    fromMs: 1_000,
+    toMs: 3_000,
+    before: 700,
+    after: 900,
+    delta: 200,
+    hidden: 0,
+    rows: [
+      { path: 'a', change: 'grown', before: 100, after: 300, delta: 200, percent: 200 },
+      { path: 'new', change: 'new', before: 0, after: 50, delta: 50, percent: null },
+    ],
+  }
+
+  afterEach(() => {
+    core.invoke.mockReset()
+    keepHistory.value = true
+    document.body.innerHTML = ''
+  })
+
+  it('words every forecast case', () => {
+    expect(forecastLine(history.forecast)).toBe(
+      "At the last 90 days' rate, this drive is full in about 140 days.",
+    )
+    expect(forecastLine({ kind: 'notEnoughHistory' })).toContain('Not enough history yet')
+    expect(forecastLine({ kind: 'notGrowing' })).toContain('Not growing')
+    expect(forecastLine({ kind: 'hidden' })).toBeNull()
+    expect(forecastLine({ kind: 'full', days: 1, perDay: 1, windowDays: 30, points: 3 })).toContain(
+      'about 1 day.',
+    )
+  })
+
+  it('tells the scan whether to keep history, and asks Rust for growth and deletes', async () => {
+    // Panels left mounted by earlier tests also react to a finished scan: answer only the scan.
+    core.invoke.mockImplementation((command: string) =>
+      command === 'cleanup_scan'
+        ? Promise.resolve({ path: 'C:\\', overview: overview(100), rows: [], elapsedMs: 1 })
+        : Promise.reject(new Error(command)),
+    )
+    keepHistory.value = false
+    await runScan('C:\\')
+    expect(core.invoke).toHaveBeenCalledWith(
+      'cleanup_scan',
+      expect.objectContaining({ history: false }),
+    )
+    core.invoke.mockResolvedValue(growth)
+    await loadGrowth()
+    expect(core.invoke).toHaveBeenLastCalledWith('cleanup_growth', { fromMs: null })
+    await loadGrowth(1_000)
+    expect(core.invoke).toHaveBeenLastCalledWith('cleanup_growth', { fromMs: 1_000 })
+    await deleteHistory('abc')
+    expect(core.invoke).toHaveBeenLastCalledWith('history_delete', { key: 'abc' })
+    await deleteHistory()
+    expect(core.invoke).toHaveBeenLastCalledWith('history_delete', { key: null })
+  })
+
+  it('shows the forecast and what grew against the previous scan', async () => {
+    core.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'cleanup_history':
+          return Promise.resolve(history)
+        case 'cleanup_growth':
+          return Promise.resolve(growth)
+        default:
+          return Promise.reject(new Error(command))
+      }
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    createApp(GrowthPanel).mount(host)
+    await settle()
+    expect(core.invoke).toHaveBeenCalledWith('cleanup_growth', { fromMs: null })
+    expect(host.textContent).toContain('full in about 140 days')
+    expect(host.textContent).toContain('+200 bytes')
+    expect(host.textContent).toContain('New')
+  })
+
+  it('says so when there is no earlier scan, without asking for growth', async () => {
+    core.invoke.mockImplementation((command: string) =>
+      command === 'cleanup_history'
+        ? Promise.resolve({
+            ...history,
+            snapshots: [history.snapshots[0]],
+            forecast: { kind: 'notEnoughHistory' },
+          })
+        : Promise.reject(new Error(command)),
+    )
+    const host = document.createElement('div')
+    document.body.append(host)
+    createApp(GrowthPanel).mount(host)
+    await settle()
+    expect(host.textContent).toContain('No earlier scan of this folder is saved yet')
+    expect(host.textContent).toContain('Not enough history yet')
+    expect(core.invoke).not.toHaveBeenCalledWith('cleanup_growth', expect.anything())
   })
 })
