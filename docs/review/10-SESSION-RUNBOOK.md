@@ -1,5 +1,12 @@
 # Session runbook: one batch per session, one at a time
 
+## Status: audit complete (2026-10-24)
+
+All batches B01–B13 are merged. B01 and B02 landed earlier (PRs #20, #21, #22). Later PRs: B03 #25, B04 #27, B05 #29, B06 #30, B07 #31, B08 #28, B09 #32, B10 #33 and #35, B12 #37, B11 #38, B13 #39.
+
+Open items: DSA-076 only (a duplicate of DSA-071).
+
+Next: the owner's test build and the [release checklist](../release-checklist.md), then the v1.2.0 tag.
 This is how to work through the audit fixes on a limited weekly usage budget. Run **one session at a time**, in the order below. Each session does one batch (or picks up an unfinished one), opens one PR, and stops. You review and merge between sessions.
 
 ## Current position

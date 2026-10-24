@@ -1,5 +1,12 @@
 # Audit handoff: Deep Server Analyzer
 
+## Status: audit complete (2026-10-24)
+
+All batches B01–B13 are merged. B01 and B02 landed earlier (PRs #20, #21, #22). Later PRs: B03 #25, B04 #27, B05 #29, B06 #30, B07 #31, B08 #28, B09 #32, B10 #33 and #35, B12 #37, B11 #38, B13 #39.
+
+Open items: DSA-076 only (a duplicate of DSA-071).
+
+Next: the owner's test build and the [release checklist](../release-checklist.md), then the v1.2.0 tag.
 The audit covers `Demonad112/special-memory-analyzer` at `302f751` (v1.1.1) and was done on 2026-10-22. It was analysis only: no source file was changed, and everything is in `docs/review/`.
 
 ## Executive summary
