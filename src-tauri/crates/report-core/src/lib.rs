@@ -15,8 +15,8 @@ mod recovery;
 pub use doc::{Branding, Document, Table, Tile, Tone, JOB_LABELS};
 pub use explorer::Explorer;
 pub use kinds::{
-    CleanReport, CleanedItem, CompareReport, FileItem, FolderItem, MissingFile, Removed, TypeItem,
-    UsageReport,
+    CleanReport, CleanedItem, CompareReport, DuplicateItem, DuplicateTotals, FileItem, FolderItem,
+    MissingFile, Removed, StaleFolder, StaleTotals, TypeItem, UsageReport,
 };
 
 use serde::{Deserialize, Serialize};

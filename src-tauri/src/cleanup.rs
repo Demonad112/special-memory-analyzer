@@ -11,7 +11,8 @@ use cleanup_core::restore::{self, LastRun, RestoreResult};
 use cleanup_core::stale::{self, StaleFile, StaleReport};
 use cleanup_core::{Drive, Overview, Protected, Row};
 use report_core::{
-    Body, CleanReport, CleanedItem, FileItem, FolderItem, JobInfo, Removed, TypeItem, UsageReport,
+    Body, CleanReport, CleanedItem, DuplicateItem, DuplicateTotals, FileItem, FolderItem, JobInfo,
+    Removed, StaleFolder, StaleTotals, TypeItem, UsageReport,
 };
 use scan_core::{clean_path, scan, CancelToken, NodeId, ScanProgress, ScanState, Tree};
 use serde::Serialize;
@@ -227,6 +228,9 @@ fn usage_report(
             .collect(),
         removed: Vec::new(),
         explorer: Some(report_core::explorer::build(tree)),
+        // Filled in when the user runs the panels (see `ReportWriter::amend`).
+        duplicates: None,
+        stale: None,
     }
 }
 
@@ -576,7 +580,16 @@ pub async fn cleanup_dupes_find(
         return Err(CANCELLED.into());
     }
     let summary = DupesSummary::of(&found);
+    let totals = duplicate_totals(&found);
     *slot = Some(found);
+    drop(slot);
+    // The search itself succeeded; a report that could not be updated is logged, not shown.
+    if let Some(err) = state
+        .report
+        .amend(move |report| report.duplicates = Some(Box::new(totals)))
+    {
+        report_core::applog::error(&report_warning(&err));
+    }
     Ok(summary)
 }
 
@@ -627,6 +640,62 @@ pub fn cleanup_dupes_all_but_oldest(state: State<'_, CleanupState>) -> Result<Ve
 
 const NO_DUPES: &str = "That duplicate search is no longer available. Find duplicates again.";
 
+/// Groups and folders kept in a saved disk usage report.
+const REPORT_GROUPS: usize = 25;
+
+fn duplicate_totals(found: &Found) -> DuplicateTotals {
+    DuplicateTotals {
+        min_size: found.min_size,
+        groups: found.groups.len() as u64,
+        files: found.files(),
+        reclaimable: found.reclaimable(),
+        top: found
+            .groups
+            .iter()
+            .take(REPORT_GROUPS)
+            .map(|group| DuplicateItem {
+                name: group
+                    .members
+                    .first()
+                    .map(|member| member.name.clone())
+                    .unwrap_or_default(),
+                size: group.size,
+                copies: group.members.len() as u64,
+                reclaimable: group.reclaimable,
+                paths: group
+                    .members
+                    .iter()
+                    .map(|member| member.path.display().to_string())
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+fn stale_totals(report: &StaleReport) -> StaleTotals {
+    StaleTotals {
+        years: report.years,
+        not_opened: report.not_opened,
+        now_ms: report.now_ms,
+        stale_files: report.stale_files,
+        stale_bytes: report.stale_bytes,
+        unknown_files: report.unknown_files,
+        unknown_bytes: report.unknown_bytes,
+        folders: report
+            .groups
+            .iter()
+            .take(REPORT_GROUPS)
+            .map(|group| StaleFolder {
+                name: group.name.clone(),
+                stale_files: group.stale_files,
+                stale_bytes: group.stale_bytes,
+                folder_bytes: group.folder_bytes,
+                newest_ms: group.newest_ms,
+            })
+            .collect(),
+    }
+}
+
 fn stale_options(years: u32, not_opened: bool) -> Result<stale::Options, String> {
     if !stale::YEAR_CHOICES.contains(&years) {
         return Err("Pick one of the offered ages.".into());
@@ -646,14 +715,23 @@ pub async fn cleanup_stale(
     tauri::async_runtime::spawn_blocking(move || {
         let last_access = stale::last_access_updates();
         let state = app.state::<CleanupState>();
-        with_tree(&state, |tree| {
+        let report = with_tree(&state, |tree| {
             Ok(stale::analyze(
                 tree,
                 transfer_core::now_ms(),
                 options,
                 last_access,
             ))
-        })
+        })?;
+        // The saved report keeps the last threshold the user looked at.
+        let totals = stale_totals(&report);
+        if let Some(err) = state
+            .report
+            .amend(move |saved| saved.stale = Some(Box::new(totals)))
+        {
+            report_core::applog::error(&report_warning(&err));
+        }
+        Ok(report)
     })
     .await
     .map_err(|err| err.to_string())?
@@ -797,6 +875,13 @@ fn delete_duplicates(
     if state.scan_seq.load(Ordering::SeqCst) == seq {
         if let Some(found) = slot.as_mut() {
             found.forget(&gone);
+            let totals = duplicate_totals(found);
+            if let Some(err) = state
+                .report
+                .amend(move |report| report.duplicates = Some(Box::new(totals)))
+            {
+                report_core::applog::error(&report_warning(&err));
+            }
         }
     }
     Ok(done)

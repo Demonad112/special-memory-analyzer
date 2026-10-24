@@ -502,3 +502,122 @@ fn record_verdict_matrix() {
         Verdict::Bad
     );
 }
+
+#[test]
+fn usage_reports_without_duplicate_or_stale_fields_load_and_export_as_before() {
+    let old: UsageReport =
+        serde_json::from_str(r#"{"path":"C:\\","size":10,"files":1,"removed":[]}"#).unwrap();
+    assert_eq!((old.duplicates.clone(), old.stale.clone()), (None, None));
+    let doc = document(&saved(Body::DiskUsage(old)));
+    let headings: Vec<&str> = doc.tables.iter().map(|t| t.heading.as_str()).collect();
+    assert_eq!(headings, ["Largest files", "Biggest folders", "File types"]);
+    assert!(!doc.html("", "").contains("Duplicates"));
+    assert!(!doc.csv().contains("Stale data"));
+}
+
+#[test]
+fn usage_report_shows_duplicate_and_stale_sections() {
+    let report = UsageReport {
+        path: r"D:\Shares".into(),
+        size: 10_000,
+        duplicates: Some(Box::new(DuplicateTotals {
+            min_size: 1 << 20,
+            groups: 1,
+            files: 3,
+            reclaimable: 4_000,
+            top: vec![DuplicateItem {
+                name: "setup, v2.iso".into(),
+                size: 2_000,
+                copies: 3,
+                reclaimable: 4_000,
+                paths: vec![
+                    r"D:\Shares\a\setup, v2.iso".into(),
+                    r"D:\Shares\b\setup, v2.iso".into(),
+                ],
+            }],
+        })),
+        stale: Some(Box::new(StaleTotals {
+            years: 3,
+            not_opened: false,
+            now_ms: 1_792_800_000_000,
+            stale_files: 2,
+            stale_bytes: 2_500,
+            unknown_files: 1,
+            unknown_bytes: 7,
+            folders: vec![StaleFolder {
+                name: "Finance".into(),
+                stale_files: 2,
+                stale_bytes: 2_500,
+                folder_bytes: 5_000,
+                newest_ms: Some(1_600_000_000_000),
+            }],
+        })),
+        ..UsageReport::default()
+    };
+    // The new fields survive a save and load.
+    let again: UsageReport =
+        serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
+    assert_eq!(again, report);
+
+    let doc = document(&saved(Body::DiskUsage(report)));
+    let dupes = doc
+        .tables
+        .iter()
+        .find(|t| t.heading.starts_with("Duplicates"))
+        .unwrap();
+    assert_eq!(
+        dupes.heading,
+        format!(
+            "Duplicates: 3 files in 1 group, {} could be freed",
+            format_bytes(4_000)
+        )
+    );
+    assert_eq!(dupes.rows[0][2], "3");
+    assert!(
+        dupes
+            .footnote
+            .contains(&format!("{} or more", format_bytes(1 << 20))),
+        "{}",
+        dupes.footnote
+    );
+
+    let stale = doc
+        .tables
+        .iter()
+        .find(|t| t.heading.starts_with("Stale data"))
+        .unwrap();
+    assert_eq!(
+        stale.heading,
+        format!(
+            "Stale data: {} in 2 files (25.0% of the scan) not modified in 3 years",
+            format_bytes(2_500)
+        )
+    );
+    assert_eq!(
+        stale.rows[0],
+        [
+            "Finance".to_string(),
+            format_bytes(2_500),
+            "2".into(),
+            "50.0%".into(),
+            "2020-09-13".into()
+        ]
+    );
+    assert!(
+        stale.footnote.contains("Measured on 2026-10-24."),
+        "{}",
+        stale.footnote
+    );
+    assert!(
+        stale.footnote.contains("1 file (7 bytes)"),
+        "{}",
+        stale.footnote
+    );
+
+    let html = doc.html("", "");
+    assert!(
+        html.contains("Stale data: "),
+        "the HTML export has a stale section"
+    );
+    assert!(html.contains("setup, v2.iso"));
+}

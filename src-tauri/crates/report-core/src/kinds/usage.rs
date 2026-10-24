@@ -106,6 +106,12 @@ pub(super) fn disk_usage(report: &UsageReport, meta: Vec<(String, String)>) -> D
             },
         );
     }
+    if let Some(dupes) = &report.duplicates {
+        tables.push(duplicates_table(dupes));
+    }
+    if let Some(stale) = &report.stale {
+        tables.push(stale_table(stale, report.size));
+    }
     let explorer_on = report
         .explorer
         .as_ref()
@@ -163,6 +169,131 @@ pub(super) fn disk_usage(report: &UsageReport, meta: Vec<(String, String)>) -> D
         explorer: explorer_on,
         data: explorer_data,
         ..Document::default()
+    }
+}
+
+fn duplicates_table(dupes: &DuplicateTotals) -> Table {
+    Table {
+        heading: format!(
+            "Duplicates: {} in {}, {} could be freed",
+            plural(dupes.files, "file"),
+            plural(dupes.groups, "group"),
+            format_bytes(dupes.reclaimable)
+        ),
+        columns: vec![
+            "File".into(),
+            "Could be freed".into(),
+            "Copies".into(),
+            "Size of each".into(),
+            "Where".into(),
+        ],
+        numeric: vec![false, true, true, true, false],
+        rows: dupes
+            .top
+            .iter()
+            .map(|item| {
+                vec![
+                    item.name.clone(),
+                    format_bytes(item.reclaimable),
+                    format_count(item.copies),
+                    format_bytes(item.size),
+                    item.paths.join("; "),
+                ]
+            })
+            .collect(),
+        size_col: Some(1),
+        row_bytes: dupes.top.iter().map(|item| item.reclaimable).collect(),
+        footnote: format!(
+            "Files of {} or more with identical content (BLAKE3). Online-only and hard-linked files are not compared.{}",
+            format_bytes(dupes.min_size),
+            if dupes.groups > dupes.top.len() as u64 {
+                format!(" The {} largest groups are listed.", dupes.top.len())
+            } else {
+                String::new()
+            }
+        ),
+        ..Table::default()
+    }
+}
+
+fn stale_table(stale: &StaleTotals, total: u64) -> Table {
+    let rule = if stale.not_opened {
+        format!(
+            "not modified or opened in {}",
+            plural(u64::from(stale.years), "year")
+        )
+    } else {
+        format!("not modified in {}", plural(u64::from(stale.years), "year"))
+    };
+    let share = |part: u64, whole: u64| {
+        if whole > 0 {
+            format!("{:.1}%", part as f64 * 100.0 / whole as f64)
+        } else {
+            String::new()
+        }
+    };
+    let mut footnote = format!(
+        "Measured on {}.",
+        transfer_core::format_utc(stale.now_ms)
+            .split(' ')
+            .next()
+            .unwrap_or_default()
+    );
+    if stale.unknown_files > 0 {
+        footnote.push_str(&format!(
+            " {} ({}) with a missing, future or pre-1980 date are not counted.",
+            plural(stale.unknown_files, "file"),
+            format_bytes(stale.unknown_bytes)
+        ));
+    }
+    if stale.not_opened {
+        footnote.push_str(" Windows does not always keep last-access times up to date.");
+    }
+    Table {
+        heading: format!(
+            "Stale data: {} in {} ({} of the scan) {rule}",
+            format_bytes(stale.stale_bytes),
+            plural(stale.stale_files, "file"),
+            share(stale.stale_bytes, total)
+        ),
+        columns: vec![
+            "Folder".into(),
+            "Stale".into(),
+            "Files".into(),
+            "Of the folder".into(),
+            "Newest change".into(),
+        ],
+        numeric: vec![false, true, true, true, false],
+        rows: stale
+            .folders
+            .iter()
+            .map(|folder| {
+                vec![
+                    folder.name.clone(),
+                    format_bytes(folder.stale_bytes),
+                    format_count(folder.stale_files),
+                    share(folder.stale_bytes, folder.folder_bytes),
+                    folder
+                        .newest_ms
+                        .map(|ms| {
+                            transfer_core::format_utc(ms)
+                                .split(' ')
+                                .next()
+                                .unwrap_or_default()
+                                .to_string()
+                        })
+                        .unwrap_or_default(),
+                ]
+            })
+            .collect(),
+        size_col: Some(1),
+        row_bytes: stale
+            .folders
+            .iter()
+            .map(|folder| folder.stale_bytes)
+            .collect(),
+        footnote,
+        ..Table::default()
     }
 }
 
