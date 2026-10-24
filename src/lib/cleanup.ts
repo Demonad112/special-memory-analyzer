@@ -77,6 +77,18 @@ export function setSizeMode(mode: SizeMode): void {
   }
 }
 
+/** The item the actions apply to, from the list, the treemap or "Largest files". */
+export interface PickedItem {
+  id: number
+  name: string
+  size: number
+  isFolder: boolean
+  files: number
+}
+
+export const HARD_LINK_TITLE =
+  'Another name for this file is in the scan. Only one name carries the size on disk.'
+
 /** The size to show for an item in the chosen mode. */
 export function shownBytes(item: { size: number; logical: number }, mode: SizeMode): number {
   return mode === 'logical' ? item.logical : item.size

@@ -1,0 +1,504 @@
+use super::*;
+
+/// A report saved by an older build lacks newer fields; every body struct must still load.
+#[test]
+fn every_report_body_loads_from_an_empty_object() {
+    assert_eq!(
+        serde_json::from_str::<CompareReport>("{}").unwrap(),
+        CompareReport::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<UsageReport>("{}").unwrap(),
+        UsageReport::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<CleanReport>("{}").unwrap(),
+        CleanReport::default()
+    );
+    for body in [
+        r#"{"kind":"compare","data":{}}"#,
+        r#"{"kind":"diskUsage","data":{}}"#,
+        r#"{"kind":"cleanup","data":{}}"#,
+    ] {
+        serde_json::from_str::<Body>(body).unwrap();
+    }
+    // The report envelope keeps its identity fields required; only `job` is optional.
+    let saved = r#"{"id":"x","createdAtMs":1,"machine":"PC1","user":"sam","body":{"kind":"compare","data":{}}}"#;
+    assert_eq!(
+        serde_json::from_str::<Saved>(saved).unwrap().job,
+        JobInfo::default()
+    );
+}
+
+fn saved(body: Body) -> Saved {
+    Saved {
+        id: "x".into(),
+        created_at_ms: 0,
+        machine: "PC1".into(),
+        user: "sam".into(),
+        job: JobInfo {
+            client: "Acme".into(),
+            ticket: "T-42".into(),
+            technician: String::new(),
+        },
+        body,
+    }
+}
+
+#[test]
+fn compare_rows_flag_missing_files() {
+    let report = CompareReport {
+        source: r"C:\Data".into(),
+        destination: r"E:\Data".into(),
+        missing: 3,
+        missing_bytes: 2048,
+        missing_paths: vec![
+            MissingFile {
+                path: "a.txt".into(),
+                size: 1024,
+            },
+            MissingFile {
+                path: r"sub\b.txt".into(),
+                size: 0,
+            },
+        ],
+        ..CompareReport::default()
+    };
+    let saved = saved(Body::Compare(report));
+    let row = entry(&saved);
+    assert!(row.problem);
+    assert_eq!(row.headline, "3 files missing (2.00 KB)");
+    let doc = document(&saved);
+    assert_eq!(doc.tables[0].rows.len(), 2);
+    assert_eq!(doc.tables[0].rows[0][1], "1.00 KB");
+    assert_eq!(doc.tables[0].row_bytes, vec![1024, 0]);
+    assert!(doc.csv().contains("a.txt,1.00 KB,1024"));
+    let Section::Recovery(rec) = &doc.sections[0] else {
+        panic!("a recovery block")
+    };
+    assert!(rec.script.contains(r"robocopy 'C:\Data' 'E:\Data' 'a.txt'"));
+    assert!(rec
+        .script
+        .contains(r"robocopy 'C:\Data\sub' 'E:\Data\sub' 'b.txt'"));
+    assert!(doc.data.as_ref().unwrap()["rec"]["dirs"].is_array());
+    assert_eq!(doc.tables[0].footnote, "The first 2 of 3 are listed.");
+    assert_eq!(doc.tiles[2].tone, Tone::Bad);
+    assert!(doc.meta.contains(&("Ticket".into(), "T-42".into())));
+    assert!(doc.meta.contains(&("Windows user".into(), "sam".into())));
+}
+
+#[test]
+fn compare_html_has_the_recovery_block_and_stays_inside_the_csp() {
+    let report = CompareReport {
+        source: r"C:\Data".into(),
+        destination: r"E:\Data".into(),
+        missing: 2,
+        missing_paths: vec![
+            MissingFile {
+                path: r"app\node_modules\x.js".into(),
+                size: 5,
+            },
+            MissingFile {
+                path: r"it's\</script>.txt".into(),
+                size: 1,
+            },
+        ],
+        ..CompareReport::default()
+    };
+    let html = document(&saved(Body::Compare(report))).html("Acme", "now");
+    for needle in [
+        "Copy the missing files again",
+        "Show the full command",
+        "Download .ps1",
+        "data-bit=\"0\"",
+        "node_modules: 1 file",
+        "Copy pass #2 still didn't work",
+        "id=\"rec-pass2\"",
+    ] {
+        assert!(html.contains(needle), "missing {needle}");
+    }
+    assert!(!html.contains("</script>.txt"), "island must escape <");
+    assert_eq!(
+        html.matches("<script").count(),
+        2,
+        "island and page script only"
+    );
+}
+
+#[test]
+fn reports_saved_before_sizes_existed_still_load() {
+    let old = r#"{"source":"C:\\A","destination":"D:\\B","missing":2,"missingPaths":["x.txt","d\\y.txt"]}"#;
+    let report: CompareReport = serde_json::from_str(old).unwrap();
+    assert_eq!(report.missing_paths.len(), 2);
+    assert_eq!(report.missing_paths[1].path, r"d\y.txt");
+    assert_eq!(report.missing_paths[1].size, 0);
+    let new = r#"{"missingPaths":[{"path":"x.txt","size":7},{"path":"y.txt"}]}"#;
+    let report: CompareReport = serde_json::from_str(new).unwrap();
+    assert_eq!(report.missing_paths[0].size, 7);
+    assert_eq!(report.missing_paths[1].size, 0);
+    let again: CompareReport =
+        serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
+    assert_eq!(again, report);
+}
+
+#[test]
+fn usage_lists_removed_items_first() {
+    let report = UsageReport {
+        path: r"C:\".into(),
+        size: 1000,
+        removed: vec![Removed {
+            path: r"C:\old.iso".into(),
+            size: 400,
+            permanent: false,
+        }],
+        ..UsageReport::default()
+    };
+    let saved = saved(Body::DiskUsage(report));
+    assert_eq!(
+        entry(&saved).headline,
+        "1000 bytes used · 400 bytes removed"
+    );
+    let doc = document(&saved);
+    assert_eq!(doc.tables[0].heading, "Removed");
+    assert_eq!(doc.tables[0].rows[0][2], "Recycle Bin");
+}
+
+#[test]
+fn usage_report_with_an_explorer_gets_the_page_and_old_reports_do_not() {
+    use crate::explorer::{ExplorerNode, KIND_FILE};
+    let mut report = UsageReport {
+        path: r"C:\".into(),
+        size: 10,
+        ..UsageReport::default()
+    };
+    // A report saved before the explorer existed: no explorer, no page, same tables.
+    let old: UsageReport = serde_json::from_str(r#"{"path":"C:\\","size":10}"#).unwrap();
+    assert!(old.explorer.is_none());
+    let doc = document(&saved(Body::DiskUsage(old)));
+    assert!(!doc.explorer && doc.data.is_none());
+
+    // An empty scan has nothing to explore.
+    report.explorer = Some(Explorer::default());
+    assert!(!document(&saved(Body::DiskUsage(report.clone()))).explorer);
+
+    report.explorer = Some(Explorer {
+        nodes: vec![
+            ExplorerNode {
+                name: r"C:\".into(),
+                disk: 10,
+                ..ExplorerNode::default()
+            },
+            ExplorerNode {
+                name: "a.mp4".into(),
+                disk: 10,
+                kind: KIND_FILE,
+                ..ExplorerNode::default()
+            },
+        ],
+        ..Explorer::default()
+    });
+    let doc = document(&saved(Body::DiskUsage(report)));
+    assert!(doc.explorer);
+    let data = doc.data.expect("data island");
+    assert_eq!(data["x"]["root"], r"C:\");
+    assert_eq!(data["x"]["nodes"][1]["n"], "a.mp4");
+    // The flat tables are still there for readers without scripts.
+    assert_eq!(doc.tables[0].heading, "Largest files");
+}
+
+/// The explorer page for the script tests in `src/lib/reportExplorer.test.ts`: names that
+/// would break markup, folders three levels deep, a folded row and four file types.
+/// `UPDATE_FIXTURES=1 cargo test -p report-core explorer_fixture` rewrites it.
+#[test]
+fn explorer_fixture_matches_what_the_page_renders() {
+    use crate::explorer::{ExplorerNode, TypeFiles, KIND_DIR, KIND_FILE, KIND_MORE};
+    let node = |name: &str, disk: u64, files: u64, kind: u8, parent: u32| ExplorerNode {
+        name: name.into(),
+        disk,
+        files,
+        kind,
+        parent,
+    };
+    let hostile = "</script><b>x</b>.txt";
+    let explorer = Explorer {
+        nodes: vec![
+            node(r"C:\", 1000, 10, KIND_DIR, 0),
+            node("Users", 600, 6, KIND_DIR, 0),
+            node("Windows", 300, 3, KIND_DIR, 0),
+            node("pagefile.sys", 90, 1, KIND_FILE, 0),
+            node("(2 smaller items)", 10, 2, KIND_MORE, 0),
+            node("Alice", 500, 5, KIND_DIR, 1),
+            node(hostile, 100, 1, KIND_FILE, 1),
+            node("Movies", 400, 1, KIND_DIR, 5),
+            node("notes.txt", 100, 1, KIND_FILE, 5),
+            node("clip.mp4", 400, 1, KIND_FILE, 7),
+            node("system.dll", 300, 1, KIND_FILE, 2),
+        ],
+        types: vec![
+            TypeItem {
+                extension: "mp4".into(),
+                size: 400,
+                files: 1,
+            },
+            TypeItem {
+                extension: "dll".into(),
+                size: 300,
+                files: 1,
+            },
+            TypeItem {
+                extension: "txt".into(),
+                size: 200,
+                files: 2,
+            },
+            TypeItem {
+                extension: "sys".into(),
+                size: 90,
+                files: 1,
+            },
+        ],
+        type_files: vec![
+            TypeFiles {
+                extension: "mp4".into(),
+                files: vec![(r"Users\Alice\Movies\clip.mp4".into(), 400)],
+            },
+            TypeFiles {
+                extension: "dll".into(),
+                files: vec![(r"Windows\system.dll".into(), 300)],
+            },
+            TypeFiles {
+                extension: "txt".into(),
+                files: vec![
+                    (format!(r"Users\{hostile}"), 100),
+                    (r"Users\Alice\notes.txt".into(), 100),
+                ],
+            },
+            TypeFiles {
+                extension: "sys".into(),
+                files: vec![("pagefile.sys".into(), 90)],
+            },
+        ],
+        types_more: 0,
+        scanned_items: 4000,
+    };
+    let report = UsageReport {
+        path: r"C:\".into(),
+        size: 1000,
+        files: 10,
+        dirs: 4,
+        explorer: Some(explorer),
+        ..UsageReport::default()
+    };
+    let html = document(&saved(Body::DiskUsage(report))).html("Fixture", "fixed date");
+    // The hostile name did not open a script or element: ours, the explorer's and the island.
+    assert_eq!(html.matches("<script").count(), 3);
+    assert!(!html.contains("<b>x"));
+
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/explorer.html");
+    if std::env::var_os("UPDATE_FIXTURES").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &html).unwrap();
+    }
+    let committed = std::fs::read_to_string(&path)
+        .expect("tests/fixtures/explorer.html (run with UPDATE_FIXTURES=1)")
+        .replace("\r\n", "\n");
+    // Only the explorer's own parts: the shared script may change without touching these.
+    let part = |page: &str, from: &str, to: &str| -> String {
+        let start = page.find(from).expect(from);
+        let end = page[start..].find(to).expect(to) + start;
+        page[start..end].to_string()
+    };
+    for (from, to) in [
+        ("<script type=\"application/json\" id=\"d\">", "</script>"),
+        ("<script>\n(function(){\nvar host=", "</script>"),
+    ] {
+        assert_eq!(
+            part(&committed, from, to),
+            part(&html, from, to),
+            "fixture is stale: run UPDATE_FIXTURES=1 cargo test -p report-core explorer_fixture"
+        );
+    }
+}
+
+#[test]
+fn cleanup_adds_up_what_was_freed() {
+    let report = CleanReport {
+        items: vec![
+            CleanedItem {
+                title: "Temporary files".into(),
+                freed: 1024,
+                removed_files: 3,
+                ..CleanedItem::default()
+            },
+            CleanedItem {
+                title: "Browser caches".into(),
+                freed: 1024,
+                ..CleanedItem::default()
+            },
+        ],
+    };
+    let saved = saved(Body::Cleanup(report));
+    let row = entry(&saved);
+    assert_eq!(row.headline, "Freed 2.00 KB");
+    assert_eq!(row.subject, "Temporary files, Browser caches");
+    assert_eq!(document(&saved).tables[0].rows.len(), 2);
+    assert_eq!(document(&saved).verdict, Some(Verdict::Good));
+    let share = document(&saved).share.expect("a bar");
+    assert_eq!(share.detail, "2 of 2");
+    assert_eq!(share.tone, Tone::Good);
+}
+
+#[test]
+fn cleanup_bar_turns_amber_when_a_location_failed() {
+    let report = CleanReport {
+        items: vec![
+            CleanedItem::default(),
+            CleanedItem {
+                error: Some("Access denied".into()),
+                ..CleanedItem::default()
+            },
+        ],
+    };
+    let share = document(&saved(Body::Cleanup(report))).share.unwrap();
+    assert_eq!(share.detail, "1 of 2");
+    assert_eq!(share.percent, 50.0);
+    assert_eq!(share.tone, Tone::Warn);
+}
+
+#[test]
+fn disk_usage_bar_shows_the_share_of_the_drive_and_is_absent_without_one() {
+    let mut report = UsageReport {
+        path: r"C:\Users".into(),
+        size: 250,
+        drive_total: Some(1000),
+        ..UsageReport::default()
+    };
+    let share = document(&saved(Body::DiskUsage(report.clone())))
+        .share
+        .expect("a bar");
+    assert_eq!(share.percent, 25.0);
+    report.drive_total = None;
+    assert!(document(&saved(Body::DiskUsage(report))).share.is_none());
+}
+
+#[test]
+fn every_report_kind_exports_raw_bytes_in_the_csv() {
+    let compare = CompareReport {
+        missing: 1,
+        missing_paths: vec![MissingFile {
+            path: "a".into(),
+            size: 7,
+        }],
+        ..CompareReport::default()
+    };
+    let usage = UsageReport {
+        largest_files: vec![FileItem {
+            path: "f".into(),
+            size: 9,
+        }],
+        ..UsageReport::default()
+    };
+    let clean = CleanReport {
+        items: vec![CleanedItem {
+            title: "Temp".into(),
+            freed: 11,
+            ..CleanedItem::default()
+        }],
+    };
+    for (body, bytes) in [
+        (Body::Compare(compare), "7"),
+        (Body::DiskUsage(usage), "9"),
+        (Body::Cleanup(clean), "11"),
+    ] {
+        let csv = document(&saved(body)).csv();
+        let header = csv.lines().next().unwrap();
+        assert!(header.contains("Bytes"), "no Bytes column in {header}");
+        assert!(
+            csv.lines()
+                .any(|line| line.ends_with(&format!(",{bytes}"))
+                    || line.contains(&format!(",{bytes},"))),
+            "raw {bytes} missing in {csv}"
+        );
+    }
+}
+
+#[test]
+fn check_label_follows_verify_level_and_hashes() {
+    let mut item = ItemResult::done("a.txt", 1, ItemStatus::Copied);
+    assert_eq!(
+        check_label(&item, VerifyLevel::SizeAndTime),
+        "Size + date match"
+    );
+    // Hash level but nothing hashed (e.g. a file that was already there): no claim.
+    assert_eq!(check_label(&item, VerifyLevel::Hash), "Size + date match");
+    item.source_hash = Some("abc".into());
+    item.dest_hash = Some("abc".into());
+    assert_eq!(
+        check_label(&item, VerifyLevel::Hash),
+        "Content verified (BLAKE3)"
+    );
+    // A size-and-time run never claims content was verified.
+    assert_eq!(
+        check_label(&item, VerifyLevel::SizeAndTime),
+        "Size + date match"
+    );
+    item.dest_hash = Some("def".into());
+    assert_eq!(check_label(&item, VerifyLevel::Hash), "Size + date match");
+    let same = ItemResult::done("b.txt", 1, ItemStatus::SkippedIdentical);
+    assert_eq!(check_label(&same, VerifyLevel::Hash), "Already there");
+    assert_eq!(status_label(ItemStatus::SkippedIdentical), "Already there");
+}
+
+#[test]
+fn record_verdict_matrix() {
+    use transfer_core::{ConflictPolicy, RunTotals, TransferMode, TransferSettings, VerifyLevel};
+    let run = |state: RunState, not_copied: u64, error: Option<&str>| RunSummary {
+        id: "r".into(),
+        settings: TransferSettings {
+            source: "a".into(),
+            destination: "b".into(),
+            mode: TransferMode::Copy,
+            verify: VerifyLevel::SizeAndTime,
+            conflict: ConflictPolicy::Skip,
+            ignore_junk: false,
+            download_cloud: false,
+            preserve: Default::default(),
+        },
+        state,
+        created_at_ms: 0,
+        started_at_ms: None,
+        finished_at_ms: None,
+        machine: String::new(),
+        user: String::new(),
+        totals: RunTotals {
+            not_copied,
+            ..RunTotals::default()
+        },
+        error: error.map(str::to_string),
+    };
+    assert_eq!(
+        record_verdict(&run(RunState::Completed, 0, None)),
+        Verdict::Good
+    );
+    assert_eq!(
+        record_verdict(&run(RunState::Watching, 0, None)),
+        Verdict::Good
+    );
+    assert_eq!(
+        record_verdict(&run(RunState::Completed, 2, None)),
+        Verdict::Bad
+    );
+    // The bug this fixes: a failed or cancelled run with nothing listed used to read "All clear".
+    assert_eq!(
+        record_verdict(&run(RunState::Failed, 0, None)),
+        Verdict::Bad
+    );
+    assert_eq!(
+        record_verdict(&run(RunState::Cancelled, 0, None)),
+        Verdict::Bad
+    );
+    assert_eq!(
+        record_verdict(&run(RunState::Completed, 0, Some("disk full"))),
+        Verdict::Bad
+    );
+}

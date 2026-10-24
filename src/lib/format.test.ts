@@ -8,6 +8,7 @@ import {
   formatDelta,
   formatDuration,
   formatTime,
+  percentShare,
   plural,
 } from './format'
 
@@ -71,5 +72,18 @@ describe('clock and date formats', () => {
     expect(formatDate(when)).toBe('Oct 23, 2026')
     expect(formatTime(when)).toBe('5:07 PM')
     expect(formatDateTime(when.getTime())).toBe(formatDateTime(when))
+  })
+})
+
+describe('percentShare', () => {
+  it('rounds to a whole percent from 10% up and shows one decimal below', () => {
+    expect(percentShare(50, 100)).toBe('50%')
+    expect(percentShare(10, 100)).toBe('10%')
+    expect(percentShare(35, 1000)).toBe('3.5%')
+    expect(percentShare(0, 100)).toBe('0.0%')
+  })
+
+  it('is 0% when the total is empty', () => {
+    expect(percentShare(5, 0)).toBe('0%')
   })
 })

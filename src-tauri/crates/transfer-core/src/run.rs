@@ -496,7 +496,11 @@ impl<'a> Copier<'a> {
         }
 
         self.make_folder(relative_folder)?;
-        self.progress.files_total += entries.len() as u64;
+        // Folders and unreadable entries never count as done, so they stay out of the total.
+        self.progress.files_total += entries
+            .iter()
+            .filter(|entry| matches!(entry, Ok((_, ItemKind::File, _, _))))
+            .count() as u64;
         for entry in entries {
             match entry {
                 Ok((path, ItemKind::Folder, _, _)) => self.make_folder(&path)?,
@@ -964,6 +968,40 @@ mod tests {
         .unwrap();
         assert_eq!(summary.totals.not_copied, 0);
         assert_eq!(fs::read(dir.path("dst/locked.txt")).unwrap(), b"locked");
+    }
+
+    #[test]
+    fn retrying_a_folder_counts_only_its_files_in_the_progress() {
+        let dir = TempDir::new("run-folder-progress");
+        dir.write("src/top/sub/deep/a.txt", b"a");
+        dir.write("src/top/b.txt", b"b");
+        let id = prepared(&dir);
+        run_copy(
+            &dir.path("runs"),
+            &id,
+            None,
+            &CancelToken::default(),
+            &mut NullSink,
+        )
+        .unwrap();
+
+        let store = RunStore::open(&dir.path("runs"), &id).unwrap();
+        let settings = store.summary().unwrap().settings;
+        let cancel = CancelToken::default();
+        let mut sink = NullSink;
+        let mut copier = Copier::new(
+            &store,
+            &settings,
+            copy_options(&settings),
+            &cancel,
+            &mut sink,
+        )
+        .unwrap();
+        copier.copy_folder_tree("top").unwrap();
+
+        // Two folders (sub, deep) and two files: only the files are counted.
+        assert_eq!(copier.progress.files_total, 2);
+        assert_eq!(copier.progress.files_done, 2);
     }
 
     #[cfg(windows)]

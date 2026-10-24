@@ -7,13 +7,10 @@ import {
   ChevronsDownUp,
   ChevronsUpDown,
   CircleCheck,
-  ClipboardList,
   Copy,
-  FileText,
   FolderOpen,
   History,
   Info,
-  LoaderCircle,
   TriangleAlert,
 } from '@lucide/vue'
 import {
@@ -28,7 +25,9 @@ import {
   watch,
 } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import CompareProgress from '@/components/CompareProgress.vue'
 import CompareTable from '@/components/CompareTable.vue'
+import CompareToolbar from '@/components/CompareToolbar.vue'
 import JobFields from '@/components/JobFields.vue'
 import ContextMenu, { type MenuItem } from '@/components/ContextMenu.vue'
 import PageHeader from '@/components/PageHeader.vue'
@@ -65,7 +64,7 @@ import {
   type Sort,
   type SortKey,
 } from '@/lib/diffRows'
-import { formatBytes, formatDuration, formatTime, plural } from '@/lib/format'
+import { plural } from '@/lib/format'
 import {
   copyMissingRecord,
   isCancelled as isRecordCancelled,
@@ -110,12 +109,6 @@ const unreadable = computed(() =>
 const cloudFiles = computed(() =>
   result.value ? result.value.summary.leftCloud + result.value.summary.rightCloud : 0,
 )
-
-const filters: { value: CompareFilter; label: string }[] = [
-  { value: 'all', label: 'All' },
-  { value: 'changes', label: 'Differences' },
-  { value: 'missing', label: 'Missing' },
-]
 
 const elapsed = useElapsed(
   () => compareJob.startedAt,
@@ -481,48 +474,11 @@ function shortPath(path: string): string {
       {{ notice }}
     </p>
 
-    <section
+    <CompareProgress
       v-if="running"
-      class="mt-6 rounded-lg border border-stroke bg-card px-5 py-4"
-      aria-live="polite"
-    >
-      <div class="flex items-center justify-between gap-4">
-        <p class="flex items-center gap-2 font-semibold">
-          <LoaderCircle class="size-4 animate-spin text-accent" />
-          Reading both folders…
-        </p>
-        <p class="text-xs text-muted tabular-nums">{{ elapsed }} · Esc to cancel</p>
-      </div>
-      <div class="indeterminate mt-3 h-1 overflow-hidden rounded-full bg-subtle-strong" />
-      <div class="mt-3 grid grid-cols-2 gap-6">
-        <div
-          v-for="side in ['left', 'right'] as const"
-          :key="side"
-          class="min-w-0"
-        >
-          <p class="flex items-center gap-1.5 text-xs text-muted">
-            {{ side === 'left' ? 'Source' : 'Destination' }}
-            <span
-              v-if="progress?.[side === 'left' ? 'leftDone' : 'rightDone']"
-              class="flex items-center gap-1 text-success"
-            >
-              <CircleCheck class="size-3.5" />
-              Done
-            </span>
-          </p>
-          <p class="tabular-nums">
-            {{ plural(progress?.[side].files ?? 0, 'file') }} ·
-            {{ formatBytes(progress?.[side].bytes ?? 0) }}
-          </p>
-          <p
-            class="truncate text-xs text-faint"
-            :title="progress?.[side].current"
-          >
-            {{ progress?.[side].current || ' ' }}
-          </p>
-        </div>
-      </div>
-    </section>
+      :progress="progress"
+      :elapsed="elapsed"
+    />
 
     <div
       v-else-if="result"
@@ -555,115 +511,19 @@ function shortPath(path: string): string {
         </p>
       </div>
 
-      <div class="mt-4 flex items-center gap-3">
-        <div
-          class="flex shrink-0 rounded-md border border-stroke bg-subtle p-0.5"
-          role="radiogroup"
-          aria-label="Show"
-        >
-          <button
-            v-for="option in filters"
-            :key="option.value"
-            type="button"
-            role="radio"
-            :aria-checked="filter === option.value"
-            class="flex h-7 items-center rounded px-3 text-[13px]"
-            :class="
-              filter === option.value
-                ? 'bg-accent text-on-accent'
-                : 'text-fg hover:bg-subtle-strong'
-            "
-            @click="filter = option.value"
-          >
-            {{ option.label }}
-          </button>
-        </div>
-        <p
-          class="min-w-0 flex-1 truncate text-right text-xs text-muted tabular-nums"
-          :title="`${compared.left} → ${compared.right}`"
-        >
-          Compared
-          {{ finishedAt && formatTime(finishedAt) }}
-          in {{ formatDuration(result.elapsedMs) }}
-        </p>
-        <button
-          v-if="result.reportId"
-          type="button"
-          class="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-stroke bg-card px-3 text-[13px] hover:bg-card-hover"
-          title="Open the saved report in the browser (print or save as PDF from there). Export it from Reports."
-          @click="openCompareReport"
-        >
-          <FileText
-            class="size-4"
-            :stroke-width="1.75"
-          />
-          Report
-        </button>
-        <button
-          v-if="result.summary.missing > 0"
-          type="button"
-          class="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-stroke bg-card px-3 text-[13px] hover:bg-card-hover"
-          title="Copy every missing file's path, with a short header, to paste into an email or ticket"
-          @click="copyMissing"
-        >
-          <ClipboardList
-            class="size-4"
-            :stroke-width="1.75"
-          />
-          Copy missing list
-        </button>
-        <button
-          v-if="result.summary.missing > 0"
-          type="button"
-          class="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-accent px-3 text-[13px] text-on-accent hover:bg-accent-hover"
-          title="Copy the missing files to the destination as a record, with progress, a report and retry"
-          @click="confirmingCopy = true"
-        >
-          <Copy
-            class="size-4"
-            :stroke-width="1.75"
-          />
-          Copy missing files
-        </button>
-        <button
-          type="button"
-          class="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-stroke bg-card px-3 text-[13px] hover:bg-card-hover"
-          title="Compare the same two folders again and see what changed"
-          @click="runCompare(compared)"
-        >
-          <History
-            class="size-4"
-            :stroke-width="1.75"
-          />
-          Re-check
-        </button>
-      </div>
-      <div
-        v-if="confirmingCopy"
-        class="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-stroke bg-card px-4 py-3 text-[13px]"
-      >
-        <p class="min-w-0 flex-1">
-          Copy {{ plural(result.summary.missing, 'missing file') }} ({{
-            formatBytes(result.summary.missingBytes)
-          }}) from <strong class="break-all">{{ compared.left }}</strong> to
-          <strong class="break-all">{{ compared.right }}</strong
-          >? Files already there are never overwritten. Dates and attributes are kept.
-        </p>
-        <button
-          type="button"
-          class="h-8 rounded-md bg-accent px-3 text-on-accent hover:bg-accent-hover"
-          @click="copyMissingFiles"
-        >
-          Copy
-        </button>
-        <button
-          type="button"
-          class="h-8 rounded-md border border-stroke px-3 hover:bg-card-hover"
-          @click="confirmingCopy = false"
-        >
-          Cancel
-        </button>
-      </div>
+      <CompareToolbar
+        :result="result"
+        :compared="compared"
+        :finished-at="finishedAt"
+        :filter="filter"
+        :confirming="confirmingCopy"
+        @filter="filter = $event"
+        @report="openCompareReport"
+        @copy-list="copyMissing"
+        @copy-files="copyMissingFiles"
+        @confirming="confirmingCopy = $event"
+        @recheck="runCompare(compared)"
+      />
 
       <CompareTable
         v-if="rows.length > 0"
@@ -785,31 +645,6 @@ function shortPath(path: string): string {
   container: page / inline-size;
 }
 
-/* Fluent indeterminate progress: a short accent bar sliding across. */
-.indeterminate {
-  position: relative;
-}
-
-.indeterminate::after {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 30%;
-  border-radius: 999px;
-  background: var(--app-accent);
-  animation: slide 1.4s ease-in-out infinite;
-  content: '';
-}
-
-@keyframes slide {
-  from {
-    transform: translateX(-100%);
-  }
-
-  to {
-    transform: translateX(340%);
-  }
-}
-
 .toast-enter-active,
 .toast-leave-active {
   transition:
@@ -821,11 +656,5 @@ function shortPath(path: string): string {
 .toast-leave-to {
   opacity: 0;
   transform: translate(-50%, 6px);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .indeterminate::after {
-    animation-duration: 4s;
-  }
 }
 </style>

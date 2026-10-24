@@ -41,6 +41,18 @@ pub struct MissingToCopy {
 }
 
 impl CompareState {
+    /// Keeps `compared` as the last result unless `cancel` fired. The check runs under the
+    /// result lock: a newer compare cancels this one first and then clears the result, so a
+    /// stale result cannot land after that.
+    fn store(&self, cancel: &CancelToken, compared: Compared) -> Result<(), String> {
+        let mut result = self.result.lock().map_err(|err| err.to_string())?;
+        if cancel.is_cancelled() {
+            return Err(CANCELLED.to_string());
+        }
+        *result = Some(compared);
+        Ok(())
+    }
+
     /// The last compare's missing paths with its two folders, for a Record copy job.
     pub fn missing_to_copy(&self) -> Result<MissingToCopy, String> {
         let result = self.result.lock().map_err(|err| err.to_string())?;
@@ -166,12 +178,15 @@ pub async fn compare_start(
         elapsed_ms,
         report_id,
     };
-    *state.result.lock().map_err(|err| err.to_string())? = Some(Compared {
-        left,
-        right,
-        diff,
-        ignore_junk,
-    });
+    state.store(
+        &cancel,
+        Compared {
+            left,
+            right,
+            diff,
+            ignore_junk,
+        },
+    )?;
     Ok(result)
 }
 
@@ -288,4 +303,47 @@ pub fn compare_cancel(state: State<'_, CompareState>) -> Result<(), String> {
         cancel.cancel();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A compare of two empty folders, which is all `store` needs to hold.
+    fn empty_compare(tag: &str) -> Compared {
+        let root = std::env::temp_dir().join(format!("dsa-compare-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let state = ScanState::new(CancelToken::new());
+        let tree = scan(&root, &state).unwrap();
+        let diff = compare(&tree, &tree);
+        let _ = std::fs::remove_dir_all(&root);
+        Compared {
+            left: root.clone(),
+            right: root,
+            diff,
+            ignore_junk: false,
+        }
+    }
+
+    #[test]
+    fn a_cancelled_compare_never_stores_its_result() {
+        let state = CompareState::default();
+        let cancel = CancelToken::new();
+        // A newer compare cancelled this one after its own check but before the store.
+        cancel.cancel();
+        let err = state
+            .store(&cancel, empty_compare("cancelled"))
+            .unwrap_err();
+        assert_eq!(err, CANCELLED);
+        assert!(state.missing_to_copy().is_err(), "nothing may be stored");
+    }
+
+    #[test]
+    fn a_finished_compare_stores_its_result() {
+        let state = CompareState::default();
+        state
+            .store(&CancelToken::new(), empty_compare("finished"))
+            .unwrap();
+        assert!(state.missing_to_copy().unwrap().paths.is_empty());
+    }
 }
