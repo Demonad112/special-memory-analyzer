@@ -371,6 +371,7 @@ Run this alone, after B01–B09. Make pure moves first, then cleanups. **One com
    - the `Default` branch ruleset retargeted to the default branch (`main`).
 
    Add `environment: release` to the `release` job (the publishing job, `needs: installer`) in `.github/workflows/release.yml`, and leave the `installer` job without it. Document the settings and the approval step ("Actions → run → Review deployments → Approve") in `docs/install.md` → "Releasing", then mark DSA-064 fixed.
+
 5. **DSA-068.** Q8 approved `@vue/test-utils`. Add it and write `BulkDeleteDialog.test.ts` (the permanent confirm, Escape blocked while deleting, and the token passed through).
 6. **DSA-066.** Write `docs/signing-options.md` comparing the current kit with Azure Trusted Signing. No code, no paid service (Q2).
 7. **DSA-018.** Q-deps approved 2026-10-23: bump `vite` to the latest 8.3.x (≥ 8.3.3). Check `pnpm why vite` shows one version, `corepack pnpm audit --prod` reports 0, and `corepack pnpm check` and `corepack pnpm build` pass. CI must be green before the PR is marked ready.
