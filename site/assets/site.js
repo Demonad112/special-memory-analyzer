@@ -57,11 +57,12 @@
     {
       test: /^dsa-signing\.cer$/i,
       label: 'Signing certificate',
-      desc: 'Public certificate. Compare its thumbprint with the one below.',
+      desc: 'Public certificate. Check its thumbprint against a copy you trust (see below).',
     },
     {
       test: /^SHA256SUMS-release\.txt$/i,
-      label: 'SHA-256 of installer and kit',
+      fallback: /^SHA256SUMS\.txt$/i,
+      label: 'SHA-256 checksums',
       desc: 'Check the download hash before you run it.',
     },
   ]
@@ -88,9 +89,13 @@
 
     list.textContent = ''
     ASSETS.forEach(function (spec) {
-      var a = (rel.assets || []).filter(function (x) {
-        return spec.test.test(x.name)
-      })[0]
+      var assets = rel.assets || []
+      function find(re) {
+        return assets.filter(function (x) {
+          return re.test(x.name)
+        })[0]
+      }
+      var a = find(spec.test) || (spec.fallback && find(spec.fallback))
       if (!a) return
       var li = el('li')
       li.appendChild(el('span', 'name', spec.label + ' · ' + fmtSize(a.size)))
@@ -150,6 +155,8 @@
         return r.json()
       })
       .then(function (rel) {
+        // /releases/latest can return a build that was published without the prerelease flag.
+        if (rel.prerelease || /-test\./i.test(rel.tag_name || '')) throw new Error('prerelease')
         render(box, rel)
       })
       .catch(function () {
@@ -214,7 +221,7 @@
     }
     // open a question linked by #hash
     if (location.hash) {
-      var target = document.querySelector(location.hash)
+      var target = document.getElementById(decodeURIComponent(location.hash.slice(1)))
       if (target && target.tagName === 'DETAILS') target.open = true
     }
   }

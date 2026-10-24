@@ -153,8 +153,12 @@
               data-dl-thumb
               hidden
             >
-              Certificate thumbprint (SHA-1) for this release:
+              Thumbprint (SHA-1) listed in this release's notes:
               <code></code>
+              <span class="fine">
+                This comes from the same place as the download, so it proves nothing on its own.
+                Compare it with a copy from a channel you trust.
+              </span>
             </div>
             <p
               class="fine"
@@ -625,9 +629,12 @@
             <div class="card">
               <h3>1. Match the thumbprint</h3>
               <p>
-                The full SHA-1 thumbprint is shown in the download box above and in the release
-                notes. In the USB kit you paste it and the Install button stays disabled until it
-                matches.
+                The release notes and the download box above list the full SHA-1 thumbprint, but
+                they are served from the same place as the file, so a match with the page alone
+                proves nothing. Compare it with a copy from a channel you trust: the value your
+                admin gave you, or the one in the USB kit's <code>dsa-signing.cer</code> that you
+                received through your own channel. The USB kit's Install button stays disabled until
+                the thumbprint you paste matches.
               </p>
               <h3>2. Check the hash</h3>
               <pre><code>Get-FileHash .\Deep-Server-Analyzer-usb-kit.zip -Algorithm SHA256</code></pre>

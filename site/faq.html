@@ -131,7 +131,8 @@
               Release builds are signed with a self-signed certificate that is created for each
               release. Windows does not trust it, so SmartScreen warns. Click
               <strong>More info → Run anyway</strong> after you have
-              <a href="./#verify">verified the thumbprint and hash</a>.
+              <a href="./#verify">verified the thumbprint (against a copy you trust) and the hash</a
+              >.
             </p>
           </div>
         </details>
@@ -151,8 +152,9 @@
             <p>
               The certificate is created for one release and its private key is deleted afterwards.
               A release can never be re-signed, and a stolen key cannot sign anything later. The
-              trade-off is that you must check the thumbprint each time. It is a self-signed
-              code-signing certificate, RSA 3072, valid 180 days, and the installer is timestamped.
+              trade-off is that you must check the thumbprint each time, against a copy from a
+              channel you trust and not only the release page. It is a self-signed code-signing
+              certificate, RSA 3072, valid 180 days, and the installer is timestamped.
             </p>
           </div>
         </details>
@@ -410,8 +412,11 @@
               </td>
             </tr>
             <tr>
-              <td>Thumbprint does not match the release page</td>
-              <td>Stop. Download the zip again from the real Releases page.</td>
+              <td>Thumbprint does not match the release page or your trusted copy</td>
+              <td>
+                Stop. Download the zip again from the real Releases page and check against the
+                thumbprint from your trusted channel.
+              </td>
             </tr>
             <tr>
               <td>Install failed</td>
