@@ -23,7 +23,7 @@ import { formatBytes, plural } from '@/lib/format'
 
 const emit = defineEmits<{ finished: [] }>()
 
-type Phase = 'loading' | 'review' | 'brake' | 'running' | 'results'
+type Phase = 'loading' | 'review' | 'brake' | 'confirmPermanent' | 'running' | 'results'
 
 /** A dry-run row with the suggested-cleanup row it came from, when there is one. */
 interface Row extends PreviewItem {
@@ -88,6 +88,10 @@ function run(permanent: boolean): void {
     phase.value = 'brake'
     return
   }
+  if (permanent) {
+    phase.value = 'confirmPermanent'
+    return
+  }
   void go(permanent)
 }
 
@@ -101,6 +105,13 @@ async function go(permanent: boolean, token?: string): Promise<void> {
   } catch (err) {
     error.value = errorMessage(err)
     phase.value = 'review'
+  }
+}
+
+/** "Delete permanently" asks once more, because the review step talks about the Recycle Bin. */
+function confirmPermanent(): void {
+  if (phase.value === 'confirmPermanent') {
+    void go(true)
   }
 }
 
@@ -142,6 +153,7 @@ defineExpose({ show })
       <template v-if="phase === 'results'">Done</template>
       <template v-else-if="phase === 'running'">Deleting…</template>
       <template v-else-if="phase === 'brake'">This is a big cleanup</template>
+      <template v-else-if="phase === 'confirmPermanent'">Delete permanently?</template>
       <template v-else>Delete {{ plural(count, 'item') }}?</template>
     </h2>
 
@@ -183,6 +195,17 @@ defineExpose({ show })
           </span>
         </li>
       </ul>
+    </template>
+
+    <template v-else-if="phase === 'confirmPermanent'">
+      <p
+        class="mt-1 flex items-start gap-2 text-[13px] text-danger"
+        role="alert"
+      >
+        <TriangleAlert class="mt-0.5 size-4 shrink-0" />
+        {{ formatBytes(preview?.goSize ?? 0) }} in total. {{ deleteSentence(count, true) }}
+        It skips the Recycle Bin.
+      </p>
     </template>
 
     <template v-else-if="phase === 'review' || phase === 'running'">
@@ -358,6 +381,22 @@ defineExpose({ show })
           @click="confirmBig"
         >
           Yes, {{ brakePermanent ? 'delete' : 'recycle' }} {{ plural(count, 'item') }}
+        </button>
+      </template>
+      <template v-else-if="phase === 'confirmPermanent'">
+        <button
+          type="button"
+          class="h-8 rounded-md border border-stroke bg-card px-4 hover:bg-card-hover"
+          @click="phase = 'review'"
+        >
+          Back
+        </button>
+        <button
+          type="button"
+          class="flex h-8 items-center gap-1.5 rounded-md border border-danger/40 bg-card px-4 font-semibold text-danger hover:bg-danger-bg"
+          @click="confirmPermanent"
+        >
+          Yes, delete {{ plural(count, 'item') }} permanently
         </button>
       </template>
       <template v-else>
