@@ -5,7 +5,6 @@
 use crate::compare::CompareState;
 use scan_core::{check_pair, clean_path};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -29,11 +28,7 @@ const MAX_NOT_COPIED_ROWS: usize = 10_000;
 /// The running record's cancel and finish switches. One record at a time.
 // ponytail: one job slot; a job map if two records ever need to run at once.
 #[derive(Default)]
-pub struct RecordState(
-    Mutex<Option<WatchControl>>,
-    /// The recovery folder last used for each run, so the report can reveal it by run id.
-    Mutex<HashMap<String, PathBuf>>,
-);
+pub struct RecordState(Mutex<Option<WatchControl>>);
 
 impl RecordState {
     fn begin(&self) -> Result<WatchControl, String> {
@@ -54,16 +49,6 @@ impl RecordState {
         }
         // Back to ordinary access checks, so later scans see what the user would.
         transfer_core::secure::disable_privileges();
-    }
-
-    fn remember_recovery(&self, run_id: &str, folder: &str) {
-        if let Ok(mut folders) = self.1.lock() {
-            folders.insert(run_id.to_string(), PathBuf::from(folder));
-        }
-    }
-
-    fn recovery_folder(&self, run_id: &str) -> Option<PathBuf> {
-        self.1.lock().ok()?.get(run_id).cloned()
     }
 
     /// Settles runs a dead app left as Running or Watching. The job slot is held while it
@@ -415,7 +400,6 @@ pub async fn record_recover(
     folder: Option<String>,
 ) -> Result<RecoveryResult, String> {
     let control = state.begin()?;
-    let remembered_run = run_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let _awake = KeepAwake::new();
         let chosen = folder
@@ -433,9 +417,7 @@ pub async fn record_recover(
     })
     .await;
     state.end();
-    let result = result.map_err(to_text)??;
-    state.remember_recovery(&remembered_run, &result.folder);
-    Ok(result)
+    result.map_err(to_text)?
 }
 
 #[tauri::command]
@@ -495,7 +477,7 @@ pub async fn share_connect(
 pub enum RevealSide {
     Source,
     Destination,
-    /// The folder `record_recover` last copied the missed files to.
+    /// The folder `record_recover` last copied the missed files to (saved in `recovery.json`).
     Recovery,
 }
 
@@ -527,7 +509,6 @@ fn reveal_target(
 /// path (empty for the root folder), or the run's recovery folder.
 #[tauri::command]
 pub fn record_reveal(
-    state: State<'_, RecordState>,
     run_id: String,
     relative_path: String,
     side: RevealSide,
@@ -539,7 +520,7 @@ pub fn record_reveal(
         &settings.destination,
         &relative_path,
         side,
-        state.recovery_folder(&run_id),
+        transfer_core::recovery::known_recovery_folder(&transfer_core::records_root(), &run_id),
     )?;
     tauri_plugin_opener::reveal_item_in_dir(&path)
         .map_err(|err| format!("Could not open {} in Explorer: {err}", path.display()))

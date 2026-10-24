@@ -131,7 +131,11 @@ fn plain(name: String, kind: Kind) -> Entry {
 fn std_file_id(metadata: &fs::Metadata) -> u64 {
     use std::os::unix::fs::MetadataExt;
     if metadata.nlink() > 1 {
-        metadata.ino() ^ metadata.dev().rotate_left(32).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        metadata.ino()
+            ^ metadata
+                .dev()
+                .rotate_left(32)
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
     } else {
         0
     }

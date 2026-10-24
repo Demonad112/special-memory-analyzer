@@ -6,7 +6,7 @@ use crate::csv::csv_cell;
 use crate::prepare::{destination_path, safe_relative};
 use crate::reason::{FailureReason, Side};
 use crate::run::Selection;
-use crate::store::{LogStatus, RunStore};
+use crate::store::{write_atomic, LogStatus, RunStore};
 use crate::volume::volume_info;
 use crate::{CancelToken, ItemKind, ItemResult, Result};
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,34 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const LIST_FILE_NAME: &str = "NOT-COPIED.csv";
+/// Written beside the run's other files: where its recovery folder went.
+const SAVED_FILE_NAME: &str = "recovery.json";
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedRecovery {
+    #[serde(default)]
+    folder: String,
+}
+
+/// The recovery folder to show for a run: the one the last "copy to recovery" used, else the
+/// default `<destination>_NotCopied\<run id>`, whichever is still on disk.
+pub fn known_recovery_folder(root: &Path, run_id: &str) -> Option<PathBuf> {
+    let store = RunStore::open(root, run_id).ok()?;
+    let saved = fs::read_to_string(store.dir().join(SAVED_FILE_NAME))
+        .ok()
+        .and_then(|text| serde_json::from_str::<SavedRecovery>(&text).ok())
+        .filter(|saved| !saved.folder.is_empty())
+        .map(|saved| PathBuf::from(saved.folder));
+    let default = store
+        .summary()
+        .ok()
+        .map(|summary| recovery_folder(Path::new(&summary.settings.destination), None, run_id));
+    saved
+        .into_iter()
+        .chain(default)
+        .find(|folder| folder.is_dir())
+}
 
 /// Whether a not-copied row can be copied to a recovery folder: only files, and only when
 /// the source itself was fine (the problem was at the destination, or transient).
@@ -76,6 +104,12 @@ pub fn copy_to_recovery(
     let destination = PathBuf::from(&summary.settings.destination);
     let folder = recovery_folder(&destination, chosen, run_id);
     fs::create_dir_all(&folder)?;
+    // Best effort: without it the report falls back to the default folder.
+    if let Ok(text) = serde_json::to_string(&SavedRecovery {
+        folder: folder.display().to_string(),
+    }) {
+        let _ = write_atomic(&store.dir().join(SAVED_FILE_NAME), text.as_bytes());
+    }
     let same_volume = volume(&folder) == volume(&destination);
 
     let matches = selection.matcher();
@@ -299,5 +333,63 @@ mod tests {
             fs::read(dir.path("dst/docs/report, final.txt")).unwrap(),
             b"someone else's"
         );
+        // The report finds the folder again from the run's own files, e.g. after a restart.
+        assert_eq!(
+            known_recovery_folder(&dir.path("runs"), &summary.id),
+            Some(folder)
+        );
+    }
+
+    fn run_with_destination(dir: &TempDir) -> String {
+        let settings = TransferSettings {
+            source: dir.path("src").display().to_string(),
+            destination: dir.path("dst").display().to_string(),
+            mode: TransferMode::Copy,
+            verify: VerifyLevel::SizeAndTime,
+            conflict: ConflictPolicy::Skip,
+            ignore_junk: false,
+            download_cloud: false,
+            preserve: Default::default(),
+        };
+        dir.write("src/a.txt", b"a");
+        let token = CancelToken::default();
+        prepare(&dir.path("runs"), settings, &token, &mut NullSink)
+            .unwrap()
+            .0
+            .id
+    }
+
+    #[test]
+    fn a_chosen_recovery_folder_is_remembered_beside_the_run() {
+        let dir = TempDir::new("recovery-saved");
+        let id = run_with_destination(&dir);
+        let runs = dir.path("runs");
+        assert_eq!(known_recovery_folder(&runs, &id), None);
+
+        let chosen = dir.path("rescue").join(&id);
+        fs::create_dir_all(&chosen).unwrap();
+        let text = serde_json::to_string(&SavedRecovery {
+            folder: chosen.display().to_string(),
+        })
+        .unwrap();
+        fs::write(runs.join(&id).join(SAVED_FILE_NAME), text).unwrap();
+        assert_eq!(known_recovery_folder(&runs, &id), Some(chosen.clone()));
+
+        // Gone from disk: nothing to show rather than a dead path.
+        fs::remove_dir_all(&chosen).unwrap();
+        assert_eq!(known_recovery_folder(&runs, &id), None);
+    }
+
+    #[test]
+    fn without_recovery_json_the_default_folder_is_used_when_it_exists() {
+        let dir = TempDir::new("recovery-default");
+        let id = run_with_destination(&dir);
+        let default = recovery_folder(&dir.path("dst"), None, &id);
+        assert_eq!(known_recovery_folder(&dir.path("runs"), &id), None);
+        fs::create_dir_all(&default).unwrap();
+        assert_eq!(known_recovery_folder(&dir.path("runs"), &id), Some(default));
+        // A damaged or empty recovery.json is ignored.
+        fs::write(dir.path("runs").join(&id).join(SAVED_FILE_NAME), "{}").unwrap();
+        assert!(known_recovery_folder(&dir.path("runs"), &id).is_some());
     }
 }
