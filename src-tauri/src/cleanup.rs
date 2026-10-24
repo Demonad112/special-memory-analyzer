@@ -113,7 +113,15 @@ pub async fn cleanup_scan(
     let rows = cleanup_core::rows(&tree, 0);
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let report = usage_report(&path, &tree, &overview, &rows, elapsed_ms);
-    let saved = report_core::save(&report_core::reports_root(), job, Body::DiskUsage(report)).ok();
+    let mut overview = overview;
+    let saved = match report_core::save(&report_core::reports_root(), job, Body::DiskUsage(report))
+    {
+        Ok(saved) => Some(saved),
+        Err(err) => {
+            overview.warning = Some(report_warning(&err));
+            None
+        }
+    };
     let result = ScanResult {
         path: path.display().to_string(),
         overview,
@@ -124,6 +132,11 @@ pub async fn cleanup_scan(
     *lock(&state.tree)? = Some(tree);
     *lock(&state.report)? = saved;
     Ok(result)
+}
+
+/// What the page shows when the scan's saved report could not be written or updated.
+fn report_warning(err: &str) -> String {
+    format!("The saved report is out of date: {err}")
 }
 
 /// Lines kept per list in a saved disk usage report.
@@ -261,6 +274,7 @@ pub async fn cleanup_delete(
     let mut guard = lock(&state.tree)?;
     let tree = guard.as_mut().ok_or(NO_RESULT)?;
     // A new scan may have replaced the tree while Windows was deleting.
+    let mut warning = None;
     if gone && tree.is_live(id) && tree.path(id) == target.path {
         tree.remove(id);
         if let Some(saved) = lock(&state.report)?.as_mut() {
@@ -270,15 +284,19 @@ pub async fn cleanup_delete(
                     size: target.size,
                     permanent,
                 });
-                // The delete happened; a report that can't be updated isn't worth an error.
-                let _ = report_core::write(&report_core::reports_root(), saved);
+                // The delete happened, so a report that can't be updated is a warning, not an error.
+                if let Err(err) = report_core::write(&report_core::reports_root(), saved) {
+                    warning = Some(report_warning(&err));
+                }
             }
         }
     }
     if !gone {
         return Err(single_error(result));
     }
-    Ok(cleanup_core::overview(tree))
+    let mut overview = cleanup_core::overview(tree);
+    overview.warning = warning;
+    Ok(overview)
 }
 
 /// What the page shows when a one-item delete did not take the item.
@@ -469,15 +487,20 @@ pub async fn cleanup_delete_many(
             permanent,
         });
     }
+    let mut warning = None;
     if let Some(saved) = lock(&state.report)?.as_mut() {
         if let Body::DiskUsage(report) = &mut saved.body {
             report.removed.extend(removed);
-            let _ = report_core::write(&report_core::reports_root(), saved);
+            if let Err(err) = report_core::write(&report_core::reports_root(), saved) {
+                warning = Some(report_warning(&err));
+            }
         }
     }
+    let mut overview = cleanup_core::overview(tree);
+    overview.warning = warning;
     Ok(DeleteManyResult {
         results,
-        overview: cleanup_core::overview(tree),
+        overview,
         log_error,
     })
 }
