@@ -99,7 +99,7 @@ fn list_dir_std(path: &Path) -> io::Result<Listing> {
                             .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
                             .map(|since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX)),
                         cloud,
-                        file_id: 0,
+                        file_id: std_file_id(&metadata),
                         lossy,
                     });
                 }
@@ -123,6 +123,23 @@ fn plain(name: String, kind: Kind) -> Entry {
         file_id: 0,
         lossy: false,
     }
+}
+
+/// Only files with more than one name get an id: it is all hard-link detection needs. The
+/// device is folded into the inode because a scan can cross mount points on Unix.
+#[cfg(unix)]
+fn std_file_id(metadata: &fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    if metadata.nlink() > 1 {
+        metadata.ino() ^ metadata.dev().rotate_left(32).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    } else {
+        0
+    }
+}
+
+#[cfg(not(unix))]
+fn std_file_id(_metadata: &fs::Metadata) -> u64 {
+    0
 }
 
 #[cfg(unix)]
