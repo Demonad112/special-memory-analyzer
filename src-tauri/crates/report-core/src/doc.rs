@@ -4,12 +4,24 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use transfer_core::csv_cell;
 
+use crate::branding::Logo;
 use crate::explorer;
 
 /// Longest list drawn in the HTML page; the CSV always has every row.
 pub const MAX_HTML_ROWS: usize = 5_000;
 /// Rows a printed table keeps before "see the CSV".
 const MAX_PRINT_ROWS: usize = 200;
+
+/// The `meta` labels that go in the "Prepared for" block (and the CSV job rows), in order.
+pub const JOB_LABELS: [&str; 3] = ["Client", "Ticket", "Technician"];
+
+/// Who the report is from: the company name and logo (Settings).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Branding {
+    /// Empty: "Deep Server Analyzer".
+    pub name: String,
+    pub logo: Option<Logo>,
+}
 
 /// A report laid out for export: header, summary tiles, notes and tables.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -163,10 +175,21 @@ impl Document {
     /// The page carries a Content-Security-Policy that allows only its own script (by hash), so
     /// it cannot reach the network whatever the data holds.
     pub fn html(&self, brand: &str, generated: &str) -> String {
-        let brand = if brand.trim().is_empty() {
+        self.html_branded(
+            &Branding {
+                name: brand.to_string(),
+                logo: None,
+            },
+            generated,
+        )
+    }
+
+    /// [`Document::html`] with the logo, when there is one, next to the company name.
+    pub fn html_branded(&self, branding: &Branding, generated: &str) -> String {
+        let brand = if branding.name.trim().is_empty() {
             "Deep Server Analyzer"
         } else {
-            brand.trim()
+            branding.name.trim()
         };
         let mut out = String::with_capacity(16 * 1024);
         out.push_str("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
@@ -190,8 +213,12 @@ impl Document {
             Some(Verdict::Good) => Some(("good", "All clear")),
             None => None,
         };
+        // The data URI is base64 with a fixed type: nothing in it needs escaping.
+        let logo = branding.logo.as_ref().map_or(String::new(), |logo| {
+            format!("<img class=\"logo\" src=\"{}\" alt=\"\">", logo.data_uri())
+        });
         out.push_str(&format!(
-            "<header><div class=\"top\"><p class=\"brand\">{}</p>{}</div><h1>{}</h1><p class=\"subtitle\">{}</p>",
+            "<header><div class=\"top\"><p class=\"brand\">{logo}{}</p>{}</div><h1>{}</h1><p class=\"subtitle\">{}</p>",
             esc(brand),
             verdict.map_or(String::new(), |(tone, text)| format!(
                 "<span class=\"pill {tone}\">{text}</span>"
@@ -199,9 +226,26 @@ impl Document {
             esc(&self.title),
             esc(&self.subtitle)
         ));
-        if !self.meta.is_empty() {
+        let job = self.job_fields();
+        if !job.is_empty() {
+            out.push_str("<section class=\"prepared\"><p class=\"for\">Prepared for</p><dl>");
+            for (label, value) in &job {
+                out.push_str(&format!(
+                    "<div><dt>{}</dt><dd>{}</dd></div>",
+                    esc(label),
+                    esc(value)
+                ));
+            }
+            out.push_str("</dl></section>");
+        }
+        let rest: Vec<&(String, String)> = self
+            .meta
+            .iter()
+            .filter(|(label, _)| !JOB_LABELS.contains(&label.as_str()))
+            .collect();
+        if !rest.is_empty() {
             out.push_str("<dl>");
-            for (label, value) in &self.meta {
+            for (label, value) in rest {
                 out.push_str(&format!(
                     "<div><dt>{}</dt><dd>{}</dd></div>",
                     esc(label),
@@ -266,9 +310,28 @@ impl Document {
         out
     }
 
+    /// The client, ticket and technician from `meta` that are set, in [`JOB_LABELS`] order.
+    pub fn job_fields(&self) -> Vec<(&str, &str)> {
+        JOB_LABELS
+            .iter()
+            .filter_map(|wanted| {
+                self.meta
+                    .iter()
+                    .find(|(label, value)| label == wanted && !value.trim().is_empty())
+                    .map(|(label, value)| (label.as_str(), value.as_str()))
+            })
+            .collect()
+    }
+
     /// `csv_table`, or else the first table, as CSV for Excel: UTF-8 with a BOM, CRLF line ends. A table with a size
     /// column gets a raw "Bytes" column after it.
     pub fn csv(&self) -> String {
+        self.csv_with(false)
+    }
+
+    /// [`Document::csv`]; with `job_details`, rows naming the report and its job (and the date)
+    /// come first, then an empty line. Nothing is added when no job field is set.
+    pub fn csv_with(&self, job_details: bool) -> String {
         let mut out = String::from("\u{feff}");
         let Some(table) = self.csv_table.as_ref().or(self.tables.first()) else {
             return out;
@@ -278,6 +341,17 @@ impl Document {
             out.push_str(&row.join(","));
             out.push_str("\r\n");
         };
+        let job = self.job_fields();
+        if job_details && !job.is_empty() {
+            line(&["Report".into(), self.title.clone()]);
+            for (label, value) in job {
+                line(&[label.to_string(), value.trim().to_string()]);
+            }
+            if let Some((_, date)) = self.meta.iter().find(|(label, _)| label == "Date") {
+                line(&["Date".into(), date.clone()]);
+            }
+            line(&[]);
+        }
         let with_bytes = |cells: &[String], bytes: Option<String>| -> Vec<String> {
             let mut cells = cells.to_vec();
             if let (Some(col), Some(bytes)) = (table.size_col, bytes) {
@@ -760,6 +834,100 @@ mod tests {
         assert!(html.contains("<details class=\"card fold\"><summary>Arrived (1)</summary>"));
         assert!(html.contains("&lt;/textarea&gt;"));
         assert!(html.contains("data-name=\"fix.ps1\""));
+    }
+
+    fn logo() -> Logo {
+        Logo {
+            format: crate::branding::LogoFormat::Png,
+            bytes: b"\x89PNG\r\n\x1a\nIHDR".to_vec(),
+        }
+    }
+
+    #[test]
+    fn the_logo_is_a_data_uri_beside_the_name() {
+        let branding = Branding {
+            name: "Acme IT".into(),
+            logo: Some(logo()),
+        };
+        let html = sample().html_branded(&branding, "x");
+        assert!(html.contains(&format!(
+            "<p class=\"brand\"><img class=\"logo\" src=\"{}\" alt=\"\">Acme IT</p>",
+            logo().data_uri()
+        )));
+        assert!(html.contains("src=\"data:image/png;base64,"));
+        // Still one policy, which already allows data images and nothing else.
+        assert!(html.contains(&format!("content=\"{}\"", csp())));
+        assert!(csp().ends_with("img-src data:"));
+        // Without a logo the header is the 1.2.0 one.
+        let plain = sample().html_branded(
+            &Branding {
+                name: "Acme IT".into(),
+                logo: None,
+            },
+            "x",
+        );
+        assert!(!plain.contains("<img"));
+        assert_eq!(plain, sample().html("Acme IT", "x"));
+    }
+
+    #[test]
+    fn job_fields_go_in_an_escaped_prepared_for_block() {
+        let mut doc = sample();
+        doc.meta = vec![
+            ("Client".into(), "O'Brien & Co".into()),
+            ("Technician".into(), "<b>Sam</b>".into()),
+            ("Ticket".into(), "  ".into()),
+            ("Date".into(), "Oct 3, 2026".into()),
+        ];
+        let html = doc.html("Acme", "x");
+        assert!(html.contains(
+            "<section class=\"prepared\"><p class=\"for\">Prepared for</p><dl><div><dt>Client</dt><dd>O&#39;Brien &amp; Co</dd></div><div><dt>Technician</dt><dd>&lt;b&gt;Sam&lt;/b&gt;</dd></div></dl></section><dl><div><dt>Date</dt><dd>Oct 3, 2026</dd></div></dl>"
+        ));
+        assert!(!html.contains("<b>Sam"));
+        assert!(
+            !html.contains("<dt>Ticket</dt>"),
+            "an empty field is left out"
+        );
+        // No job: no block, and the rest of the header as before.
+        doc.meta.retain(|(label, _)| label == "Date");
+        let html = doc.html("Acme", "x");
+        assert!(!html.contains("Prepared for"));
+        assert!(html.contains("</p><dl><div><dt>Date</dt>"));
+    }
+
+    #[test]
+    fn csv_job_rows_come_first_only_when_asked_and_set() {
+        let mut doc = sample();
+        doc.meta = vec![
+            ("Client".into(), "=Acme".into()),
+            ("Ticket".into(), "T-1, urgent".into()),
+            ("Date".into(), "Oct 3, 2026".into()),
+            ("Computer".into(), "PC1".into()),
+        ];
+        let csv = doc.csv_with(true);
+        let lines: Vec<&str> = csv.trim_start_matches('\u{feff}').split("\r\n").collect();
+        assert_eq!(
+            lines[..6],
+            [
+                "Report,Compare",
+                "Client,'=Acme",
+                "Ticket,\"T-1, urgent\"",
+                "Date,\"Oct 3, 2026\"",
+                "",
+                "Path,Size,Bytes"
+            ]
+        );
+        assert!(csv.starts_with('\u{feff}'));
+        // Off, or no job fields: the 1.2.0 CSV.
+        assert_eq!(doc.csv_with(false), doc.csv());
+        assert!(doc
+            .csv()
+            .trim_start_matches('\u{feff}')
+            .starts_with("Path,Size,Bytes"));
+        doc.meta
+            .retain(|(label, _)| !JOB_LABELS.contains(&label.as_str()));
+        assert_eq!(doc.csv_with(true), doc.csv());
+        assert_eq!(Document::default().csv_with(true), "\u{feff}");
     }
 
     #[test]

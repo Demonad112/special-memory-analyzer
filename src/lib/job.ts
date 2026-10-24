@@ -9,6 +9,7 @@ export interface JobInfo {
 
 const jobKey = 'analyzer-job'
 const brandKey = 'analyzer-brand'
+const csvJobKey = 'analyzer-csv-job-details'
 
 export function loadJob(): JobInfo {
   try {
@@ -67,6 +68,25 @@ export const brand = ref(readBrand())
 watch(brand, (value) => {
   try {
     localStorage.setItem(brandKey, value)
+  } catch {
+    // Not remembered.
+  }
+})
+
+function readCsvJobDetails(): boolean {
+  try {
+    return localStorage.getItem(csvJobKey) !== 'false'
+  } catch {
+    return true
+  }
+}
+
+/** Settings: CSV exports start with the report name and job details. On by default. */
+export const csvJobDetails = ref(readCsvJobDetails())
+
+watch(csvJobDetails, (value) => {
+  try {
+    localStorage.setItem(csvJobKey, String(value))
   } catch {
     // Not remembered.
   }

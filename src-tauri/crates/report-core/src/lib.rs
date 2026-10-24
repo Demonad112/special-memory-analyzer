@@ -5,13 +5,14 @@
 //! and CSV exports are made from.
 
 pub mod applog;
+pub mod branding;
 mod doc;
 pub mod explorer;
 mod header;
 mod kinds;
 mod recovery;
 
-pub use doc::{Document, Table, Tile, Tone};
+pub use doc::{Branding, Document, Table, Tile, Tone, JOB_LABELS};
 pub use explorer::Explorer;
 pub use kinds::{
     CleanReport, CleanedItem, CompareReport, FileItem, FolderItem, MissingFile, Removed, TypeItem,
@@ -568,6 +569,11 @@ mod tests {
 
         let doc = document(temp.path(), &records, ReportKind::Record, &store.id()).unwrap();
         assert!(doc.meta.contains(&("Client".into(), "Acme".into())));
+        // The labels the report kinds use are the ones the "Prepared for" block picks out.
+        assert_eq!(
+            doc.job_fields(),
+            vec![("Client", "Acme"), ("Ticket", "T-9"), ("Technician", "Sam")]
+        );
         assert_eq!(doc.tiles[1].label, "Arrived");
 
         delete(temp.path(), &records, ReportKind::Record, &store.id()).unwrap();

@@ -15,6 +15,8 @@ main{max-width:1000px;margin:0 auto;padding:24px 16px 40px}
 header{background:linear-gradient(135deg,#0b3d75,#1a73c8);color:#fff;border-radius:14px;padding:24px 28px;margin-bottom:16px;box-shadow:0 6px 24px rgba(11,61,117,.25)}
 .top{display:flex;justify-content:space-between;align-items:center;gap:12px}
 .brand{margin:0;font-weight:600;letter-spacing:.08em;text-transform:uppercase;font-size:12px;opacity:.85}
+.brand .logo{display:inline-block;vertical-align:middle;height:32px;max-width:160px;object-fit:contain;margin-right:10px;padding:3px;border-radius:6px;background:#fff}
+.prepared{margin:16px 0 0;padding:10px 14px;border-radius:10px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25)}.prepared .for{margin:0;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;opacity:.85}.prepared dl{margin:4px 0 0;padding:0;border:0}
 .pill{border-radius:999px;padding:3px 12px;font-size:12px;font-weight:600;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.45)}
 .pill.good{background:#d7f5e3;color:#0b5a2d;border-color:#d7f5e3}.pill.bad{background:#ffe0dc;color:#9c1f12;border-color:#ffe0dc}
 h1{margin:10px 0 0;font:600 30px/1.15 'Segoe UI Variable Display','Segoe UI',system-ui,sans-serif}
@@ -89,7 +91,7 @@ button.xr[aria-pressed=true]{background:var(--zebra);box-shadow:inset 3px 0 0 va
 </head>
 <body>
 <main>
-<header><div class="top"><p class="brand">Fixture</p></div><h1>Disk usage</h1><p class="subtitle">C:\</p><dl><div><dt>Client</dt><dd>Acme</dd></div><div><dt>Ticket</dt><dd>T-42</dd></div><div><dt>Date</dt><dd>1970-01-01 00:00:00 (UTC+00:00)</dd></div><div><dt>Computer</dt><dd>PC1</dd></div><div><dt>Windows user</dt><dd>sam</dd></div></dl></header>
+<header><div class="top"><p class="brand">Fixture</p></div><h1>Disk usage</h1><p class="subtitle">C:\</p><section class="prepared"><p class="for">Prepared for</p><dl><div><dt>Client</dt><dd>Acme</dd></div><div><dt>Ticket</dt><dd>T-42</dd></div></dl></section><dl><div><dt>Date</dt><dd>1970-01-01 00:00:00 (UTC+00:00)</dd></div><div><dt>Computer</dt><dd>PC1</dd></div><div><dt>Windows user</dt><dd>sam</dd></div></dl></header>
 <section class="tiles"><div class="tile "><p class="label">Used</p><p class="value">1000 bytes</p><p class="detail">10 files · 4 folders</p></div><div class="tile "><p class="label">Removed</p><p class="value">0 bytes</p><p class="detail">0 items</p></div></section>
 <section class="card explorer" id="x" data-js hidden></section>
 <section class="card"><h2>Largest files<span class="count">0</span></h2><p class="empty">Nothing to list.</p></section>
