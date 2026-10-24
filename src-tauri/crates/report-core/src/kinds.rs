@@ -2,6 +2,7 @@
 
 use crate::doc::{Document, Section, Share, Table, Tile, Tone, Verdict};
 use crate::explorer::{self, Explorer};
+use crate::header::{BodyHeader, Header};
 use crate::recovery::{Options, Plan};
 use crate::{
     format_bytes, format_count, plural, record_job, Body, Entry, JobInfo, ReportKind, Saved,
@@ -145,9 +146,15 @@ impl CleanReport {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn entry(saved: &Saved) -> Entry {
-    let (title, subject, headline, problem) = match &saved.body {
-        Body::Compare(report) => (
+    header_entry(Header::of(saved))
+}
+
+pub(crate) fn header_entry(header: Header) -> Entry {
+    let (kind, title, subject, headline, problem) = match header.body {
+        BodyHeader::Compare(report) => (
+            ReportKind::Compare,
             "Compare".to_string(),
             format!("{} → {}", report.source, report.destination),
             if report.missing > 0 {
@@ -161,20 +168,22 @@ pub(crate) fn entry(saved: &Saved) -> Entry {
             },
             report.missing > 0,
         ),
-        Body::DiskUsage(report) => {
+        BodyHeader::DiskUsage(report) => {
             let removed: u64 = report.removed.iter().map(|item| item.size).sum();
             let mut headline = format!("{} used", format_bytes(report.size));
             if removed > 0 {
                 headline.push_str(&format!(" · {} removed", format_bytes(removed)));
             }
             (
+                ReportKind::DiskUsage,
                 "Disk usage".to_string(),
-                report.path.clone(),
+                report.path,
                 headline,
                 false,
             )
         }
-        Body::Cleanup(report) => (
+        BodyHeader::Cleanup(report) => (
+            ReportKind::Cleanup,
             "Quick cleanup".to_string(),
             report
                 .items
@@ -182,19 +191,22 @@ pub(crate) fn entry(saved: &Saved) -> Entry {
                 .map(|item| item.title.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
-            format!("Freed {}", format_bytes(report.freed())),
+            format!(
+                "Freed {}",
+                format_bytes(report.items.iter().map(|item| item.freed).sum())
+            ),
             false,
         ),
     };
     Entry {
-        id: saved.id.clone(),
-        kind: saved.body.kind(),
-        created_at_ms: saved.created_at_ms,
+        id: header.id,
+        kind,
+        created_at_ms: header.created_at_ms,
         title,
         subject,
         headline,
         problem,
-        job: saved.job.clone(),
+        job: header.job,
     }
 }
 
