@@ -12,6 +12,7 @@ use crate::meta::{self, PreserveOptions};
 use crate::reason::{classify, FailureReason, Side};
 use crate::secure;
 use crate::CancelToken;
+pub use scan_core::hash::hash_file;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -479,27 +480,6 @@ fn verify(
         }
     }
     Ok(())
-}
-
-/// Hex BLAKE3 of a whole file, read in chunks. Cancelling stops it between chunks with an
-/// `Interrupted` error.
-pub fn hash_file(path: &Path, cancel: &CancelToken) -> io::Result<String> {
-    let mut file = File::open(path)?;
-    let mut hasher = blake3::Hasher::new();
-    let mut buffer = vec![0_u8; BUFFER_SIZE];
-    loop {
-        if cancel.is_cancelled() {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
-        }
-        let read = match file.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(read) => read,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        };
-        hasher.update(&buffer[..read]);
-    }
-    Ok(hasher.finalize().to_hex().to_string())
 }
 
 /// Equal within [`TIME_TOLERANCE`]; a missing time on either side counts as equal.

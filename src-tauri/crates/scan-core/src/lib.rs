@@ -4,6 +4,7 @@
 //! matches two trees by relative path and produces a [`DiffTree`] that the UI expands lazily.
 
 mod diff;
+pub mod hash;
 mod list;
 pub mod names;
 mod paths;

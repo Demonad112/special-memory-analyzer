@@ -6,6 +6,7 @@ license = "Apache-2.0"
 description = "Folder size tree scanner and size-based folder comparison for Deep Server Analyzer."
 
 [dependencies]
+blake3 = "1.8"
 rayon = "1.12"
 serde = { version = "1.0.228", features = ["derive"] }
 
