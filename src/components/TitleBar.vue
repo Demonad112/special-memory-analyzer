@@ -78,7 +78,7 @@ onMounted(async () => {
         />
       </button>
       <button
-        class="grid w-[46px] place-items-center text-fg hover:bg-close-hover hover:text-white"
+        class="grid w-[46px] place-items-center text-fg hover:bg-close-hover hover:text-on-danger"
         aria-label="Close"
         @click="win?.close()"
       >

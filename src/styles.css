@@ -26,6 +26,7 @@
   --app-danger: #c42b1c;
   --app-danger-bg: #fde7e9;
   --app-close-hover: #c42b1c;
+  --app-on-danger: #ffffff;
   /* Disk Cleanup file-type colours (treemap tiles, legend). */
   --app-type-folder: #b7791f;
   --app-type-video: #b4009e;
@@ -70,6 +71,8 @@
 }
 
 @theme inline {
+  /* Drop the default palette so only the --app-* tokens below can colour anything. */
+  --color-*: initial;
   --font-sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
   --font-display: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
   --color-app: var(--app-bg);
@@ -91,6 +94,7 @@
   --color-danger: var(--app-danger);
   --color-danger-bg: var(--app-danger-bg);
   --color-close-hover: var(--app-close-hover);
+  --color-on-danger: var(--app-on-danger);
 }
 
 html,

@@ -641,7 +641,7 @@ function shortPath(path: string): string {
         <button
           v-if="result.summary.missing > 0"
           type="button"
-          class="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-accent px-3 text-[13px] text-white hover:opacity-90"
+          class="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-accent px-3 text-[13px] text-on-accent hover:bg-accent-hover"
           title="Copy the missing files to the destination as a record, with progress, a report and retry"
           @click="confirmingCopy = true"
         >
@@ -677,7 +677,7 @@ function shortPath(path: string): string {
         </p>
         <button
           type="button"
-          class="h-8 rounded-md bg-accent px-3 text-white hover:opacity-90"
+          class="h-8 rounded-md bg-accent px-3 text-on-accent hover:bg-accent-hover"
           @click="copyMissingFiles"
         >
           Copy
