@@ -1,3 +1,4 @@
+use crate::pathsafe::normalize;
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -245,16 +246,6 @@ fn dot_folders_in(profile: Option<&str>) -> Vec<String> {
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| name.starts_with('.'))
         .collect()
-}
-
-/// Lowercase, backslashes, no trailing backslash, no `\\?\` prefix.
-fn normalize(path: &str) -> String {
-    let path = path.trim().replace('/', "\\").to_lowercase();
-    if let Some(rest) = path.strip_prefix("\\\\?\\unc\\") {
-        return format!("\\\\{}", rest.trim_end_matches('\\'));
-    }
-    let path = path.strip_prefix("\\\\?\\").unwrap_or(&path);
-    path.trim_end_matches('\\').to_string()
 }
 
 fn within(path: &str, base: &str) -> bool {

@@ -394,7 +394,6 @@ mod nt {
                 } else if attrs & ATTR_DIRECTORY != 0 {
                     let mut entry = plain(name, Kind::Dir);
                     entry.lossy = lossy;
-                    entry.cloud = false;
                     out.push(entry);
                 } else {
                     let mut entry = file_entry(bytes, at, name, attrs, reparse_tag, dir);

@@ -2,6 +2,7 @@
 //! one without touching the disk, and [`run`], which deletes one item at a time and reports each
 //! result on its own so one locked file does not stop the rest.
 
+use crate::pathsafe::{has_reparse_ancestor, is_reparse_point};
 use crate::{delete_permanently, recycle, Protected};
 use scan_core::{Kind, NodeId, Tree};
 use serde::Serialize;
@@ -306,32 +307,6 @@ fn delete_one(
             Outcome::Failed,
             Some(detail.unwrap_or_else(|| format!("{} is still there.", path.display()))),
         ),
-    }
-}
-
-/// True when a folder between `scan_root` (exclusive) and `path` (exclusive) is a link now. The
-/// scan saw plain folders; a swapped parent would send the delete through to another place.
-fn has_reparse_ancestor(path: &Path, scan_root: &Path) -> bool {
-    // Compare depths, not prefixes, so a differently cased root still stops the walk.
-    let root_depth = scan_root.components().count();
-    path.ancestors()
-        .skip(1)
-        .take_while(|ancestor| ancestor.components().count() > root_depth)
-        .any(is_reparse_point)
-}
-
-/// True for a symlink or junction (a Windows reparse point).
-pub(crate) fn is_reparse_point(path: &Path) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        fs::symlink_metadata(path)
-            .is_ok_and(|meta| meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
-    }
-    #[cfg(not(windows))]
-    {
-        fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
     }
 }
 
@@ -742,15 +717,6 @@ mod tests {
         .unwrap();
         assert_eq!(seen, [(1, false, true), (2, false, false)]);
         assert_eq!(results.len(), 2);
-    }
-
-    #[test]
-    fn a_plain_parent_chain_is_not_a_reparse_ancestor() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("root");
-        write(&root.join("a/b/file.bin"));
-        assert!(!has_reparse_ancestor(&root.join("a/b/file.bin"), &root));
-        assert!(!has_reparse_ancestor(&root.join("a"), &root));
     }
 
     #[cfg(windows)]

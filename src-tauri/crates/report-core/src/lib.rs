@@ -4,6 +4,7 @@
 //! Every report becomes a [`Document`] (title, summary tiles, tables), which is what the HTML
 //! and CSV exports are made from.
 
+pub mod applog;
 mod doc;
 pub mod explorer;
 mod header;

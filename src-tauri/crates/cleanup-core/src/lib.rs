@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod junk;
 pub mod log;
 mod os;
+mod pathsafe;
 mod protect;
 pub mod quick;
 pub mod restore;
