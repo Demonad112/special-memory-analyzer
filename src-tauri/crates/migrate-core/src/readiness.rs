@@ -590,6 +590,19 @@ mod tests {
         run(root, options, &ReadinessState::new(CancelToken::new())).unwrap()
     }
 
+    /// Where a test writes names Win32 would change or drop (`CON`, `NUL`, `ends.`, `top `): the
+    /// verbatim form of the temp folder on Windows (`\\?\C:\...`), under which a joined name
+    /// stays exactly as written. The check itself scans the plain path, as the command does.
+    fn verbatim(temp: &tempfile::TempDir) -> PathBuf {
+        fs::canonicalize(temp.path()).unwrap()
+    }
+
+    /// Deletes the fixture through the verbatim root, which can also delete `CON` and `NUL`.
+    /// A failure is only a leftover temp folder.
+    fn remove(root: &Path) {
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn rules_for<'a>(report: &'a ReadinessReport, path: &str) -> Vec<&'a str> {
         report
             .problems
@@ -602,35 +615,51 @@ mod tests {
     #[test]
     fn bad_names_are_listed_with_their_rule_and_hint() {
         let temp = tempfile::tempdir().unwrap();
-        let sub = temp.path().join("sub");
+        let root = verbatim(&temp);
+        let sub = root.join("sub");
         fs::create_dir(&sub).unwrap();
         fs::write(sub.join("CON.txt"), b"x").unwrap();
         fs::write(sub.join("ends."), b"x").unwrap();
-        fs::write(sub.join("a?b*.txt"), b"x").unwrap();
-        fs::write(temp.path().join("fine.txt"), b"x").unwrap();
+        fs::write(root.join("fine.txt"), b"x").unwrap();
 
         let result = check(temp.path(), &Options::default());
-        let report = result.report();
-        assert_eq!(rules_for(report, r"sub\CON.txt"), ["reserved"]);
-        assert_eq!(rules_for(report, r"sub\ends."), ["trailingDot"]);
-        assert_eq!(
-            rules_for(report, r"sub\a?b*.txt"),
-            ["invalidCharacter", "invalidCharacter"]
-        );
-        assert!(rules_for(report, "fine.txt").is_empty());
-        assert_eq!(report.name_problems, 3);
-        assert_eq!(report.blockers, 4);
-        assert_eq!(report.count_of(ProblemKind::Name), 4);
+        let report = result.report().clone();
+        remove(&root);
+        // The names come back exactly as written.
+        assert_eq!(rules_for(&report, r"sub\CON.txt"), ["reserved"]);
+        assert_eq!(rules_for(&report, r"sub\ends."), ["trailingDot"]);
+        assert!(rules_for(&report, "fine.txt").is_empty());
+        assert_eq!(report.name_problems, 2);
+        assert_eq!(report.blockers, 2);
+        assert_eq!(report.count_of(ProblemKind::Name), 2);
         assert!(report.has_problems());
         let reserved = report.listed(ProblemKind::Name).next().unwrap();
         assert_eq!(reserved.hint, "Rename it: CON is a device name on Windows");
         assert!(!reserved.dir);
+    }
+
+    /// NTFS refuses `?` and `*` in a name even through `\\?\`, so this case only runs where the
+    /// file can exist (a Linux or macOS source, or a NAS export seen from one). The rule itself
+    /// is tested on every platform in `scan_core::names`.
+    #[cfg(not(windows))]
+    #[test]
+    fn invalid_characters_are_listed_once_each() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("a?b*?.txt"), b"x").unwrap();
+
+        let result = check(temp.path(), &Options::default());
+        let report = result.report();
+        assert_eq!(
+            rules_for(report, "a?b*?.txt"),
+            ["invalidCharacter", "invalidCharacter"]
+        );
         let invalid = report
             .counts
             .iter()
             .find(|count| count.rule == "invalidCharacter")
             .unwrap();
         assert_eq!((invalid.count, invalid.blocker), (2, true));
+        assert_eq!(report.name_problems, 1);
     }
 
     #[test]
@@ -762,15 +791,17 @@ mod tests {
     #[test]
     fn children_open_one_level_at_a_time_and_filter_by_kind() {
         let temp = tempfile::tempdir().unwrap();
-        let deep = temp.path().join("a").join("b");
+        let root = verbatim(&temp);
+        let deep = root.join("a").join("b");
         fs::create_dir_all(&deep).unwrap();
-        fs::create_dir(temp.path().join("clean")).unwrap();
-        fs::write(temp.path().join("clean").join("ok.txt"), b"x").unwrap();
+        fs::create_dir(root.join("clean")).unwrap();
+        fs::write(root.join("clean").join("ok.txt"), b"x").unwrap();
         fs::write(deep.join("NUL"), b"x").unwrap();
         fs::write(deep.join("x."), b"x").unwrap();
-        fs::write(temp.path().join("top "), b"x").unwrap();
+        fs::write(root.join("top "), b"x").unwrap();
 
         let result = check(temp.path(), &Options::default());
+        remove(&root);
         let top = result.children(0, None).unwrap();
         let names: Vec<&str> = top.iter().map(|row| row.name.as_str()).collect();
         // Folders without problems are left out; most problems first.
@@ -784,7 +815,9 @@ mod tests {
 
         let b = &result.children(top[0].id, None).unwrap()[0];
         let files = result.children(b.id, None).unwrap();
-        assert_eq!(files.len(), 2);
+        let mut names: Vec<&str> = files.iter().map(|row| row.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["NUL", "x."]);
 
         let only_long = result.children(0, Some(ProblemKind::LongPath)).unwrap();
         assert!(only_long.is_empty());
@@ -794,10 +827,12 @@ mod tests {
     #[test]
     fn the_saved_list_is_capped_per_kind_but_the_counts_are_not() {
         let temp = tempfile::tempdir().unwrap();
+        let root = verbatim(&temp);
         for index in 0..5 {
-            fs::write(temp.path().join(format!("f{index}.")), b"x").unwrap();
+            fs::write(root.join(format!("f{index}.")), b"x").unwrap();
         }
         let result = check(temp.path(), &Options::default());
+        remove(&root);
         let report = build_report(result.tree(), &result.findings, &Options::default(), 0, 2);
         assert_eq!(report.problems.len(), 2);
         assert_eq!(report.problems[0].path, "f0.");
