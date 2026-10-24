@@ -29,7 +29,7 @@ The audit covers `Demonad112/special-memory-analyzer` at `302f751` (v1.1.1) and 
 | `07-OPEN-QUESTIONS.md`      | 10 owner decisions, each with a default Sonnet uses if it is unanswered                                                       | **Now (owner)**           |
 | `08-DEPENDENCY-REPORT.md`   | npm audit detail, Cargo notes, proposed `deny.toml`                                                                           | B01                       |
 | `09-SECURITY-NOTES.md`      | Threat model for release → USB kit → server, and the elevated-app attack paths                                                | B02, B04, B05             |
-| `CLAUDE.proposed.md`        | Proposed replacement for `CLAUDE.md`                                                                                          | B11 (owner decides)       |
+| `CLAUDE.proposed.md`        | Merged into `CLAUDE.md` in B11 and deleted                                                                                    | B11 (owner decides)       |
 
 ## How to use this in the Sonnet session
 

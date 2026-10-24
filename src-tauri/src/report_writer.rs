@@ -7,6 +7,8 @@
 
 use report_core::{Body, Removed, Saved};
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::Condvar;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
@@ -26,6 +28,9 @@ struct Inner {
     slot: Mutex<Slot>,
     /// Serialises writes, so a flush on exit waits for one already running.
     writing: Mutex<()>,
+    /// Signalled after every flush that reaches the end, so tests wait instead of polling the disk.
+    #[cfg(test)]
+    flushed: Condvar,
 }
 
 #[derive(Default)]
@@ -33,6 +38,9 @@ struct Slot {
     /// Changes with every new scan, so a write that started for the old report puts nothing back.
     epoch: u64,
     saved: Option<Saved>,
+    /// The tracked report is a disk usage report. Unlike `saved`, this stays true while a write
+    /// has the report out of the slot, so removals arriving mid-write are queued, not dropped.
+    tracking: bool,
     pending: Vec<Removed>,
     /// A write failed; the report on disk is behind `saved`.
     stale: bool,
@@ -41,6 +49,9 @@ struct Slot {
     error: Option<String>,
     #[cfg(test)]
     writes: usize,
+    /// Removals that reached the disk.
+    #[cfg(test)]
+    written: usize,
 }
 
 impl Default for ReportWriter {
@@ -62,6 +73,8 @@ impl ReportWriter {
                 delay,
                 slot: Mutex::new(Slot::default()),
                 writing: Mutex::new(()),
+                #[cfg(test)]
+                flushed: Condvar::new(),
             }),
         }
     }
@@ -71,6 +84,10 @@ impl ReportWriter {
         self.flush();
         let mut slot = lock(&self.inner.slot);
         slot.epoch += 1;
+        slot.tracking = matches!(
+            saved.as_ref().map(|saved| &saved.body),
+            Some(Body::DiskUsage(_))
+        );
         slot.saved = saved;
         slot.pending.clear();
         slot.stale = false;
@@ -81,10 +98,7 @@ impl ReportWriter {
     /// for the page to show as a warning.
     pub fn removed(&self, items: Vec<Removed>) -> Option<String> {
         let mut slot = lock(&self.inner.slot);
-        if !matches!(
-            slot.saved.as_ref().map(|saved| &saved.body),
-            Some(Body::DiskUsage(_))
-        ) {
+        if !slot.tracking {
             return None;
         }
         slot.pending.extend(items);
@@ -104,15 +118,21 @@ impl ReportWriter {
     /// retried by the next flush.
     pub fn flush(&self) {
         let _writing = lock(&self.inner.writing);
+        #[cfg(test)]
+        let queued;
         let (epoch, saved) = {
             let mut slot = lock(&self.inner.slot);
             if slot.pending.is_empty() && !slot.stale {
                 return;
             }
-            let pending = std::mem::take(&mut slot.pending);
             let Some(mut saved) = slot.saved.take() else {
                 return;
             };
+            let pending = std::mem::take(&mut slot.pending);
+            #[cfg(test)]
+            {
+                queued = pending.len();
+            }
             if let Body::DiskUsage(report) = &mut saved.body {
                 report.removed.extend(pending);
             }
@@ -127,22 +147,28 @@ impl ReportWriter {
         let outcome = report_core::write(&root, &saved);
 
         let mut slot = lock(&self.inner.slot);
+        // A new scan that took over while this wrote keeps its own report.
+        if slot.epoch == epoch {
+            // Removals that arrived during the write are still queued; the report goes back as is.
+            slot.saved = Some(saved);
+            match outcome {
+                Ok(()) => {
+                    slot.stale = false;
+                    #[cfg(test)]
+                    {
+                        slot.written += queued;
+                    }
+                }
+                Err(err) => {
+                    slot.stale = true;
+                    slot.error = Some(err);
+                }
+            }
+        }
         #[cfg(test)]
         {
             slot.writes += 1;
-        }
-        if slot.epoch != epoch {
-            // A new scan took over while this wrote.
-            return;
-        }
-        // Removals that arrived during the write are still queued; the report goes back as is.
-        slot.saved = Some(saved);
-        match outcome {
-            Ok(()) => slot.stale = false,
-            Err(err) => {
-                slot.stale = true;
-                slot.error = Some(err);
-            }
+            self.inner.flushed.notify_all();
         }
     }
 }
@@ -151,7 +177,6 @@ impl ReportWriter {
 mod tests {
     use super::*;
     use report_core::{JobInfo, UsageReport};
-    use std::time::Instant;
 
     /// A folder under the system temp dir, removed on drop.
     struct TempDir(PathBuf);
@@ -205,6 +230,22 @@ mod tests {
         lock(&writer.inner.slot).writes
     }
 
+    /// Blocks until `count` removals have been written, woken by each flush. The long limit only
+    /// keeps a hang from stalling the run; a flush never depends on it.
+    fn wait_for_written(writer: &ReportWriter, count: usize) {
+        let slot = lock(&writer.inner.slot);
+        let (slot, timeout) = writer
+            .inner
+            .flushed
+            .wait_timeout_while(slot, Duration::from_secs(60), |slot| slot.written < count)
+            .unwrap_or_else(|err| err.into_inner());
+        assert!(
+            !timeout.timed_out(),
+            "never flushed: {} of {count} written",
+            slot.written
+        );
+    }
+
     #[test]
     fn a_burst_of_deletes_is_one_write() {
         let dir = TempDir::new();
@@ -243,17 +284,34 @@ mod tests {
         writer.removed(vec![removal(1)]);
         writer.removed(vec![removal(2)]);
 
-        let started = Instant::now();
-        while removed_on_disk(dir.0.as_path(), &id) < 2 {
-            assert!(started.elapsed() < Duration::from_secs(10), "never flushed");
-            thread::sleep(Duration::from_millis(10));
-        }
+        wait_for_written(&writer, 2);
+        assert_eq!(removed_on_disk(dir.0.as_path(), &id), 2);
         // Later removals start a new timer.
         writer.removed(vec![removal(3)]);
-        while removed_on_disk(dir.0.as_path(), &id) < 3 {
-            assert!(started.elapsed() < Duration::from_secs(10), "never flushed");
-            thread::sleep(Duration::from_millis(10));
-        }
+        wait_for_written(&writer, 3);
+        assert_eq!(removed_on_disk(dir.0.as_path(), &id), 3);
+    }
+
+    #[test]
+    fn removals_that_arrive_during_a_write_are_kept() {
+        let dir = TempDir::new();
+        let saved = scan_report(dir.0.as_path());
+        let id = saved.id.clone();
+        let writer = ReportWriter::new(Some(dir.0.as_path().to_path_buf()), LONG);
+        writer.set(Some(saved));
+        // A write has the report out of the slot while it runs.
+        let in_flight = lock(&writer.inner.slot).saved.take();
+
+        assert_eq!(writer.removed(vec![removal(1)]), None);
+        assert_eq!(
+            lock(&writer.inner.slot).pending.len(),
+            1,
+            "queued, not dropped"
+        );
+
+        lock(&writer.inner.slot).saved = in_flight;
+        writer.flush();
+        assert_eq!(removed_on_disk(dir.0.as_path(), &id), 1);
     }
 
     #[test]

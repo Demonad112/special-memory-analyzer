@@ -10,3 +10,5 @@ src-tauri/crates/report-core/tests/fixtures
 
 # Embedded in the HTML reports byte for byte; their CSP hashes depend on the exact text.
 src-tauri/crates/report-core/src/assets/
+
+HANDOFF.md

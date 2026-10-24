@@ -13,7 +13,7 @@ export async function copyText(text: string): Promise<void> {
   area.style.opacity = '0'
   document.body.append(area)
   area.select()
-  // eslint-disable-next-line @typescript-eslint/no-deprecated -- the only fallback left
+  // Deprecated, but the only fallback left.
   const copied = document.execCommand('copy')
   area.remove()
   if (!copied) {

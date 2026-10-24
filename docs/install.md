@@ -29,3 +29,28 @@ folders, company name) stay on the PC, not in `Data\`.
 
 `DEEP_SERVER_ANALYZER_RECORDS_DIR`, `DEEP_SERVER_ANALYZER_REPORTS_DIR` and
 `DEEP_SERVER_ANALYZER_LOGS_DIR` override the folders.
+
+## Releasing
+
+Only the owner releases. Pushing a `v*` tag starts `release.yml`: the `installer` job builds and
+signs the installer, then the `release` job publishes it. The `release` job runs in the GitHub
+environment `release`, so it waits for an approval before anything is published.
+
+GitHub settings this relies on (set 2026-10-23):
+
+- Environment `release`: required reviewer `Demonad112` (self-review allowed), deployments limited
+  to `v*` tags.
+- Tag ruleset `release-tags` on `refs/tags/v*`: restricts creation, update and deletion and blocks
+  force pushes. Repository admins can bypass it.
+- The `Default` branch ruleset targets `main`: pull requests need the "Quality and tests" and
+  "USB kit scripts" checks.
+
+Steps:
+
+1. Run `scripts\Set-ReleaseTag.ps1 -Version vX.Y.Z`. It refuses unless CI is green on `origin/main`; the tag must match the version in `package.json`,
+   `tauri.conf.json` and `Cargo.toml`, or `release.yml` fails.
+2. When the `installer` job finishes, open the run: Actions → the run → Review deployments →
+   tick `release` → Approve and deploy.
+3. Run `scripts\Get-Release.ps1 -Version vX.Y.Z` to wait for the run and check `SHA256SUMS`.
+
+A tag whose release was rejected or never approved publishes nothing.

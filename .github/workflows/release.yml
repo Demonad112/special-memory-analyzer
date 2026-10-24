@@ -161,6 +161,8 @@ jobs:
     name: GitHub Release
     needs: installer
     runs-on: ubuntu-latest
+    # Pauses for the reviewer set on the `release` environment (docs/install.md, "Releasing").
+    environment: release
     # actions: read is required to download the artifacts from this run.
     permissions:
       contents: write
