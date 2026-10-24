@@ -58,7 +58,8 @@ pub struct Group {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Skipped {
-    /// Online-only placeholders: never read.
+    /// Online-only placeholders, and files that turned into a placeholder or link after the
+    /// scan: never read.
     pub cloud: u64,
     /// Names of a hard-linked file: the same data, not a copy.
     pub hard_linked: u64,
@@ -261,6 +262,13 @@ pub fn search(candidates: Candidates, cancel: &CancelToken, counters: &Counters)
             if cancel.is_cancelled() {
                 return None;
             }
+            // The scan may be old: a file dehydrated or swapped for a link since then must not be
+            // opened (a placeholder downloads, a link leads elsewhere).
+            if is_reparse_point(&member.path) {
+                skipped.cloud += 1;
+                counters.step(0);
+                continue;
+            }
             match hash_head_tail(&member.path, HEAD_TAIL_BYTES) {
                 Ok(hash) => buckets.entry(hash).or_default().push(member),
                 Err(_) => skipped.unreadable += 1,
@@ -283,6 +291,11 @@ pub fn search(candidates: Candidates, cancel: &CancelToken, counters: &Counters)
     for (size, set) in by_ends {
         let mut buckets: HashMap<String, Vec<Member>> = HashMap::new();
         for member in set {
+            if is_reparse_point(&member.path) {
+                skipped.cloud += 1;
+                counters.step(0);
+                continue;
+            }
             match hash_file(&member.path, cancel) {
                 Ok(hash) => buckets.entry(hash).or_default().push(member),
                 Err(_) if cancel.is_cancelled() => return None,
@@ -582,6 +595,27 @@ mod tests {
         let (_, found) = search(temp.path(), 64 * KIB);
         assert!(found.groups.is_empty(), "{:?}", names(&found));
         assert_eq!(found.skipped.hard_linked, 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_swapped_for_a_link_after_the_scan_is_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = content(1, 100_000);
+        write(temp.path(), "a.bin", &bytes);
+        let swapped = write(temp.path(), "b.bin", &bytes);
+        write(temp.path(), "c.bin", &bytes);
+        let tree = scan(temp.path(), &ScanState::default()).unwrap();
+        let candidates = collect(&tree, 64 * KIB);
+        assert_eq!(candidates.sets.len(), 1);
+
+        fs::remove_file(&swapped).unwrap();
+        std::os::unix::fs::symlink(temp.path().join("a.bin"), &swapped).unwrap();
+        let found =
+            super::search(candidates, &CancelToken::default(), &Counters::default()).unwrap();
+
+        assert_eq!(found.skipped.cloud, 1);
+        assert_eq!(names(&found), vec![vec!["a.bin", "c.bin"]]);
     }
 
     #[test]
