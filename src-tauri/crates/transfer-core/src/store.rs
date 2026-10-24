@@ -218,12 +218,8 @@ pub struct JsonlWriter {
 impl JsonlWriter {
     fn create(path: &Path, append: bool) -> Result<Self> {
         let file = if append {
-            let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-            // A torn last row has no newline; start the next row on its own line.
-            if ends_without_newline(path) {
-                file.write_all(b"\n")?;
-            }
-            file
+            drop_torn_tail(path);
+            OpenOptions::new().create(true).append(true).open(path)?
         } else {
             File::create(path)?
         };
@@ -292,15 +288,40 @@ fn read_jsonl<T: DeserializeOwned>(
     }))
 }
 
-fn ends_without_newline(path: &Path) -> bool {
+/// Before appending, cuts off a last row that a crash left half written, so the new rows do not
+/// turn it into a bad row in the middle. A complete row that only lacks its newline is kept.
+fn drop_torn_tail(path: &Path) {
     use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut file) = File::open(path) else {
-        return false;
+    const TAIL: u64 = 1 << 20;
+    let Ok(mut file) = OpenOptions::new().read(true).write(true).open(path) else {
+        return;
     };
-    let mut last = [0_u8; 1];
-    file.seek(SeekFrom::End(-1))
-        .and_then(|_| file.read_exact(&mut last))
-        .is_ok_and(|()| last[0] != b'\n')
+    let Ok(len) = file.metadata().map(|meta| meta.len()) else {
+        return;
+    };
+    let start = len.saturating_sub(TAIL);
+    let mut tail = Vec::new();
+    if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut tail).is_err() {
+        return;
+    }
+    if tail.last().is_none_or(|&byte| byte == b'\n') {
+        return;
+    }
+    let row_start = tail
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map(|at| at + 1)
+        .or((start == 0).then_some(0));
+    match row_start {
+        Some(at) if serde_json::from_slice::<serde_json::Value>(&tail[at..]).is_err() => {
+            let _ = file.set_len(start + at as u64);
+        }
+        _ => {
+            let _ = file
+                .seek(SeekFrom::End(0))
+                .and_then(|_| file.write_all(b"\n"));
+        }
+    }
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
@@ -431,7 +452,7 @@ mod tests {
         let audit = fs::read_to_string(store.dir().join(AUDIT_FILE)).unwrap();
         assert!(audit.contains("warning"), "{audit}");
 
-        // A row appended later starts on a fresh line instead of joining the torn one.
+        // Appending cuts the torn row off, so it never becomes a bad row in the middle.
         let mut writer = store.results_writer().unwrap();
         writer
             .write(&ItemResult::done("d.txt", 4, ItemStatus::Copied))
