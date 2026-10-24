@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1"
+    />
+    <title>FAQ · Deep Server Analyzer</title>
+    <meta
+      name="description"
+      content="Answers about installing, trusting, verifying and using Deep Server Analyzer: SmartScreen warnings, the USB kit, safety, reports, data locations and troubleshooting."
+    />
+    <meta
+      name="theme-color"
+      content="#005fb8"
+    />
+    <link
+      rel="icon"
+      href="assets/icon.png"
+      type="image/png"
+    />
+    <link
+      rel="stylesheet"
+      href="assets/site.css"
+    />
+    <script>
+      try {
+        var t = localStorage.getItem('dsa-theme')
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t)
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <a
+      class="skip"
+      href="#main"
+      >Skip to content</a
+    >
+
+    <header class="nav">
+      <div class="wrap">
+        <a
+          class="brand"
+          href="./"
+          ><img
+            src="assets/icon.png"
+            alt=""
+          /><span>Deep Server Analyzer</span></a
+        >
+        <nav
+          class="links"
+          aria-label="Main"
+        >
+          <a href="./">Home</a>
+          <a
+            href="./#features"
+            class="hide-sm"
+            >Features</a
+          >
+          <a href="how-to.html">How-To</a>
+          <a
+            href="faq.html"
+            aria-current="page"
+            >FAQ</a
+          >
+          <a
+            href="https://github.com/Demonad112/special-memory-analyzer"
+            class="hide-sm"
+            >GitHub</a
+          >
+        </nav>
+        <button
+          class="icon-btn"
+          id="theme-toggle"
+          type="button"
+          aria-label="Switch light and dark theme"
+          title="Switch theme"
+        >
+          ◐
+        </button>
+      </div>
+    </header>
+
+    <div class="page-head">
+      <div class="wrap">
+        <h1>Frequently asked questions</h1>
+        <p>Short answers first. The <a href="how-to.html">How-To</a> has the full steps.</p>
+      </div>
+    </div>
+
+    <main
+      id="main"
+      class="wrap"
+      style="padding-top: 28px; padding-bottom: 64px; max-width: 860px"
+    >
+      <div class="faq-tools">
+        <input
+          id="faq-search"
+          type="search"
+          placeholder="Search questions"
+          aria-label="Search questions"
+        />
+        <button
+          class="btn"
+          id="faq-toggle"
+          type="button"
+          data-open="0"
+        >
+          Expand all
+        </button>
+      </div>
+      <p
+        id="faq-none"
+        class="note"
+        hidden
+      >
+        Nothing matches. Try another word, or open an
+        <a href="https://github.com/Demonad112/special-memory-analyzer/issues">issue</a>.
+      </p>
+
+      <div class="faq-group">
+        <h2>Install and trust</h2>
+        <details
+          data-faq
+          id="smartscreen"
+        >
+          <summary>Why does Windows say “Windows protected your PC”?</summary>
+          <div class="ans">
+            <p>
+              Release builds are signed with a self-signed certificate that is created for each
+              release. Windows does not trust it, so SmartScreen warns. Click
+              <strong>More info → Run anyway</strong> after you have
+              <a href="./#verify">verified the thumbprint (against a copy you trust) and the hash</a
+              >.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Edge or Chrome says the file “isn't commonly downloaded”.</summary>
+          <div class="ans">
+            <p>
+              Same cause: a new, low-volume file. Choose <strong>Keep</strong>, then
+              <strong>Keep anyway</strong>, then check the SHA-256 against
+              <code>SHA256SUMS-release.txt</code>.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Why a different certificate for every release?</summary>
+          <div class="ans">
+            <p>
+              The certificate is created for one release and its private key is deleted afterwards.
+              A release can never be re-signed, and a stolen key cannot sign anything later. The
+              trade-off is that you must check the thumbprint each time, against a copy from a
+              channel you trust and not only the release page. It is a self-signed code-signing
+              certificate, RSA 3072, valid 180 days, and the installer is timestamped.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Which download do I need, installer or USB kit?</summary>
+          <div class="ans">
+            <p>
+              Use the <strong>installer</strong> on workstations. Use the
+              <strong>USB kit</strong> on servers where unknown publishers are blocked or where you
+              must carry the files in. The kit contains the same installer plus scripts that trust
+              the certificate temporarily.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>What does the USB kit change on the server?</summary>
+          <div class="ans">
+            <p>
+              It adds the release certificate to <code>LocalMachine\Root</code> and
+              <code>LocalMachine\TrustedPublisher</code>, runs the silent setup, and creates a
+              scheduled task <code>DSA-TrustExpiry</code> (runs as SYSTEM, also at startup) that
+              removes trust when time is up. Trust lasts 8 hours by default and can be 15 minutes to
+              72 hours. Removing it earlier is one click on <strong>✕ Remove trust</strong>.
+            </p>
+            <p>
+              While trust is active it applies to the whole machine, so only use the kit on servers
+              you are authorised to change.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>What are the system requirements?</summary>
+          <div class="ans">
+            <p>
+              Windows 10 or 11, or Windows Server 2016 or newer with Desktop Experience, 64-bit. The
+              WebView2 runtime is needed; the installer downloads it if it is missing.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Does it update itself or phone home?</summary>
+          <div class="ans">
+            <p>
+              No. There is no auto-update and no network code in the app. To update, download a
+              newer release and install over the old one. This website reads release details from
+              GitHub in your browser; the app does not.
+            </p>
+          </div>
+        </details>
+      </div>
+
+      <div class="faq-group">
+        <h2>Safety</h2>
+        <details data-faq>
+          <summary>Will Disk Cleanup delete things permanently?</summary>
+          <div class="ans">
+            <p>
+              By default deletes go to the <strong>Recycle Bin</strong>. Shift+Delete deletes
+              permanently. Permanent and big runs need administrator rights and a confirmation.
+              Every delete is logged in <code>Logs\deletions.jsonl</code>.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Can I undo a cleanup?</summary>
+          <div class="ans">
+            <p>
+              <strong>Restore last cleanup</strong> restores the last bulk run, checking where each
+              item goes back to. Items that were deleted permanently cannot be restored. Single
+              items you sent to the Recycle Bin can be restored from the Recycle Bin itself.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Is anything protected from deletion?</summary>
+          <div class="ans">
+            <p>
+              Yes. A never-delete list covers system locations and the app's own data folders. Paths
+              are resolved first, so short 8.3 names, <code>\\localhost\c$</code> paths and
+              <code>subst</code> drives cannot slip past it. Folder walks do not follow symlinks,
+              junctions or mount points.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Will it download my OneDrive files?</summary>
+          <div class="ans">
+            <p>
+              No. Online-only OneDrive and cloud files are flagged and never opened, hashed or read.
+              In Record, <strong>Download OneDrive online-only files</strong> is off by default,
+              which lists them as not copied.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Why did the app close by itself?</summary>
+          <div class="ans">
+            <p>
+              It closes after inactivity (30 minutes by default) so it is not left open on a server.
+              A warning with a stay-open option appears first. Change it in
+              <strong>Settings → Close after inactivity</strong>.
+            </p>
+          </div>
+        </details>
+      </div>
+
+      <div class="faq-group">
+        <h2>Compare and Record</h2>
+        <details data-faq>
+          <summary>Compare says files match, but are they identical?</summary>
+          <div class="ans">
+            <p>
+              The default compares by size, which is fast but not proof. Tick
+              <strong>Also compare file contents</strong> to hash both sides. It is slower because
+              every file is read twice.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Watch or Copy for me: which one?</summary>
+          <div class="ans">
+            <p>
+              Use <strong>Copy for me</strong> when the app can do the job; it retries files in use
+              and verifies each copy before it replaces anything. Use <strong>Watch</strong> when
+              another program has to do the copy (robocopy, Explorer, a backup agent) and you want
+              an independent check of every file that arrives.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>A file shows as not copied. What now?</summary>
+          <div class="ans">
+            <p>
+              The report lists every miss in red with its reason (in use, invalid name, online-only,
+              access denied, and so on). Fix the cause and use <strong>Retry</strong>; only the
+              misses are copied again. A run that was cancelled or crashed shows
+              <em>Cancelled</em> and Retry also covers the files it never reached.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>What if the network drops mid-copy?</summary>
+          <div class="ans">
+            <p>
+              Drops on SMB shares are retried automatically. Anything that still fails is listed as
+              not copied so you can retry it.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Can I keep owner, permissions and audit rules?</summary>
+          <div class="ans">
+            <p>
+              Yes, under <strong>Keep</strong> on the Record page: dates, attributes, permissions,
+              owner, audit rules and alternate data streams. Owner and audit rules need
+              administrator.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Why was my Record or scan refused?</summary>
+          <div class="ans">
+            <p>
+              An elevated (administrator) record changes what the process can read, so it cannot
+              overlap a running Compare or Disk Cleanup scan. Finish or cancel the first, then start
+              the second.
+            </p>
+          </div>
+        </details>
+      </div>
+
+      <div class="faq-group">
+        <h2>Reports and data</h2>
+        <details data-faq>
+          <summary>Where are my reports and logs?</summary>
+          <div class="ans">
+            <p>
+              <code>%LOCALAPPDATA%\Deep Server Analyzer\</code> holds <code>Records</code>,
+              <code>Reports</code> and <code>Logs</code>. With <code>portable.txt</code> next to the
+              exe they live in <code>Data\</code> beside it. Override with
+              <code>DEEP_SERVER_ANALYZER_RECORDS_DIR</code>, <code>…_REPORTS_DIR</code> or
+              <code>…_LOGS_DIR</code>. App errors go to <code>Logs\app.log</code>.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>How do I get a PDF for the client?</summary>
+          <div class="ans">
+            <p>
+              In <strong>Reports</strong>, choose <strong>Open in browser</strong>, then print and
+              select <em>Save as PDF</em>. Or use <strong>Export as HTML</strong> for a single
+              standalone page, or <strong>Export as CSV</strong> for Excel.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Can I put my company name and logo on reports?</summary>
+          <div class="ans">
+            <p>
+              Yes: <strong>Settings → Company name on reports</strong> and
+              <strong>Company logo</strong>.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>How long are reports kept?</summary>
+          <div class="ans">
+            <p>
+              For ever by default. <strong>Settings → Keep saved reports</strong> can change that to
+              30 days, 90 days or 1 year.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Is exported HTML safe to open or forward?</summary>
+          <div class="ans">
+            <p>
+              Exported pages escape file names and use a content security policy. CSV exports defuse
+              spreadsheet formulas so a hostile file name cannot run when opened in Excel.
+            </p>
+          </div>
+        </details>
+      </div>
+
+      <div class="faq-group">
+        <h2>Troubleshooting</h2>
+        <div
+          class="scroll-x"
+          style="margin-bottom: 14px"
+        >
+          <table class="tbl">
+            <tr>
+              <th>What you see</th>
+              <th>What to do</th>
+            </tr>
+            <tr>
+              <td>“Smart App Control blocked a file”</td>
+              <td>
+                Unblock the files, then try again:
+                <code>Get-ChildItem "&lt;kit folder&gt;" -Recurse | Unblock-File</code>
+              </td>
+            </tr>
+            <tr>
+              <td>Install button is greyed out</td>
+              <td>
+                You opened the file from inside the zip or from a partial copy. Extract the whole
+                zip first.
+              </td>
+            </tr>
+            <tr>
+              <td>The window never opens</td>
+              <td>
+                Click <strong>Yes</strong> on the administrator prompt. If you clicked
+                <strong>No</strong>, double-click again.
+              </td>
+            </tr>
+            <tr>
+              <td>Thumbprint does not match the release page or your trusted copy</td>
+              <td>
+                Stop. Download the zip again from the real Releases page and check against the
+                thumbprint from your trusted channel.
+              </td>
+            </tr>
+            <tr>
+              <td>Install failed</td>
+              <td>
+                Read the message, then see <code>C:\ProgramData\DSA\trust.log</code>. Nothing stays
+                trusted after a failure.
+              </td>
+            </tr>
+            <tr>
+              <td>Company security software blocks the scripts</td>
+              <td>
+                Ask the security team first. The kit changes certificate stores and adds a scheduled
+                task.
+              </td>
+            </tr>
+            <tr>
+              <td>Not sure whether anything is still trusted</td>
+              <td>
+                Run the red button or <code>Remove-Trust.cmd</code>. It is safe when nothing is
+                trusted.
+              </td>
+            </tr>
+          </table>
+        </div>
+        <details data-faq>
+          <summary>The app window is blank or will not start.</summary>
+          <div class="ans">
+            <p>
+              The app needs the WebView2 runtime. Reinstall with the installer, which downloads
+              WebView2 if it is missing, then check <code>Logs\app.log</code> for the error.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>I found a bug or want a feature.</summary>
+          <div class="ans">
+            <p>
+              Open an
+              <a href="https://github.com/Demonad112/special-memory-analyzer/issues">issue</a> on
+              GitHub. Attach the relevant lines of <code>Logs\app.log</code>; do not paste anything
+              confidential.
+            </p>
+          </div>
+        </details>
+      </div>
+
+      <div class="note">
+        Still stuck? Read the <a href="how-to.html">How-To</a> or the full notes:
+        <a href="https://github.com/Demonad112/special-memory-analyzer/blob/main/docs/install.md"
+          >install</a
+        >,
+        <a
+          href="https://github.com/Demonad112/special-memory-analyzer/blob/main/docs/usb-install.md"
+          >USB kit</a
+        >,
+        <a
+          href="https://github.com/Demonad112/special-memory-analyzer/blob/main/docs/first-time-setup.md"
+          >first-time setup</a
+        >.
+      </div>
+    </main>
+
+    <footer class="foot">
+      <div class="wrap">
+        <span>Deep Server Analyzer · Apache-2.0</span>
+        <nav aria-label="Footer">
+          <a href="./">Home</a>
+          <a href="how-to.html">How-To</a>
+          <a href="https://github.com/Demonad112/special-memory-analyzer/releases">All releases</a>
+          <a href="https://github.com/Demonad112/special-memory-analyzer">Source</a>
+        </nav>
+      </div>
+    </footer>
+    <script src="assets/site.js"></script>
+  </body>
+</html>
