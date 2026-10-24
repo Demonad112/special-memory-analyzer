@@ -2,6 +2,7 @@
 //! caches, the Windows Update download cache, the Recycle Bin, old setup files in Downloads).
 //! Nothing outside these places is ever touched, and the places themselves are kept.
 
+use crate::protect::Protected;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -69,6 +70,9 @@ pub struct Places {
     pub system_root: Option<PathBuf>,
     pub local_app_data: Option<PathBuf>,
     pub profile: Option<PathBuf>,
+    /// The never-delete list. A target that is one of its roots (the profile, a drive, the
+    /// Windows folder) is dropped, so a wrong `TEMP` can't empty it.
+    pub protected: Protected,
 }
 
 impl Places {
@@ -83,6 +87,7 @@ impl Places {
             system_root: var("SystemRoot"),
             local_app_data: var("LOCALAPPDATA"),
             profile: var("USERPROFILE"),
+            protected: Protected::for_this_pc(),
         }
     }
 
@@ -144,7 +149,12 @@ impl Places {
                 caches
             }
         };
-        list.into_iter().filter(|path| path.is_dir()).collect()
+        list.into_iter()
+            .filter(|path| path.is_dir())
+            // The old-installer cleanup is meant to work in Downloads, which is a protected
+            // folder; it only recycles installer files directly inside it.
+            .filter(|path| id == QuickId::OldInstallers || !self.protected.is_protected_root(path))
+            .collect()
     }
 
     /// True when `path` is one of this cleanup's own folders or inside one. Checked again right
@@ -216,6 +226,15 @@ impl QuickId {
         }
     }
 
+    /// "recycle" for the cleanup that uses the Recycle Bin, "permanent" for the rest.
+    pub fn log_method(self) -> &'static str {
+        if self == QuickId::OldInstallers {
+            "recycle"
+        } else {
+            "permanent"
+        }
+    }
+
     pub fn needs_admin(self) -> bool {
         matches!(self, QuickId::WindowsTemp | QuickId::UpdateCache)
     }
@@ -262,18 +281,35 @@ pub fn measure(places: &Places, id: QuickId) -> Cleaned {
 
 /// Runs one quick cleanup.
 pub fn clean(places: &Places, id: QuickId) -> Result<Cleaned, String> {
+    clean_with(places, id, &mut |_, _| {})
+}
+
+/// [`clean`] that reports each folder's result as soon as that folder is done (the folder, or
+/// the Recycle Bin itself), so the caller can log it before the next one starts.
+pub fn clean_with(
+    places: &Places,
+    id: QuickId,
+    on_target: &mut dyn FnMut(&Path, &Cleaned),
+) -> Result<Cleaned, String> {
     if id == QuickId::RecycleBin {
         let before = crate::os::recycle_bin_size();
         crate::os::empty_recycle_bin()?;
-        return Ok(Cleaned {
+        let cleaned = Cleaned {
             skipped: 0,
             ..before
-        });
+        };
+        on_target(Path::new("Recycle Bin"), &cleaned);
+        return Ok(cleaned);
     }
     let mut total = Cleaned::default();
     let targets = places.targets(id);
     for target in &targets {
-        sweep(&targets, id, target, target, true, &mut total);
+        let mut done = Cleaned::default();
+        sweep(&targets, id, target, target, true, &mut done);
+        on_target(target, &done);
+        total.freed += done.freed;
+        total.removed += done.removed;
+        total.skipped += done.skipped;
     }
     Ok(total)
 }
@@ -531,5 +567,74 @@ mod tests {
                 assert!(target.is_dir(), "{}", target.display());
             }
         }
+    }
+
+    #[test]
+    fn a_target_that_is_a_protected_root_is_dropped_but_a_folder_inside_one_stays() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = temp.path().join("Users").join("Sam");
+        let windows = temp.path().join("Windows");
+        fs::create_dir_all(&profile).unwrap();
+        fs::create_dir_all(windows.join("Temp")).unwrap();
+        let text = |path: &Path| path.to_string_lossy().into_owned();
+        let protected = Protected::new(
+            &[&text(&windows)],
+            &[&text(&profile)],
+            &[&text(&temp.path().join("Users"))],
+        );
+
+        // TEMP pointing at the profile: nothing to clean.
+        let wrong = Places {
+            temp: Some(profile.clone()),
+            protected: protected.clone(),
+            ..Places::default()
+        };
+        assert!(wrong.targets(QuickId::UserTemp).is_empty());
+        assert!(!wrong.allows(QuickId::UserTemp, &profile.join("Documents").join("a.docx")));
+        let (cleaned, logged) = {
+            let mut logged = Vec::new();
+            let cleaned = clean_with(&wrong, QuickId::UserTemp, &mut |target, done| {
+                logged.push((target.to_path_buf(), done.removed))
+            });
+            (cleaned.unwrap(), logged)
+        };
+        assert_eq!(cleaned, Cleaned::default());
+        assert!(logged.is_empty());
+
+        // `SystemRoot\Temp` is inside a protected base, which is allowed.
+        let right = Places {
+            system_root: Some(windows.clone()),
+            protected,
+            ..Places::default()
+        };
+        assert_eq!(
+            right.targets(QuickId::WindowsTemp),
+            vec![windows.join("Temp")]
+        );
+    }
+
+    #[test]
+    fn clean_with_reports_each_folder_once_with_its_own_counts() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("Temp");
+        write(&dir.join("a.log"), 10);
+        write(&dir.join("sub").join("b.log"), 20);
+        age(&dir.join("a.log"), 3);
+        age(&dir.join("sub").join("b.log"), 3);
+        let places = Places {
+            temp: Some(dir.clone()),
+            ..Places::default()
+        };
+        let mut seen = Vec::new();
+        let total = clean_with(&places, QuickId::UserTemp, &mut |target, done| {
+            seen.push((target.to_path_buf(), done.clone()))
+        })
+        .unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, dir);
+        assert_eq!((seen[0].1.removed, seen[0].1.freed), (2, 30));
+        assert_eq!(seen[0].1, total);
+        assert_eq!(QuickId::UserTemp.log_method(), "permanent");
+        assert_eq!(QuickId::OldInstallers.log_method(), "recycle");
     }
 }
