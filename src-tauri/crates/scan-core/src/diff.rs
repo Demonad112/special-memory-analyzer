@@ -201,6 +201,10 @@ impl DiffTree {
         let missing =
             inherited || matches!(node.status, DiffStatus::OnlyLeft | DiffStatus::KindMismatch);
         if missing && id != 0 {
+            // A link is never copied, so it is not a missing file.
+            if node.kind == Kind::Link {
+                return;
+            }
             let empty_folder = node.kind == Kind::Dir && node.child_count == 0;
             if node.kind != Kind::Dir || empty_folder {
                 if let Some(path) = self.relative_path(id, Side::Left) {
@@ -562,6 +566,38 @@ mod tests {
         let diff = compare_dirs(left.path(), right.path());
         assert_eq!(diff.node(0).unwrap().status, DiffStatus::Same);
         assert_eq!(diff.children(0).unwrap().len(), 1);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_link_only_on_the_left_is_not_a_missing_file() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        write(&left.path().join("real/data.txt"), 1);
+        write(&right.path().join("real/data.txt"), 1);
+        write(&left.path().join("lost.txt"), 2);
+        let link = left.path().join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(left.path().join("real"), &link).unwrap();
+        // `mklink /J` needs no privilege; removed again so cleanup never walks through it.
+        #[cfg(windows)]
+        {
+            let backslashed = |path: &Path| path.to_string_lossy().replace('/', "\\");
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(backslashed(&link))
+                .arg(backslashed(&left.path().join("real")))
+                .output()
+                .expect("cmd should run");
+            assert!(output.status.success(), "mklink /J failed");
+        }
+
+        let diff = compare_dirs(left.path(), right.path());
+        let missing = diff.missing_paths();
+        #[cfg(windows)]
+        let _ = fs::remove_dir(&link);
+
+        assert_eq!(missing, ["lost.txt"]);
     }
 
     #[test]
