@@ -262,8 +262,12 @@ export function connectShare(path: string, username: string, password: string): 
   return invoke<string>('share_connect', { path, username, password })
 }
 
-export function revealPath(path: string): Promise<void> {
-  return invoke('record_reveal', { path })
+/** Which folder of a run `revealRecord` opens. */
+export type RevealSide = 'source' | 'destination' | 'recovery'
+
+/** Opens Explorer at a file (by relative path) or the recovery folder of a run. */
+export function revealRecord(runId: string, relativePath: string, side: RevealSide): Promise<void> {
+  return invoke('record_reveal', { runId, relativePath, side })
 }
 
 const reasonTitles: Record<FailureReason, string> = {

@@ -30,7 +30,8 @@ import {
   recordJob,
   recoverRecord,
   retryRecord,
-  revealPath,
+  revealRecord,
+  type RevealSide,
   type RunDetails,
 } from '@/lib/record'
 
@@ -185,17 +186,12 @@ async function copyList(): Promise<void> {
   }
 }
 
-async function reveal(path: string): Promise<void> {
+async function reveal(relativePath: string, side: RevealSide): Promise<void> {
   try {
-    await revealPath(path)
+    await revealRecord(props.id, relativePath, side)
   } catch (err) {
     error.value = errorMessage(err)
   }
-}
-
-function sourcePath(relativePath: string): string {
-  const source = summary.value?.settings.source ?? ''
-  return `${source.replace(/[\\/]+$/, '')}\\${relativePath.replaceAll('/', '\\')}`
 }
 </script>
 
@@ -235,7 +231,7 @@ function sourcePath(relativePath: string): string {
         v-if="recoveryFolder"
         type="button"
         class="inline-flex h-7 items-center gap-1.5 rounded-md border border-stroke px-3 text-[13px] hover:bg-card-hover"
-        @click="reveal(recoveryFolder)"
+        @click="reveal('', 'recovery')"
       >
         <FolderOpen class="size-3.5" />
         Show
@@ -436,7 +432,7 @@ function sourcePath(relativePath: string): string {
                 v-for="item in details?.notCopied.slice(0, shownRows)"
                 :key="item.relativePath"
                 class="border-b border-stroke last:border-0 hover:bg-card-hover"
-                @dblclick="reveal(sourcePath(item.relativePath))"
+                @dblclick="reveal(item.relativePath, 'source')"
               >
                 <td class="max-w-0 px-3 py-1.5 text-danger">
                   <span

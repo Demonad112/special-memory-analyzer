@@ -5,6 +5,7 @@
 use crate::compare::CompareState;
 use scan_core::{check_pair, clean_path};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -28,7 +29,11 @@ const MAX_NOT_COPIED_ROWS: usize = 10_000;
 /// The running record's cancel and finish switches. One record at a time.
 // ponytail: one job slot; a job map if two records ever need to run at once.
 #[derive(Default)]
-pub struct RecordState(Mutex<Option<WatchControl>>);
+pub struct RecordState(
+    Mutex<Option<WatchControl>>,
+    /// The recovery folder last used for each run, so the report can reveal it by run id.
+    Mutex<HashMap<String, PathBuf>>,
+);
 
 impl RecordState {
     fn begin(&self) -> Result<WatchControl, String> {
@@ -47,6 +52,16 @@ impl RecordState {
         if let Ok(mut job) = self.0.lock() {
             job.take();
         }
+    }
+
+    fn remember_recovery(&self, run_id: &str, folder: &str) {
+        if let Ok(mut folders) = self.1.lock() {
+            folders.insert(run_id.to_string(), PathBuf::from(folder));
+        }
+    }
+
+    fn recovery_folder(&self, run_id: &str) -> Option<PathBuf> {
+        self.1.lock().ok()?.get(run_id).cloned()
     }
 
     fn control(&self) -> Option<WatchControl> {
@@ -381,6 +396,7 @@ pub async fn record_recover(
     folder: Option<String>,
 ) -> Result<RecoveryResult, String> {
     let control = state.begin()?;
+    let remembered_run = run_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let _awake = KeepAwake::new();
         let chosen = folder
@@ -398,7 +414,9 @@ pub async fn record_recover(
     })
     .await;
     state.end();
-    result.map_err(to_text)?
+    let result = result.map_err(to_text)??;
+    state.remember_recovery(&remembered_run, &result.folder);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -435,10 +453,80 @@ pub async fn share_connect(
     Ok(share)
 }
 
-/// Opens Explorer at a file or folder (a source file, the recovery folder).
+/// What `record_reveal` opens.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RevealSide {
+    Source,
+    Destination,
+    /// The folder `record_recover` last copied the missed files to.
+    Recovery,
+}
+
+/// The path to show in Explorer, built from the run's own settings rather than from the page.
+fn reveal_target(
+    source: &str,
+    destination: &str,
+    relative_path: &str,
+    side: RevealSide,
+    recovery: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    let base = match side {
+        RevealSide::Source => PathBuf::from(source),
+        RevealSide::Destination => PathBuf::from(destination),
+        RevealSide::Recovery => {
+            return recovery.ok_or_else(|| "No recovery folder was made for this run.".to_string())
+        }
+    };
+    Ok(transfer_core::prepare::destination_path(
+        &base,
+        relative_path,
+    ))
+}
+
+/// Opens Explorer at a file or folder of a run: a source or destination file by its relative
+/// path (empty for the root folder), or the run's recovery folder.
 #[tauri::command]
-pub fn record_reveal(path: String) -> Result<(), String> {
-    let path = PathBuf::from(path);
+pub fn record_reveal(
+    state: State<'_, RecordState>,
+    run_id: String,
+    relative_path: String,
+    side: RevealSide,
+) -> Result<(), String> {
+    let store = RunStore::open(&transfer_core::records_root(), &run_id).map_err(to_text)?;
+    let settings = store.summary().map_err(to_text)?.settings;
+    let path = reveal_target(
+        &settings.source,
+        &settings.destination,
+        &relative_path,
+        side,
+        state.recovery_folder(&run_id),
+    )?;
     tauri_plugin_opener::reveal_item_in_dir(&path)
         .map_err(|err| format!("Could not open {} in Explorer: {err}", path.display()))
+}
+
+#[cfg(test)]
+mod reveal_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn builds_the_path_from_the_run_not_from_the_page() {
+        let target = reveal_target(r"C:\Src", r"D:\Dst", "a/b.txt", RevealSide::Source, None);
+        assert_eq!(
+            target.unwrap(),
+            Path::new(r"C:\Src").join("a").join("b.txt")
+        );
+        let target = reveal_target(r"C:\Src", r"D:\Dst", "", RevealSide::Destination, None);
+        assert_eq!(target.unwrap(), PathBuf::from(r"D:\Dst"));
+    }
+
+    #[test]
+    fn the_recovery_folder_is_the_remembered_one_or_an_error() {
+        let folder = PathBuf::from(r"E:\Rescue\r1");
+        let target = reveal_target("s", "d", "", RevealSide::Recovery, Some(folder.clone()));
+        assert_eq!(target.unwrap(), folder);
+        assert!(reveal_target("s", "d", "", RevealSide::Recovery, None).is_err());
+    }
 }
