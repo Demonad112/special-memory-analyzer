@@ -748,6 +748,7 @@ mod tests {
         let options = CopyOptions {
             verify: VerifyLevel::Hash,
             conflict: ConflictPolicy::Overwrite,
+            skip_identical: false,
             ..no_retry()
         };
         CORRUPT_NEXT_PART.with(|armed| armed.set(true));
