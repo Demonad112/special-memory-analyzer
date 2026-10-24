@@ -15,8 +15,9 @@ import {
 import { computed, onMounted, ref, shallowRef, watch } from 'vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { copyText } from '@/lib/clipboard'
-import { errorMessage, pickFolder } from '@/lib/compare'
-import { formatBytes, formatCount, plural } from '@/lib/format'
+import { pickFolder } from '@/lib/compare'
+import { errorMessage } from '@/lib/errors'
+import { formatBytes, formatCount, formatDateTime, plural } from '@/lib/format'
 import { exportReport, openReport, type ExportFormat } from '@/lib/reports'
 import {
   cancelRecord,
@@ -45,11 +46,18 @@ const recovering = ref(false)
 const job = recordJob
 
 async function load(): Promise<void> {
+  const id = props.id
   error.value = ''
+  details.value = null
   try {
-    details.value = await loadRecord(props.id)
+    const loaded = await loadRecord(id)
+    if (id === props.id) {
+      details.value = loaded
+    }
   } catch (err) {
-    error.value = errorMessage(err)
+    if (id === props.id) {
+      error.value = errorMessage(err)
+    }
   }
 }
 onMounted(load)
@@ -111,9 +119,7 @@ const stateText = computed(() => {
 })
 
 function when(ms: number | null | undefined): string {
-  return ms
-    ? new Date(ms).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
-    : '—'
+  return ms ? formatDateTime(ms) : '—'
 }
 
 async function retry(reason: FailureReason | null = null): Promise<void> {

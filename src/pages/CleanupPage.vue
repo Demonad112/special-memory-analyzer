@@ -15,7 +15,7 @@ import {
   Trash2,
   TriangleAlert,
 } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import BulkDeleteDialog from '@/components/BulkDeleteDialog.vue'
 import ContextMenu, { type MenuItem } from '@/components/ContextMenu.vue'
@@ -31,6 +31,9 @@ import {
   appAdmin,
   canDelete,
   cancelScan,
+  escapeCancelsScan,
+  type FileRow,
+  nextTabIndex,
   cleanupJob,
   driveFor,
   drives,
@@ -52,10 +55,13 @@ import {
   type JunkItem,
 } from '@/lib/cleanup'
 import { copyText } from '@/lib/clipboard'
-import { cleanPath, errorMessage, pickFolder } from '@/lib/compare'
+import { cleanPath, pickFolder } from '@/lib/compare'
+import { errorMessage } from '@/lib/errors'
+import { useElapsed } from '@/lib/useElapsed'
+import { useToast } from '@/lib/useToast'
 import { openReport } from '@/lib/reports'
 import { categoryLabels, categoryOfExtension, type Category } from '@/lib/fileTypes'
-import { formatBytes, formatDuration, plural } from '@/lib/format'
+import { formatBytes, formatDate, formatDuration, formatTime, plural } from '@/lib/format'
 
 const job = cleanupJob
 const folderInput = ref('')
@@ -97,15 +103,10 @@ const shownSize = computed(() => viewRows.value.reduce((sum, row) => sum + row.s
 const scannedDrive = computed(() => driveFor(job.path, drives.value))
 const percent = computed(() => scanPercent(job.progress?.bytes ?? 0, scannedDrive.value))
 
-// Elapsed time while a scan runs.
-const now = ref(Date.now())
-const ticker = setInterval(() => {
-  now.value = Date.now()
-}, 250)
-const elapsed = computed(() => {
-  const seconds = Math.max(0, Math.floor((now.value - job.startedAt) / 1000))
-  return `${String(Math.floor(seconds / 60))}:${String(seconds % 60).padStart(2, '0')}`
-})
+const elapsed = useElapsed(
+  () => job.startedAt,
+  () => job.running,
+)
 
 function scan(path: string): void {
   const clean = cleanPath(path)
@@ -268,6 +269,17 @@ async function restartAdmin(): Promise<void> {
 }
 
 const menu = ref<{ item: Picked; x: number; y: number } | null>(null)
+/** Opens a row's menu below the focused button, for the Menu key and Shift+F10. */
+function openFileMenuAtFocus(file: FileRow, event: KeyboardEvent): void {
+  const box = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const item = { id: file.id, name: file.name, size: file.size, isFolder: false, files: 1 }
+  picked.value = item
+  menu.value = { item, x: box.left + 16, y: box.bottom }
+}
+function openMenuAtFocus(row: CleanupRow, event: KeyboardEvent): void {
+  const box = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  openMenu(row, box.left + 16, box.bottom)
+}
 function openMenu(row: CleanupRow, x: number, y: number): void {
   pick(row)
   if (picked.value) {
@@ -294,6 +306,21 @@ const menuItems = computed<(MenuItem | null)[]>(() => {
 
 // Lists under the treemap.
 const tab = ref<'files' | 'types'>('files')
+const tabOptions = [
+  { value: 'files', label: 'Largest files' },
+  { value: 'types', label: 'File types' },
+] as const
+function onTabKeydown(event: KeyboardEvent): void {
+  const index = tabOptions.findIndex((option) => option.value === tab.value)
+  const next = nextTabIndex(event.key, index, tabOptions.length)
+  const option = next === null ? undefined : tabOptions[next]
+  if (!option) {
+    return
+  }
+  event.preventDefault()
+  tab.value = option.value
+  void nextTick(() => document.getElementById(`cleanup-tab-${option.value}`)?.focus())
+}
 interface TypeGroup {
   category: Category
   size: number
@@ -317,30 +344,29 @@ function share(size: number, total: number): string {
 }
 
 function modified(ms: number | null): string {
-  return ms === null ? '' : new Date(ms).toLocaleDateString('en-US', { dateStyle: 'medium' })
+  return ms === null ? '' : formatDate(ms)
 }
 
-// Short confirmation or error at the bottom of the window.
-const toast = ref('')
-let toastTimer: ReturnType<typeof setTimeout> | undefined
-function showToast(message: string): void {
-  toast.value = message
-  clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => {
-    toast.value = ''
-  }, 4000)
+const { toast, showToast } = useToast()
+
+function hasOpenDialog(): boolean {
+  return document.querySelector('dialog[open]') !== null
+}
+
+function cancel(): void {
+  cancelScan().catch((err: unknown) => {
+    showToast(errorMessage(err))
+  })
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape' && job.running) {
-    void cancelScan()
+  const covered = Boolean(menu.value) || Boolean(confirmEl.value?.open) || hasOpenDialog()
+  if (escapeCancelsScan(event.key, job.running, covered)) {
+    cancel()
     return
   }
   const typing = event.target instanceof HTMLInputElement
-  if (typing || menu.value || confirmEl.value?.open || !job.overview) {
-    return
-  }
-  if (document.querySelector('dialog[open]')) {
+  if (typing || covered || !job.overview) {
     return
   }
   if (event.key === 'Delete') {
@@ -364,8 +390,6 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
-  clearInterval(ticker)
-  clearTimeout(toastTimer)
 })
 </script>
 
@@ -381,7 +405,7 @@ onBeforeUnmount(() => {
         type="button"
         class="mt-1.5 h-8 shrink-0 rounded-md border border-stroke bg-card px-5 hover:bg-card-hover"
         title="Cancel (Esc)"
-        @click="cancelScan"
+        @click="cancel"
       >
         Cancel
       </button>
@@ -511,9 +535,7 @@ onBeforeUnmount(() => {
           <p class="text-xs text-muted">Scan time</p>
           <p class="value">{{ formatDuration(job.elapsedMs) }}</p>
           <p class="detail">
-            {{
-              job.finishedAt?.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-            }}
+            {{ job.finishedAt && formatTime(job.finishedAt) }}
           </p>
         </div>
       </div>
@@ -659,7 +681,9 @@ onBeforeUnmount(() => {
               :title="row.error ? `${row.name}: ${row.error}` : row.name"
               @click="pick(row)"
               @dblclick="open(row)"
-              @keydown.enter="open(row)"
+              @keydown.enter.prevent="open(row)"
+              @keydown.context-menu.prevent="openMenuAtFocus(row, $event)"
+              @keydown.shift.f10.prevent="openMenuAtFocus(row, $event)"
               @contextmenu.prevent="openMenu(row, $event.clientX, $event.clientY)"
             >
               <component
@@ -678,6 +702,8 @@ onBeforeUnmount(() => {
               <TriangleAlert
                 v-if="row.errors > 0"
                 class="size-3.5 shrink-0 text-warning"
+                :title="`${plural(row.errors, 'item')} inside could not be read`"
+                :aria-label="`${plural(row.errors, 'item')} inside could not be read`"
               />
               <span class="w-11 shrink-0 text-right text-xs text-muted tabular-nums">
                 {{ share(row.size, shownSize) }}
@@ -702,16 +728,17 @@ onBeforeUnmount(() => {
         <div
           class="flex w-fit rounded-md border border-stroke bg-subtle p-0.5"
           role="tablist"
+          @keydown="onTabKeydown"
         >
           <button
-            v-for="option in [
-              { value: 'files', label: 'Largest files' },
-              { value: 'types', label: 'File types' },
-            ] as const"
+            v-for="option in tabOptions"
+            :id="`cleanup-tab-${option.value}`"
             :key="option.value"
             type="button"
             role="tab"
             :aria-selected="tab === option.value"
+            :aria-controls="`cleanup-panel-${option.value}`"
+            :tabindex="tab === option.value ? 0 : -1"
             class="flex h-7 items-center rounded px-3 text-[13px]"
             :class="tab === option.value ? 'bg-accent text-on-accent' : 'hover:bg-subtle-strong'"
             @click="tab = option.value"
@@ -747,6 +774,7 @@ onBeforeUnmount(() => {
 
       <ul
         v-if="tab === 'files'"
+        id="cleanup-panel-files"
         class="mt-2 overflow-hidden rounded-lg border border-stroke bg-card"
         aria-label="Largest files"
       >
@@ -764,6 +792,8 @@ onBeforeUnmount(() => {
               picked = { id: file.id, name: file.name, size: file.size, isFolder: false, files: 1 }
             "
             @dblclick="reveal(file.id)"
+            @keydown.context-menu.prevent="openFileMenuAtFocus(file, $event)"
+            @keydown.shift.f10.prevent="openFileMenuAtFocus(file, $event)"
             @contextmenu.prevent="
               menu = {
                 item: { id: file.id, name: file.name, size: file.size, isFolder: false, files: 1 },
@@ -792,6 +822,7 @@ onBeforeUnmount(() => {
 
       <div
         v-else
+        id="cleanup-panel-types"
         class="mt-2 grid gap-3 lg:grid-cols-2"
       >
         <ul

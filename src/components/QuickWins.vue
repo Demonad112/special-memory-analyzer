@@ -11,7 +11,7 @@ import {
   type QuickList,
   type QuickResult,
 } from '@/lib/cleanup'
-import { errorMessage } from '@/lib/compare'
+import { errorMessage } from '@/lib/errors'
 import { formatBytes, plural } from '@/lib/format'
 
 const emit = defineEmits<{ cleaned: [] }>()

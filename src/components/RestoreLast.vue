@@ -8,7 +8,7 @@ import {
   type LastRun,
   type RestoreResult,
 } from '@/lib/cleanup'
-import { errorMessage } from '@/lib/compare'
+import { errorMessage } from '@/lib/errors'
 import { plural } from '@/lib/format'
 
 const last = ref<LastRun | null>(null)

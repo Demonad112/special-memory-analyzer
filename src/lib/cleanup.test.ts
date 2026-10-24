@@ -24,6 +24,8 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 import {
   cleanupJob,
   driveFor,
+  escapeCancelsScan,
+  nextTabIndex,
   groupsIn,
   offeredItems,
   openFolder,
@@ -144,6 +146,27 @@ describe('cleanup scan', () => {
     expect(cleanupJob.rows[0]?.name).toBe('Users')
   })
 
+  it('keeps the breadcrumb and list together when two opens overlap', async () => {
+    cleanupJob.trail = [row(0, 'C:\\', 100)]
+    cleanupJob.rows = []
+    let releaseFirst: (rows: CleanupRow[]) => void = () => undefined
+    core.invoke
+      .mockImplementationOnce(
+        () =>
+          new Promise<CleanupRow[]>((resolve) => {
+            releaseFirst = resolve
+          }),
+      )
+      .mockResolvedValueOnce([row(5, 'Docs', 10)])
+    const first = openFolder(row(1, 'Users', 100))
+    await openFolder(row(2, 'Windows', 50))
+    releaseFirst([row(3, 'Sam', 60)])
+    await first
+
+    expect(cleanupJob.trail.map((folder) => folder.name)).toEqual(['C:\\', 'Windows'])
+    expect(cleanupJob.rows.map((item) => item.name)).toEqual(['Docs'])
+  })
+
   it('refreshes totals and the shown folder after a delete', async () => {
     cleanupJob.trail = [row(0, 'C:\\', 100), row(1, 'Users', 100)]
     core.invoke.mockResolvedValueOnce(overview(40)).mockResolvedValueOnce([row(3, 'Public', 40)])
@@ -154,6 +177,26 @@ describe('cleanup scan', () => {
     expect(cleanupJob.overview?.root.size).toBe(40)
     expect(cleanupJob.trail.map((folder) => folder.name)).toEqual(['C:\\', 'Users'])
     expect(cleanupJob.rows.map((item) => item.name)).toEqual(['Public'])
+  })
+})
+
+describe('escapeCancelsScan', () => {
+  it('cancels only a running scan with nothing open on top of it', () => {
+    expect(escapeCancelsScan('Escape', true, false)).toBe(true)
+    expect(escapeCancelsScan('Escape', true, true)).toBe(false)
+    expect(escapeCancelsScan('Escape', false, false)).toBe(false)
+    expect(escapeCancelsScan('Enter', true, false)).toBe(false)
+  })
+})
+
+describe('nextTabIndex', () => {
+  it('moves with the arrow keys, wrapping, and jumps with Home and End', () => {
+    expect(nextTabIndex('ArrowRight', 0, 2)).toBe(1)
+    expect(nextTabIndex('ArrowRight', 1, 2)).toBe(0)
+    expect(nextTabIndex('ArrowLeft', 0, 2)).toBe(1)
+    expect(nextTabIndex('Home', 1, 2)).toBe(0)
+    expect(nextTabIndex('End', 0, 2)).toBe(1)
+    expect(nextTabIndex('a', 0, 2)).toBeNull()
   })
 })
 

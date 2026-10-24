@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { errorMessage } from '@/lib/compare'
+import { errorMessage } from '@/lib/errors'
 import { connectShare, shareOf } from '@/lib/record'
 
 const props = defineProps<{ paths: string[] }>()

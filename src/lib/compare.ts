@@ -1,8 +1,9 @@
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { ref, watch } from 'vue'
+import { ref, shallowReactive, watch } from 'vue'
 import { trackJob } from './busy'
-import { formatBytes, plural } from './format'
+import { formatBytes, formatDateTime, plural } from './format'
+import { errorMessage } from './errors'
 import { currentJob } from './job'
 
 const ignoreJunkKey = 'analyzer-ignore-junk'
@@ -105,13 +106,6 @@ export function isCancelled(error: unknown): boolean {
   return error === CANCELLED
 }
 
-export function errorMessage(error: unknown): string {
-  if (typeof error === 'string') {
-    return error
-  }
-  return error instanceof Error ? error.message : 'Something went wrong.'
-}
-
 /** Scans both folders and compares them. Progress arrives about every 100 ms. */
 export async function startCompare(
   left: string,
@@ -175,7 +169,7 @@ export function formatMissingList(list: MissingList, summary: DiffSummary, when:
     `Missing at destination: ${plural(summary.missing, 'file')} (${formatBytes(summary.missingBytes)})`,
     `Source: ${list.source}`,
     `Destination: ${list.destination}`,
-    `Compared: ${when.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}`,
+    `Compared: ${formatDateTime(when)}`,
   ]
   return [...header, '', ...list.paths].join('\r\n')
 }
@@ -302,4 +296,103 @@ export function rememberRecent(pair: ComparePaths): ComparePaths[] {
     // Not remembered; the list still shows for this session.
   }
   return recent
+}
+
+/**
+ * The compare in progress or last finished. It lives here, not in the page, so leaving the page
+ * mid-compare neither loses the result nor allows a second compare while the backend is busy.
+ */
+export const compareJob = shallowReactive({
+  running: false,
+  progress: null as CompareProgress | null,
+  result: null as CompareResult | null,
+  compared: { left: '', right: '' } as ComparePaths,
+  finishedAt: null as Date | null,
+  error: '',
+  notice: '',
+  children: new Map<number, DiffRow[]>(),
+  expanded: new Set<number>(),
+  loading: new Set<number>(),
+  startedAt: 0,
+})
+
+/** Runs a compare into `compareJob`. Does nothing while one is already running. */
+export async function runCompareJob(
+  left: string,
+  right: string,
+  ignoreJunk: boolean,
+): Promise<void> {
+  if (compareJob.running) {
+    return
+  }
+  Object.assign(compareJob, {
+    running: true,
+    error: '',
+    notice: '',
+    progress: null,
+    result: null,
+    children: new Map(),
+    expanded: new Set(),
+    loading: new Set(),
+    startedAt: Date.now(),
+  })
+  try {
+    const result = await startCompare(left, right, ignoreJunk, (update) => {
+      compareJob.progress = update
+    })
+    Object.assign(compareJob, {
+      result,
+      compared: { left, right },
+      finishedAt: new Date(),
+      notice: missingDelta({ left, right }, result.summary.missing) ?? '',
+    })
+    rememberRecent({ left, right })
+  } catch (err) {
+    if (isCancelled(err)) {
+      compareJob.notice = 'Compare cancelled. Nothing was changed.'
+    } else {
+      compareJob.error = errorMessage(err)
+    }
+  } finally {
+    compareJob.running = false
+  }
+}
+
+/**
+ * Expands or collapses a folder row, loading its children on first expand. Rows that arrive after
+ * a newer compare replaced the result are dropped. Rejects if the children cannot be loaded.
+ */
+export async function toggleRow(id: number): Promise<void> {
+  const next = new Set(compareJob.expanded)
+  if (next.has(id)) {
+    next.delete(id)
+    compareJob.expanded = next
+    return
+  }
+  next.add(id)
+  compareJob.expanded = next
+  if (compareJob.children.has(id) || compareJob.loading.has(id)) {
+    return
+  }
+  const owner = compareJob.result
+  compareJob.loading = new Set(compareJob.loading).add(id)
+  try {
+    const loaded = await loadChildren(id)
+    if (compareJob.result === owner) {
+      compareJob.children = new Map(compareJob.children).set(id, loaded)
+    }
+  } catch (err) {
+    if (compareJob.result === owner) {
+      const collapsed = new Set(compareJob.expanded)
+      collapsed.delete(id)
+      compareJob.expanded = collapsed
+    }
+    throw err
+  } finally {
+    if (compareJob.result === owner) {
+      const done = new Set(compareJob.loading)
+      done.delete(id)
+      compareJob.loading = done
+    }
+  }
 }

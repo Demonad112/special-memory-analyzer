@@ -1,7 +1,8 @@
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core'
 import { reactive, ref } from 'vue'
 import { trackJob } from './busy'
-import { errorMessage, type EntryKind, type ScanProgress } from './compare'
+import { type EntryKind, type ScanProgress } from './compare'
+import { errorMessage } from './errors'
 import { currentJob } from './job'
 
 export interface Drive {
@@ -164,6 +165,7 @@ async function scanFolder(path: string): Promise<void> {
     notice: '',
     reportId: null,
   })
+  navSeq++
   const onProgress = new Channel<ScanProgress>()
   onProgress.onmessage = (progress) => {
     cleanupJob.progress = progress
@@ -194,13 +196,42 @@ async function scanFolder(path: string): Promise<void> {
   }
 }
 
+/** Escape cancels a running scan unless it is meant for a menu or dialog that is open. */
+export function escapeCancelsScan(key: string, running: boolean, covered: boolean): boolean {
+  return key === 'Escape' && running && !covered
+}
+
+/** The tab an arrow, Home or End key moves to in a row of `count` tabs, or null for other keys. */
+export function nextTabIndex(key: string, index: number, count: number): number | null {
+  switch (key) {
+    case 'ArrowRight':
+      return (index + 1) % count
+    case 'ArrowLeft':
+      return (index - 1 + count) % count
+    case 'Home':
+      return 0
+    case 'End':
+      return count - 1
+    default:
+      return null
+  }
+}
+
 export function cancelScan(): Promise<void> {
   return invoke('cleanup_cancel')
 }
 
+/** Counts navigations so a slow earlier one cannot overwrite a newer one. */
+let navSeq = 0
+
 /** Shows what is inside `row`, a folder in the shown one. */
 export async function openFolder(row: CleanupRow): Promise<void> {
-  cleanupJob.rows = await invoke<CleanupRow[]>('cleanup_children', { id: row.id })
+  const seq = ++navSeq
+  const rows = await invoke<CleanupRow[]>('cleanup_children', { id: row.id })
+  if (seq !== navSeq) {
+    return
+  }
+  cleanupJob.rows = rows
   cleanupJob.trail = [...cleanupJob.trail, row]
 }
 
@@ -210,7 +241,12 @@ export async function openTrail(index: number): Promise<void> {
   if (!folder) {
     return
   }
-  cleanupJob.rows = await invoke<CleanupRow[]>('cleanup_children', { id: folder.id })
+  const seq = ++navSeq
+  const rows = await invoke<CleanupRow[]>('cleanup_children', { id: folder.id })
+  if (seq !== navSeq) {
+    return
+  }
+  cleanupJob.rows = rows
   cleanupJob.trail = cleanupJob.trail.slice(0, index + 1)
 }
 
@@ -224,7 +260,11 @@ export async function removeItem(id: number, permanent: boolean): Promise<void> 
   cleanupJob.trail = [overview.root, ...cleanupJob.trail.slice(1)]
   const shown = cleanupJob.trail.at(-1)
   if (shown) {
-    cleanupJob.rows = await invoke<CleanupRow[]>('cleanup_children', { id: shown.id })
+    const seq = ++navSeq
+    const rows = await invoke<CleanupRow[]>('cleanup_children', { id: shown.id })
+    if (seq === navSeq) {
+      cleanupJob.rows = rows
+    }
   }
 }
 
@@ -533,7 +573,11 @@ export async function removeMany(
   cleanupJob.trail = [done.overview.root, ...cleanupJob.trail.slice(1)]
   const shown = cleanupJob.trail.at(-1)
   if (shown) {
-    cleanupJob.rows = await invoke<CleanupRow[]>('cleanup_children', { id: shown.id })
+    const seq = ++navSeq
+    const rows = await invoke<CleanupRow[]>('cleanup_children', { id: shown.id })
+    if (seq === navSeq) {
+      cleanupJob.rows = rows
+    }
   }
   return done.results
 }

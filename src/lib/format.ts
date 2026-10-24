@@ -53,3 +53,24 @@ export function formatDuration(ms: number): string {
   const seconds = Math.round((ms % 60_000) / 1000)
   return `${String(minutes)} min ${String(seconds).padStart(2, '0')} s`
 }
+
+/** "m:ss" for a running timer; negative values count as zero. */
+export function formatClock(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  return `${String(Math.floor(seconds / 60))}:${String(seconds % 60).padStart(2, '0')}`
+}
+
+/** "Oct 23, 2026, 5:07 PM": the one date-and-time format used in the app. */
+export function formatDateTime(when: Date | number): string {
+  return new Date(when).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+/** "Oct 23, 2026". */
+export function formatDate(when: Date | number): string {
+  return new Date(when).toLocaleDateString('en-US', { dateStyle: 'medium' })
+}
+
+/** "5:07 PM". */
+export function formatTime(when: Date | number): string {
+  return new Date(when).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+}

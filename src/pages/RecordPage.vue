@@ -6,8 +6,9 @@ import PageHeader from '@/components/PageHeader.vue'
 import JobFields from '@/components/JobFields.vue'
 import ShareSignIn from '@/components/ShareSignIn.vue'
 import PathField from '@/components/PathField.vue'
-import { errorMessage, ignoreJunk, loadPaths, pickFolder, savePaths } from '@/lib/compare'
-import { formatBytes, formatCount, plural } from '@/lib/format'
+import { ignoreJunk, loadPaths, pickFolder, savePaths } from '@/lib/compare'
+import { errorMessage } from '@/lib/errors'
+import { formatBytes, formatCount, formatDateTime, plural } from '@/lib/format'
 import {
   bytesPerSecond,
   cancelRecord,
@@ -197,7 +198,7 @@ function stateText(run: RunSummary): string {
 }
 
 function when(ms: number): string {
-  return new Date(ms).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+  return formatDateTime(ms)
 }
 </script>
 
