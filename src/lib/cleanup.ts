@@ -97,6 +97,8 @@ export interface Overview {
   largestFiles: FileRow[]
   /** Every extension, largest first. */
   fileTypes: TypeRow[]
+  /** Set when the saved report could not be updated; the delete still went ahead. */
+  warning?: string | null
 }
 
 interface ScanResult {
@@ -185,6 +187,9 @@ async function scanFolder(path: string): Promise<void> {
       reportId: result.reportId,
       finishedAt: new Date(),
     })
+    if (result.overview.warning) {
+      cleanupJob.notice = result.overview.warning
+    }
   } catch (err) {
     if (err === 'cancelled') {
       cleanupJob.notice = 'Scan cancelled.'
@@ -257,6 +262,9 @@ export async function openTrail(index: number): Promise<void> {
 export async function removeItem(id: number, permanent: boolean): Promise<void> {
   const overview = await trackJob(() => invoke<Overview>('cleanup_delete', { id, permanent }))
   cleanupJob.overview = overview
+  if (overview.warning) {
+    cleanupJob.notice = overview.warning
+  }
   cleanupJob.trail = [overview.root, ...cleanupJob.trail.slice(1)]
   const shown = cleanupJob.trail.at(-1)
   if (shown) {
@@ -567,8 +575,9 @@ export async function removeMany(
     invoke<DeleteManyResult>('cleanup_delete_many', { ids, permanent, confirmToken }),
   )
   cleanupJob.overview = done.overview
-  if (done.logError) {
-    cleanupJob.notice = done.logError
+  const notices = [done.logError, done.overview.warning].filter(Boolean)
+  if (notices.length > 0) {
+    cleanupJob.notice = notices.join(' ')
   }
   cleanupJob.trail = [done.overview.root, ...cleanupJob.trail.slice(1)]
   const shown = cleanupJob.trail.at(-1)

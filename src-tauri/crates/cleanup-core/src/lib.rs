@@ -112,6 +112,9 @@ pub struct Overview {
     pub root: Row,
     pub largest_files: Vec<FileRow>,
     pub file_types: Vec<TypeRow>,
+    /// Set by the app when the saved report could not be updated; the delete itself went ahead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 pub const LARGEST_FILES: usize = 100;
@@ -181,6 +184,7 @@ pub fn overview(tree: &Tree) -> Overview {
         root: Row::new(tree, 0),
         largest_files,
         file_types,
+        warning: None,
     }
 }
 
@@ -195,6 +199,19 @@ fn extension(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_warning_is_only_serialized_when_set() {
+        let temp = tempfile::tempdir().unwrap();
+        let tree = scan(temp.path(), &ScanState::default()).unwrap();
+        let mut overview = overview(&tree);
+        assert!(serde_json::to_value(&overview)
+            .unwrap()
+            .get("warning")
+            .is_none());
+        overview.warning = Some("stale".into());
+        assert_eq!(serde_json::to_value(&overview).unwrap()["warning"], "stale");
+    }
     use scan_core::{scan, ScanState};
     use std::fs;
     use std::path::Path;

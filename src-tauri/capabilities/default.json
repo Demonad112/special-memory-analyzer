@@ -14,7 +14,6 @@
     "core:window:allow-show",
     "core:window:allow-is-maximized",
     "dialog:allow-open",
-    "dialog:allow-save",
-    "opener:allow-open-path"
+    "dialog:allow-save"
   ]
 }

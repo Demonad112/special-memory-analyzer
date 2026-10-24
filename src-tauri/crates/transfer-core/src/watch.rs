@@ -8,7 +8,7 @@
 //! checks every file that has not arrived; the reason given for those is inferred.
 
 use crate::copy::{hash_file, times_match};
-use crate::prepare::{destination_path, ManifestEntry, LONG_PATH_LIMIT};
+use crate::prepare::{destination_path, safe_relative, ManifestEntry, LONG_PATH_LIMIT};
 use crate::reason::{classify, FailureReason, Side};
 use crate::store::{LogStatus, RunStore};
 use crate::{
@@ -295,6 +295,9 @@ struct CheckContext<'a> {
 impl CheckContext<'_> {
     /// Moves a file towards Arrived: first seen, then unchanged for `stable_for`, free and matching.
     fn check(&self, entry: &ManifestEntry, track: Track) -> Track {
+        if !safe_relative(&entry.relative_path) {
+            return Track::Waiting;
+        }
         let target = destination_path(self.destination, &entry.relative_path);
         let Ok(meta) = fs::metadata(&target) else {
             return Track::Waiting;
