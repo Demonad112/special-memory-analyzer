@@ -308,7 +308,7 @@ pub fn copy_file(
         ));
     }
     // Verify the part file first so a bad copy never replaces an existing destination.
-    if let Err(failure) = verify(&part, bytes, source_time, hash.as_deref()) {
+    if let Err(failure) = verify(&part, bytes, source_time, hash.as_deref(), cancel) {
         let _ = fs::remove_file(&part);
         return Err(failure);
     }
@@ -429,6 +429,7 @@ fn verify(
     bytes: u64,
     source_time: Option<SystemTime>,
     source_hash: Option<&str>,
+    cancel: &CancelToken,
 ) -> Result<(), CopyFailure> {
     let meta =
         fs::metadata(destination).map_err(|error| CopyFailure::io(&error, Side::Destination))?;
@@ -460,8 +461,13 @@ fn verify(
         }
     }
     if let Some(expected) = source_hash {
-        let actual =
-            hash_file(destination).map_err(|error| CopyFailure::io(&error, Side::Destination))?;
+        let actual = hash_file(destination, cancel).map_err(|error| {
+            if cancel.is_cancelled() {
+                CopyFailure::cancelled()
+            } else {
+                CopyFailure::io(&error, Side::Destination)
+            }
+        })?;
         if actual != expected {
             let mut failure = CopyFailure::new(
                 FailureReason::VerifyMismatch,
@@ -475,12 +481,16 @@ fn verify(
     Ok(())
 }
 
-/// Hex BLAKE3 of a whole file, read in chunks.
-pub fn hash_file(path: &Path) -> io::Result<String> {
+/// Hex BLAKE3 of a whole file, read in chunks. Cancelling stops it between chunks with an
+/// `Interrupted` error.
+pub fn hash_file(path: &Path, cancel: &CancelToken) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = blake3::Hasher::new();
     let mut buffer = vec![0_u8; BUFFER_SIZE];
     loop {
+        if cancel.is_cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
+        }
         let read = match file.read(&mut buffer) {
             Ok(0) => break,
             Ok(read) => read,
@@ -516,6 +526,21 @@ mod tests {
     }
 
     /// Test hook for `write_part`: flips the first byte of the part file once armed.
+    #[test]
+    fn hashing_stops_when_cancelled() {
+        let dir = TempDir::new("hash-cancel");
+        dir.write("big.bin", &vec![7_u8; 3 * BUFFER_SIZE]);
+        let path = dir.path("big.bin");
+
+        let cancel = CancelToken::default();
+        let whole = hash_file(&path, &cancel).unwrap();
+        assert_eq!(whole.len(), 64);
+
+        cancel.cancel();
+        let stopped = hash_file(&path, &cancel).unwrap_err();
+        assert_eq!(stopped.kind(), io::ErrorKind::Interrupted);
+    }
+
     pub(super) fn corrupt_part(output: &mut File) -> Result<(), CopyFailure> {
         use std::io::{Seek, SeekFrom};
         if CORRUPT_NEXT_PART.with(|armed| armed.replace(false)) {

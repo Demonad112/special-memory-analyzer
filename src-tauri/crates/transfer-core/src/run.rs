@@ -11,6 +11,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// Which not-copied rows an action applies to. No paths and no reason means all of them.
@@ -170,6 +171,47 @@ pub fn retry(
         return Ok(summary);
     }
     finish(&store, &mut summary, cancel, outcome, "Retry")
+}
+
+/// Settles a run that says Running or Watching although no job is live (the app crashed, was
+/// killed or lost power). Files in the manifest with no result row are listed as Cancelled, so
+/// the report counts them and Retry copies them; the run becomes Cancelled. Returns whether it
+/// changed anything. Only call it while no record job is running.
+pub fn recover_interrupted(store: &RunStore) -> Result<bool> {
+    let mut summary = store.summary()?;
+    if !matches!(summary.state, RunState::Running | RunState::Watching) {
+        return Ok(false);
+    }
+    let seen = store.latest_results()?;
+    let mut results = store.results_writer()?;
+    let mut listed = 0_u64;
+    for row in store.manifest::<ManifestEntry>()? {
+        let row = row?;
+        if row.kind != ItemKind::File || seen.contains_key(&row.relative_path) {
+            continue;
+        }
+        results.write(&ItemResult::not_copied(
+            row.relative_path,
+            ItemKind::File,
+            row.size,
+            FailureReason::Cancelled,
+            None,
+            "The app stopped before this file was copied.",
+        ))?;
+        listed += 1;
+    }
+    results.finish()?;
+    summary.state = RunState::Cancelled;
+    summary.finished_at_ms.get_or_insert_with(now_ms);
+    store.refresh_totals(&mut summary)?;
+    store.save_summary(&summary)?;
+    store.audit(
+        "recover",
+        LogStatus::Cancelled,
+        "The app stopped during this run; unreached files are listed as not copied",
+        &[("listed", listed.into())],
+    );
+    Ok(true)
 }
 
 pub(crate) fn copy_options(settings: &TransferSettings) -> CopyOptions {
@@ -413,6 +455,10 @@ impl<'a> Copier<'a> {
                             size,
                             cloud && skip_cloud,
                         ))),
+                        Entry::InvalidName { relative_path, .. } => entries.push(Err((
+                            prefix(&relative_path),
+                            io::Error::from(io::ErrorKind::InvalidFilename),
+                        ))),
                         Entry::Link => {}
                         Entry::Unreadable {
                             relative_path,
@@ -629,6 +675,67 @@ mod tests {
             })
             .collect();
         assert!(leftovers.is_empty());
+
+        let selection = Selection {
+            paths: Vec::new(),
+            reason: Some(FailureReason::Cancelled),
+        };
+        let summary = retry(
+            &dir.path("runs"),
+            &id,
+            &selection,
+            &CancelToken::default(),
+            &mut NullSink,
+        )
+        .unwrap();
+        assert_eq!(summary.state, RunState::Completed);
+        assert_eq!((summary.totals.copied, summary.totals.not_copied), (4, 0));
+    }
+
+    #[test]
+    fn a_run_left_running_by_a_dead_app_is_cancelled_and_retry_copies_the_rest() {
+        let dir = TempDir::new("run-recover");
+        for name in ["a", "b", "c", "d"] {
+            dir.write(&format!("src/{name}.txt"), name.as_bytes());
+        }
+        let id = prepared(&dir);
+        let token = CancelToken::default();
+        let mut sink = CancelAfter {
+            items: 2,
+            token: token.clone(),
+        };
+        run_copy(&dir.path("runs"), &id, None, &token, &mut sink).unwrap();
+        // The app died after two files: only their rows were written, and the run still says Running.
+        let store = RunStore::open(&dir.path("runs"), &id).unwrap();
+        let results = store.dir().join("results.jsonl");
+        let kept: Vec<String> = fs::read_to_string(&results)
+            .unwrap()
+            .lines()
+            .take(2)
+            .map(|line| format!("{line}\n"))
+            .collect();
+        fs::write(&results, kept.concat()).unwrap();
+        let mut summary = store.summary().unwrap();
+        summary.state = RunState::Running;
+        summary.finished_at_ms = None;
+        store.save_summary(&summary).unwrap();
+
+        assert!(recover_interrupted(&store).unwrap());
+
+        let summary = store.summary().unwrap();
+        assert_eq!(summary.state, RunState::Cancelled);
+        assert_eq!((summary.totals.copied, summary.totals.not_copied), (2, 2));
+        let latest = store.latest_results().unwrap();
+        let stopped: Vec<_> = latest
+            .values()
+            .filter(|item| item.status == ItemStatus::NotCopied)
+            .collect();
+        assert_eq!(stopped.len(), 2);
+        assert!(stopped
+            .iter()
+            .all(|item| item.reason == Some(FailureReason::Cancelled) && item.recoverable));
+        // Nothing to recover the second time.
+        assert!(!recover_interrupted(&store).unwrap());
 
         let selection = Selection {
             paths: Vec::new(),

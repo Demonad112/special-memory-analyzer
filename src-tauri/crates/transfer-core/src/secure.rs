@@ -10,7 +10,7 @@ use crate::meta::PreserveOptions;
 use std::fs::File;
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// Which of the privileges that matter for copying security were switched on for this process.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -25,22 +25,35 @@ pub struct Privileges {
     pub take_ownership: bool,
 }
 
-static ENABLED: AtomicBool = AtomicBool::new(false);
+/// The privileges switched on in the process token right now.
+static HELD: Mutex<Privileges> = Mutex::new(Privileges {
+    backup: false,
+    restore: false,
+    security: false,
+    take_ownership: false,
+});
 
-/// Lets copies use the process token's backup, restore and security privileges. The app calls
-/// this when a record run starts; until then (scans, unit tests) nothing is switched on, so
-/// access checks behave as they do for any program.
-pub fn enable_privileges() {
-    ENABLED.store(true, Ordering::Relaxed);
+fn held() -> MutexGuard<'static, Privileges> {
+    HELD.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The privileges in use: none until [`enable_privileges`], then every one the token holds.
+/// Lets copies use the process token's backup, restore and security privileges. The app calls
+/// this when a record job starts and [`disable_privileges`] when it ends; outside a job (scans,
+/// unit tests) nothing is switched on, so access checks behave as they do for any program.
+pub fn enable_privileges() {
+    *held() = imp::set_privileges(true);
+}
+
+/// Switches the privileges off again. They stay in the token, so a later job can enable them.
+pub fn disable_privileges() {
+    let mut held = held();
+    imp::set_privileges(false);
+    *held = Privileges::default();
+}
+
+/// The privileges in use: none outside a job, then every one the token holds.
 pub fn privileges() -> Privileges {
-    if ENABLED.load(Ordering::Relaxed) {
-        imp::privileges()
-    } else {
-        Privileges::default()
-    }
+    *held()
 }
 
 /// Opens a source file for reading; with the backup privilege this reads files whose ACL denies
@@ -72,7 +85,6 @@ mod imp {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use std::path::Path;
-    use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, LocalFree, ERROR_NOT_ALL_ASSIGNED, HANDLE, INVALID_HANDLE_VALUE,
     };
@@ -108,62 +120,65 @@ mod imp {
         text.encode_utf16().chain(Some(0)).collect()
     }
 
-    pub fn privileges() -> Privileges {
-        static GRANTED: OnceLock<Privileges> = OnceLock::new();
-        *GRANTED.get_or_init(|| {
-            let mut token: HANDLE = std::ptr::null_mut();
-            // SAFETY: `token` is a valid out pointer; the handle is closed below.
-            let opened = unsafe {
-                OpenProcessToken(
-                    GetCurrentProcess(),
-                    TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
-                    &mut token,
+    /// Switches the four privileges on or off in the process token. Returns the ones that are
+    /// now on: those the token does not hold cannot be switched on.
+    pub fn set_privileges(on: bool) -> Privileges {
+        let mut token: HANDLE = std::ptr::null_mut();
+        // SAFETY: `token` is a valid out pointer; the handle is closed below.
+        let opened = unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                &mut token,
+            )
+        };
+        if opened == 0 {
+            return Privileges::default();
+        }
+        let enable = |name: &str| -> bool {
+            let name = wide_str(name);
+            // SAFETY: zeroed LUID/TOKEN_PRIVILEGES are valid plain-data values.
+            let mut luid = unsafe { std::mem::zeroed() };
+            // SAFETY: `name` is NUL-terminated; `luid` is a valid out pointer.
+            if unsafe { LookupPrivilegeValueW(std::ptr::null(), name.as_ptr(), &mut luid) } == 0 {
+                return false;
+            }
+            let state = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: luid,
+                    // 0 switches it off but leaves it in the token; REMOVED would be for good.
+                    Attributes: if on { SE_PRIVILEGE_ENABLED } else { 0 },
+                }],
+            };
+            // SAFETY: `state` outlives the call; the previous-state outputs are not wanted.
+            let adjusted = unsafe {
+                AdjustTokenPrivileges(
+                    token,
+                    0,
+                    &state,
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
                 )
             };
-            if opened == 0 {
-                return Privileges::default();
-            }
-            let enable = |name: &str| -> bool {
-                let name = wide_str(name);
-                // SAFETY: zeroed LUID/TOKEN_PRIVILEGES are valid plain-data values.
-                let mut luid = unsafe { std::mem::zeroed() };
-                // SAFETY: `name` is NUL-terminated; `luid` is a valid out pointer.
-                if unsafe { LookupPrivilegeValueW(std::ptr::null(), name.as_ptr(), &mut luid) } == 0
-                {
-                    return false;
-                }
-                let state = TOKEN_PRIVILEGES {
-                    PrivilegeCount: 1,
-                    Privileges: [LUID_AND_ATTRIBUTES {
-                        Luid: luid,
-                        Attributes: SE_PRIVILEGE_ENABLED,
-                    }],
-                };
-                // SAFETY: `state` outlives the call; the previous-state outputs are not wanted.
-                let adjusted = unsafe {
-                    AdjustTokenPrivileges(
-                        token,
-                        0,
-                        &state,
-                        0,
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                    )
-                };
-                // Success is reported even when the token doesn't hold the privilege.
-                // SAFETY: reads the calling thread's last error.
-                adjusted != 0 && unsafe { GetLastError() } != ERROR_NOT_ALL_ASSIGNED
-            };
-            let granted = Privileges {
-                backup: enable("SeBackupPrivilege"),
-                restore: enable("SeRestorePrivilege"),
-                security: enable("SeSecurityPrivilege"),
-                take_ownership: enable("SeTakeOwnershipPrivilege"),
-            };
-            // SAFETY: `token` came from OpenProcessToken.
-            unsafe { CloseHandle(token) };
+            // Success is reported even when the token doesn't hold the privilege.
+            // SAFETY: reads the calling thread's last error.
+            adjusted != 0 && unsafe { GetLastError() } != ERROR_NOT_ALL_ASSIGNED
+        };
+        let granted = Privileges {
+            backup: enable("SeBackupPrivilege"),
+            restore: enable("SeRestorePrivilege"),
+            security: enable("SeSecurityPrivilege"),
+            take_ownership: enable("SeTakeOwnershipPrivilege"),
+        };
+        // SAFETY: `token` came from OpenProcessToken.
+        unsafe { CloseHandle(token) };
+        if on {
             granted
-        })
+        } else {
+            Privileges::default()
+        }
     }
 
     pub fn open_source(path: &Path) -> io::Result<File> {
@@ -414,7 +429,7 @@ mod imp {
     use std::io;
     use std::path::Path;
 
-    pub fn privileges() -> Privileges {
+    pub fn set_privileges(_on: bool) -> Privileges {
         Privileges::default()
     }
 
@@ -445,6 +460,79 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ds-secure-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Whether the process token has `name` switched on right now.
+    fn token_has_enabled(name: &str) -> bool {
+        use windows_sys::Win32::Security::{
+            GetTokenInformation, LookupPrivilegeValueW, TokenPrivileges, SE_PRIVILEGE_ENABLED,
+            TOKEN_PRIVILEGES, TOKEN_QUERY,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        let mut wanted = unsafe { std::mem::zeroed() };
+        // SAFETY: `name` is NUL-terminated; `wanted` is a valid out pointer.
+        if unsafe { LookupPrivilegeValueW(std::ptr::null(), name.as_ptr(), &mut wanted) } == 0 {
+            return false;
+        }
+        let mut token = std::ptr::null_mut();
+        // SAFETY: `token` is a valid out pointer; the handle is closed below.
+        assert_ne!(
+            unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) },
+            0
+        );
+        let mut length = 0u32;
+        // SAFETY: a null buffer of size 0 only asks for the needed length.
+        unsafe {
+            GetTokenInformation(token, TokenPrivileges, std::ptr::null_mut(), 0, &mut length)
+        };
+        // u32 elements keep the buffer aligned for TOKEN_PRIVILEGES.
+        let mut buffer = vec![0u32; (length as usize).div_ceil(4)];
+        // SAFETY: `buffer` holds at least `length` bytes.
+        let ok = unsafe {
+            GetTokenInformation(
+                token,
+                TokenPrivileges,
+                buffer.as_mut_ptr().cast(),
+                length,
+                &mut length,
+            )
+        };
+        assert_ne!(ok, 0);
+        // SAFETY: filled in by the call above; the entries follow the count.
+        let found = unsafe {
+            let privileges = buffer.as_ptr().cast::<TOKEN_PRIVILEGES>();
+            let entries = std::slice::from_raw_parts(
+                (*privileges).Privileges.as_ptr(),
+                (*privileges).PrivilegeCount as usize,
+            );
+            entries.iter().any(|entry| {
+                entry.Luid.LowPart == wanted.LowPart
+                    && entry.Luid.HighPart == wanted.HighPart
+                    && entry.Attributes & SE_PRIVILEGE_ENABLED != 0
+            })
+        };
+        // SAFETY: `token` came from OpenProcessToken.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(token) };
+        found
+    }
+
+    #[test]
+    fn privileges_are_switched_off_again_when_the_job_ends() {
+        enable_privileges();
+        let held = privileges();
+        // A token without the privilege (a standard user) can only be checked for "off".
+        assert_eq!(token_has_enabled("SeBackupPrivilege"), held.backup);
+
+        disable_privileges();
+
+        assert!(!token_has_enabled("SeBackupPrivilege"));
+        assert!(!token_has_enabled("SeRestorePrivilege"));
+        assert_eq!(privileges(), Privileges::default());
+        // Enabling again still works: the privilege was disabled, not removed from the token.
+        enable_privileges();
+        assert_eq!(privileges(), held);
+        disable_privileges();
     }
 
     #[test]

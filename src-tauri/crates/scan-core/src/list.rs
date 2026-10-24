@@ -24,6 +24,9 @@ pub(crate) struct Entry {
     /// Volume-unique file id (0 when the file system has none). Two entries with the same id and
     /// size are hard links to one file.
     pub file_id: u64,
+    /// The name is not valid Unicode (Windows allows unpaired surrogates), so `name` holds
+    /// replacement characters and cannot be turned back into a path.
+    pub lossy: bool,
 }
 
 /// What a folder listing found. `error` is set when reading stopped early; `entries` then holds
@@ -45,6 +48,14 @@ pub(crate) fn list_dir(path: &Path) -> io::Result<Listing> {
     list_dir_std(path)
 }
 
+/// A file name as text, and whether turning it into text lost characters.
+pub(crate) fn name_text(name: &std::ffi::OsStr) -> (String, bool) {
+    match name.to_str() {
+        Some(text) => (text.to_owned(), false),
+        None => (name.to_string_lossy().into_owned(), true),
+    }
+}
+
 fn list_dir_std(path: &Path) -> io::Result<Listing> {
     let mut listing = Listing {
         entries: Vec::new(),
@@ -64,11 +75,14 @@ fn list_dir_std(path: &Path) -> io::Result<Listing> {
                 continue;
             }
         };
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let (name, lossy) = name_text(&entry.file_name());
         if file_type.is_symlink() {
             listing.entries.push(plain(name, Kind::Link));
         } else if file_type.is_dir() {
-            listing.entries.push(plain(name, Kind::Dir));
+            listing.entries.push(Entry {
+                lossy,
+                ..plain(name, Kind::Dir)
+            });
         } else {
             match entry.metadata() {
                 Ok(metadata) => {
@@ -86,6 +100,7 @@ fn list_dir_std(path: &Path) -> io::Result<Listing> {
                             .map(|since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX)),
                         cloud,
                         file_id: 0,
+                        lossy,
                     });
                 }
                 Err(err) => {
@@ -106,6 +121,7 @@ fn plain(name: String, kind: Kind) -> Entry {
         modified_ms: None,
         cloud: false,
         file_id: 0,
+        lossy: false,
     }
 }
 
@@ -363,7 +379,7 @@ mod nt {
                 .iter()
                 .map(|pair| u16::from_le_bytes(*pair))
                 .collect();
-            let name = OsString::from_wide(&units).to_string_lossy().into_owned();
+            let (name, lossy) = super::name_text(&OsString::from_wide(&units));
 
             if name != "." && name != ".." {
                 let attrs = read_u32(bytes, at + 56);
@@ -377,10 +393,13 @@ mod nt {
                     out.push(plain(name, Kind::Link));
                 } else if attrs & ATTR_DIRECTORY != 0 {
                     let mut entry = plain(name, Kind::Dir);
+                    entry.lossy = lossy;
                     entry.cloud = false;
                     out.push(entry);
                 } else {
-                    out.push(file_entry(bytes, at, name, attrs, reparse_tag, dir));
+                    let mut entry = file_entry(bytes, at, name, attrs, reparse_tag, dir);
+                    entry.lossy = lossy;
+                    out.push(entry);
                 }
             }
             if next == 0 {
@@ -421,6 +440,7 @@ mod nt {
             modified_ms: filetime_ms(read_u64(bytes, at + 24)),
             cloud,
             file_id: read_u64(bytes, at + 72),
+            lossy: false,
         }
     }
 }

@@ -18,8 +18,8 @@ use transfer_core::store::{self, RunStore};
 use transfer_core::watch::{WatchControl, WatchOptions};
 use transfer_core::PreserveOptions;
 use transfer_core::{
-    ConflictPolicy, FailureReason, ItemResult, ItemStatus, Phase, RunSummary, TransferMode,
-    TransferProgress, TransferSettings, TransferSink, VerifyLevel,
+    ConflictPolicy, FailureReason, ItemResult, ItemStatus, Phase, RunState, RunSummary,
+    TransferMode, TransferProgress, TransferSettings, TransferSink, VerifyLevel,
 };
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -52,6 +52,8 @@ impl RecordState {
         if let Ok(mut job) = self.0.lock() {
             job.take();
         }
+        // Back to ordinary access checks, so later scans see what the user would.
+        transfer_core::secure::disable_privileges();
     }
 
     fn remember_recovery(&self, run_id: &str, folder: &str) {
@@ -62,6 +64,20 @@ impl RecordState {
 
     fn recovery_folder(&self, run_id: &str) -> Option<PathBuf> {
         self.1.lock().ok()?.get(run_id).cloned()
+    }
+
+    /// Settles runs a dead app left as Running or Watching. The job slot is held while it
+    /// works, so a record cannot start on the same files meanwhile; with a job live it does nothing.
+    fn recover_stale(&self, run_ids: &[String]) {
+        let Ok(job) = self.0.lock() else { return };
+        if job.is_some() {
+            return;
+        }
+        for run_id in run_ids {
+            if let Ok(store) = RunStore::open(&transfer_core::records_root(), run_id) {
+                let _ = transfer_core::run::recover_interrupted(&store);
+            }
+        }
     }
 
     fn control(&self) -> Option<WatchControl> {
@@ -357,6 +373,10 @@ pub async fn record_retry(
     job(&state, move |control| {
         let mut sink = ChannelSink::new(&on_event);
         let selection = Selection { paths, reason };
+        // The job slot is ours, so a run still saying Running was left by a dead app.
+        if let Ok(store) = RunStore::open(&transfer_core::records_root(), &run_id) {
+            let _ = transfer_core::run::recover_interrupted(&store);
+        }
         let finished = transfer_core::run::retry(
             &transfer_core::records_root(),
             &run_id,
@@ -420,7 +440,11 @@ pub async fn record_recover(
 }
 
 #[tauri::command]
-pub async fn record_load(run_id: String) -> Result<RunDetails, String> {
+pub async fn record_load(
+    state: State<'_, RecordState>,
+    run_id: String,
+) -> Result<RunDetails, String> {
+    state.recover_stale(std::slice::from_ref(&run_id));
     tauri::async_runtime::spawn_blocking(move || load(&run_id))
         .await
         .map_err(to_text)?
@@ -428,7 +452,20 @@ pub async fn record_load(run_id: String) -> Result<RunDetails, String> {
 
 /// Stored records, newest first.
 #[tauri::command]
-pub async fn record_list() -> Result<Vec<RunSummary>, String> {
+pub async fn record_list(state: State<'_, RecordState>) -> Result<Vec<RunSummary>, String> {
+    let runs =
+        tauri::async_runtime::spawn_blocking(|| store::list_runs(&transfer_core::records_root()))
+            .await
+            .map_err(to_text)?;
+    let stale: Vec<String> = runs
+        .iter()
+        .filter(|run| matches!(run.state, RunState::Running | RunState::Watching))
+        .map(|run| run.id.clone())
+        .collect();
+    if stale.is_empty() {
+        return Ok(runs);
+    }
+    state.recover_stale(&stale);
     tauri::async_runtime::spawn_blocking(|| store::list_runs(&transfer_core::records_root()))
         .await
         .map_err(to_text)

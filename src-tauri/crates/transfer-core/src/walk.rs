@@ -1,7 +1,7 @@
 //! The source listing of a run, from a `scan-core` scan: scan first (in parallel, with live
 //! counts), then visit the tree depth-first in name order.
 
-use crate::{CancelToken, Result, TransferError};
+use crate::{CancelToken, ItemKind, Result, TransferError};
 use scan_core::{scan, Kind, NodeId, ScanError, ScanProgress, ScanState, Tree};
 use std::io;
 use std::path::Path;
@@ -18,6 +18,12 @@ pub(crate) enum Entry {
         modified_ms: Option<u64>,
         /// A OneDrive online-only file: reading it downloads it.
         cloud: bool,
+    },
+    /// A name that is not valid Unicode: no path can be built from it, so it is never opened.
+    InvalidName {
+        relative_path: String,
+        kind: ItemKind,
+        size: u64,
     },
     /// A symlink or junction: never followed or copied.
     Link,
@@ -78,6 +84,17 @@ fn visit_children(
         match node.kind {
             Kind::Link => {
                 visit(Entry::Link)?;
+            }
+            Kind::File | Kind::Dir if node.lossy_name => {
+                visit(Entry::InvalidName {
+                    relative_path,
+                    kind: if node.kind == Kind::File {
+                        ItemKind::File
+                    } else {
+                        ItemKind::Folder
+                    },
+                    size: node.size,
+                })?;
             }
             Kind::File => {
                 visit(Entry::File {

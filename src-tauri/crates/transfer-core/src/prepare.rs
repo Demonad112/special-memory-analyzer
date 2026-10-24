@@ -35,6 +35,10 @@ pub struct ManifestEntry {
     /// Set when pre-flight found a problem that stops this file from being copied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked: Option<FailureReason>,
+    /// An online-only (OneDrive) file. Reading it would download it, so Watch never hashes or
+    /// opens such a source.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cloud: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -358,6 +362,7 @@ impl ScanState<'_> {
                     size: 0,
                     modified_at_ms: None,
                     blocked,
+                    cloud: false,
                 };
                 // A blocked folder cannot be created, so its contents cannot be copied either.
                 (Some(row), result, blocked.is_none())
@@ -394,8 +399,46 @@ impl ScanState<'_> {
                     size,
                     modified_at_ms,
                     blocked,
+                    cloud,
                 };
                 (Some(row), result, false)
+            }
+            Entry::InvalidName {
+                relative_path,
+                kind,
+                size,
+            } => {
+                match kind {
+                    ItemKind::File => {
+                        report.files += 1;
+                        report.bytes += size;
+                    }
+                    ItemKind::Folder => report.folders += 1,
+                }
+                report.blocked += 1;
+                report.issue_count += 1;
+                if report.issues.len() < MAX_LISTED_ISSUES {
+                    report.issues.push(PreflightIssue {
+                        relative_path: relative_path.clone(),
+                        reason: FailureReason::InvalidName,
+                        severity: Severity::Blocker,
+                        detail: Some(
+                            "The name is not valid Unicode, so it cannot be opened by name"
+                                .to_owned(),
+                        ),
+                    });
+                }
+                let reason = FailureReason::InvalidName;
+                let result = blocked_result(&relative_path, kind, size, reason);
+                let row = ManifestEntry {
+                    relative_path,
+                    kind,
+                    size,
+                    modified_at_ms: None,
+                    blocked: Some(reason),
+                    cloud: false,
+                };
+                (Some(row), Some(result), false)
             }
             Entry::Link => {
                 report.excluded += 1;
@@ -736,6 +779,78 @@ mod tests {
         let rows: Vec<ManifestEntry> = store.manifest().unwrap().map(|row| row.unwrap()).collect();
         let paths: Vec<&str> = rows.iter().map(|row| row.relative_path.as_str()).collect();
         assert_eq!(paths, vec!["a.txt", "sub", "sub/b.txt"]);
+    }
+
+    /// A name that is not valid Unicode: an unpaired surrogate on Windows (NTFS allows it), an
+    /// invalid UTF-8 byte on Unix.
+    fn lossy_name(stem: &str) -> std::ffi::OsString {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            let mut units = vec![0xD800_u16];
+            units.extend(stem.encode_utf16());
+            std::ffi::OsString::from_wide(&units)
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let mut bytes = vec![0xFF_u8];
+            bytes.extend(stem.bytes());
+            std::ffi::OsString::from_vec(bytes)
+        }
+    }
+
+    #[test]
+    fn names_that_are_not_valid_unicode_are_listed_as_invalid_and_never_copied() {
+        let dir = TempDir::new("prepare-lossy");
+        dir.write("src/ok.txt", b"fine");
+        let file = dir.path("src").join(lossy_name("file.txt"));
+        let folder = dir.path("src").join(lossy_name("folder"));
+        if fs::write(&file, b"odd").is_err() || fs::create_dir_all(&folder).is_err() {
+            return; // this file system cannot hold such names
+        }
+        fs::write(folder.join("inside.txt"), b"hidden").unwrap();
+        let (source, destination) = (dir.path("src"), dir.path("dst"));
+
+        let (summary, report) = prepare(
+            &dir.path("runs"),
+            settings(&source, &destination),
+            &CancelToken::default(),
+            &mut NullSink,
+        )
+        .unwrap();
+
+        assert_eq!(report.blocked, 2);
+        assert!(report
+            .issues
+            .iter()
+            .all(|issue| issue.reason == FailureReason::InvalidName));
+        let store = RunStore::open(&dir.path("runs"), &summary.id).unwrap();
+        let rows: Vec<ManifestEntry> = store.manifest().unwrap().map(|row| row.unwrap()).collect();
+        let blocked: Vec<_> = rows.iter().filter(|row| row.blocked.is_some()).collect();
+        assert_eq!(blocked.len(), 2);
+        assert!(blocked
+            .iter()
+            .all(|row| row.blocked == Some(FailureReason::InvalidName)));
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.relative_path.ends_with("inside.txt")),
+            "the folder with the odd name is not entered"
+        );
+
+        let summary = crate::run::run_copy(
+            &dir.path("runs"),
+            &summary.id,
+            None,
+            &CancelToken::default(),
+            &mut NullSink,
+        )
+        .unwrap();
+        assert_eq!((summary.totals.copied, summary.totals.not_copied), (1, 2));
+        assert!(destination.join("ok.txt").is_file());
+        let copied: Vec<_> = fs::read_dir(&destination).unwrap().collect();
+        assert_eq!(copied.len(), 1, "nothing was made under a rewritten name");
     }
 
     #[test]
