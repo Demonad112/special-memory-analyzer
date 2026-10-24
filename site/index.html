@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1"
+    />
+    <title>Deep Server Analyzer</title>
+    <meta
+      name="description"
+      content="Deep Server Analyzer is a Windows 10/11 desktop app for comparing, copying and cleaning up folders and disks. Download the latest build, learn the features, and verify the installer."
+    />
+    <meta
+      name="theme-color"
+      content="#005fb8"
+    />
+    <link
+      rel="icon"
+      href="assets/icon.png"
+      type="image/png"
+    />
+    <link
+      rel="stylesheet"
+      href="assets/site.css"
+    />
+    <script>
+      try {
+        var t = localStorage.getItem('dsa-theme')
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t)
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <a
+      class="skip"
+      href="#main"
+      >Skip to content</a
+    >
+
+    <header class="nav">
+      <div class="wrap">
+        <a
+          class="brand"
+          href="./"
+          ><img
+            src="assets/icon.png"
+            alt=""
+          /><span>Deep Server Analyzer</span></a
+        >
+        <nav
+          class="links"
+          aria-label="Main"
+        >
+          <a
+            href="./"
+            aria-current="page"
+            >Home</a
+          >
+          <a
+            href="#features"
+            class="hide-sm"
+            >Features</a
+          >
+          <a href="how-to.html">How-To</a>
+          <a href="faq.html">FAQ</a>
+          <a
+            href="https://github.com/Demonad112/special-memory-analyzer"
+            class="hide-sm"
+            >GitHub</a
+          >
+        </nav>
+        <button
+          class="icon-btn"
+          id="theme-toggle"
+          type="button"
+          aria-label="Switch light and dark theme"
+          title="Switch theme"
+        >
+          ◐
+        </button>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- HERO + DOWNLOAD -->
+      <section
+        class="hero"
+        id="download"
+      >
+        <div class="wrap hero-grid">
+          <div>
+            <span class="eyebrow">Windows 10 / 11 · Server 2016+</span>
+            <h1>Check, copy and clean up folders and disks.</h1>
+            <p class="lead">
+              Compare two folders, record a copy with a report of every file that did not make it,
+              and see what fills a drive before you free space safely.
+            </p>
+            <div class="cta-row">
+              <a
+                class="btn primary"
+                href="#get"
+                >Download latest build</a
+              >
+              <a
+                class="btn"
+                href="how-to.html"
+                >How to use it</a
+              >
+            </div>
+            <p class="fine">
+              Free and open source (Apache-2.0). No network code in the app and no auto-update.
+            </p>
+          </div>
+
+          <div
+            class="card dl"
+            id="get"
+            data-download
+            data-state="loading"
+          >
+            <div class="dl-head">
+              <h2>Latest build</h2>
+              <span class="chip ok">Stable release</span>
+            </div>
+            <div
+              class="dl-version"
+              data-dl-version
+            >
+              …
+            </div>
+            <div
+              class="fine"
+              data-dl-meta
+            >
+              Reading the latest release…
+            </div>
+            <ul
+              class="dl-list"
+              data-dl-list
+            >
+              <li>
+                <span class="name">Installer, USB kit and checksums</span>
+                <a
+                  class="btn sm primary"
+                  href="https://github.com/Demonad112/special-memory-analyzer/releases/latest"
+                  >Open latest release</a
+                >
+              </li>
+            </ul>
+            <div
+              class="thumb"
+              data-dl-thumb
+              hidden
+            >
+              Certificate thumbprint (SHA-1) for this release:
+              <code></code>
+            </div>
+            <p
+              class="fine"
+              style="margin-top: 12px"
+            >
+              Windows will warn that the publisher is unknown.
+              <a href="#verify">Verify your download</a> first.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- TOOLS -->
+      <section
+        class="section"
+        id="tools"
+      >
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Three tools, one app</h2>
+            <p>Each tool does one job and produces a report you can hand to a client.</p>
+          </div>
+
+          <div class="grid c3">
+            <div class="card">
+              <div
+                class="ico"
+                style="--c: var(--ft-document)"
+              >
+                <svg viewBox="0 0 24 24"><path d="M16 3h5v5M21 3l-7 7M8 21H3v-5M3 21l7-7" /></svg>
+              </div>
+              <h3>Compare</h3>
+              <p>
+                Pick a source and a destination and compare them by size. See what is only on one
+                side, what differs and what matches. Optionally compare contents by hash.
+              </p>
+              <span class="chip">Compare &amp; Record</span>
+            </div>
+            <div class="card">
+              <div
+                class="ico"
+                style="--c: var(--ft-image)"
+              >
+                <svg viewBox="0 0 24 24">
+                  <rect
+                    x="9"
+                    y="9"
+                    width="12"
+                    height="12"
+                    rx="2"
+                  />
+                  <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" />
+                </svg>
+              </div>
+              <h3>Record</h3>
+              <p>
+                Copy with live progress and verification, or watch another program copy. Every
+                missed or failed file is listed in red with the reason, and a run can be retried.
+              </p>
+              <span class="chip">Compare &amp; Record</span>
+            </div>
+            <div class="card">
+              <div
+                class="ico"
+                style="--c: var(--ft-archive)"
+              >
+                <svg viewBox="0 0 24 24">
+                  <path d="M21 12a9 9 0 1 1-9-9v9z" />
+                  <path d="M15 3a9 9 0 0 1 6 6h-6z" />
+                </svg>
+              </div>
+              <h3>Disk Cleanup</h3>
+              <p>
+                A disk space analyzer with a treemap, biggest folders and files, file types and
+                quick cleanups. Deletes go to the Recycle Bin and are logged.
+              </p>
+              <span class="chip">Disk Cleanup</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREENS -->
+      <section
+        class="section alt"
+        id="screens"
+      >
+        <div class="wrap">
+          <div class="section-head">
+            <h2>What it looks like</h2>
+            <p>
+              Windows 11 styling with light and dark themes. The drawings below are illustrations of
+              the real screens, not screenshots.
+            </p>
+          </div>
+
+          <div
+            class="split"
+            style="margin-bottom: 40px"
+          >
+            <div>
+              <h3>Compare, then copy only what is missing</h3>
+              <ul class="ticks">
+                <li>Source and destination side by side, with a swap button.</li>
+                <li>Filter results to All, Differences or Missing.</li>
+                <li>
+                  <strong>Copy every missing file</strong> turns the result into a record in one
+                  click.
+                </li>
+                <li>Online-only OneDrive files are flagged and never read.</li>
+              </ul>
+            </div>
+            <div class="mock">
+              <span class="mock-tag">Illustration</span>
+              <div
+                class="win"
+                role="img"
+                aria-label="Illustration of the Compare screen with a table of files that are missing or different"
+              >
+                <div class="rail">
+                  <div class="app">
+                    <img
+                      src="assets/icon.png"
+                      alt=""
+                    />Deep Server Analyzer
+                  </div>
+                  <span>Home</span><span class="on">Compare &amp; Record</span
+                  ><span>Disk Cleanup</span><span>Reports</span>
+                  <span class="end">Settings</span>
+                </div>
+                <div class="pane">
+                  <h4>Compare &amp; Record</h4>
+                  <div class="row">
+                    <div class="field"><b>Source</b>D:\Projects\Client A</div>
+                    <div class="field"><b>Destination</b>\\NAS01\backup\Client A</div>
+                  </div>
+                  <div
+                    class="row"
+                    style="margin-top: 8px"
+                  >
+                    <span class="mbtn">Compare</span><span class="mbtn ghost">All</span
+                    ><span class="mbtn ghost">Differences</span
+                    ><span class="mbtn ghost">Missing</span>
+                  </div>
+                  <table>
+                    <tr>
+                      <th>Name</th>
+                      <th>Source</th>
+                      <th>Destination</th>
+                    </tr>
+                    <tr>
+                      <td>Invoices\2026-09.pdf</td>
+                      <td class="num">412 KB</td>
+                      <td class="num">412 KB</td>
+                    </tr>
+                    <tr class="warn">
+                      <td>Design\mockup.psd</td>
+                      <td class="num">86.2 MB</td>
+                      <td class="num">71.0 MB</td>
+                    </tr>
+                    <tr class="warn">
+                      <td>Photos\site-visit.zip</td>
+                      <td class="num">1.4 GB</td>
+                      <td class="num">Missing</td>
+                    </tr>
+                    <tr class="warn">
+                      <td>notes.txt</td>
+                      <td class="num">3 KB</td>
+                      <td class="num">Missing</td>
+                    </tr>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div
+            class="split rev"
+            style="margin-bottom: 40px"
+          >
+            <div>
+              <h3>A copy report that names every miss</h3>
+              <ul class="ticks">
+                <li>
+                  <strong>Watch</strong> checks files another program copies.
+                  <strong>Copy for me</strong> copies for you.
+                </li>
+                <li>
+                  Files in use are retried; copies are verified before they replace the old file.
+                </li>
+                <li>
+                  A cancelled or crashed run shows <em>Cancelled</em>, lists what it never reached,
+                  and can be retried.
+                </li>
+              </ul>
+            </div>
+            <div class="mock">
+              <span class="mock-tag">Illustration</span>
+              <div
+                class="win solo"
+                role="img"
+                aria-label="Illustration of a record report with copied, size, speed and not-copied counters and a red list of files that failed"
+              >
+                <div class="pane">
+                  <h4>Record a copy</h4>
+                  <div class="stats">
+                    <div class="stat"><b>12,408</b><span>Files</span></div>
+                    <div class="stat"><b>38.6 GB</b><span>Size</span></div>
+                    <div class="stat"><b>112 MB/s</b><span>Speed</span></div>
+                    <div class="stat bad"><b>3</b><span>Not copied</span></div>
+                  </div>
+                  <div class="bar"><i style="width: 86%"></i></div>
+                  <table>
+                    <tr>
+                      <th>Not copied</th>
+                      <th>Reason</th>
+                    </tr>
+                    <tr class="bad">
+                      <td>Mail\archive.pst</td>
+                      <td>In use by another program</td>
+                    </tr>
+                    <tr class="bad">
+                      <td>Scans\contract&nbsp;final?.pdf</td>
+                      <td>Invalid file name</td>
+                    </tr>
+                    <tr class="bad">
+                      <td>Cloud\Q3 report.xlsx</td>
+                      <td>Online-only, not downloaded</td>
+                    </tr>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="split">
+            <div>
+              <h3>See what fills the disk</h3>
+              <ul class="ticks">
+                <li>Treemap, largest files and file types for a whole drive or one folder.</li>
+                <li>
+                  Toggle <em>Size on disk</em> (what deleting frees) or <em>Size</em> (what Explorer
+                  shows).
+                </li>
+                <li>Right-click for Show in Explorer, Copy path or Move to Recycle Bin.</li>
+                <li><strong>Restore last cleanup</strong> undoes the last bulk run.</li>
+              </ul>
+            </div>
+            <div class="mock">
+              <span class="mock-tag">Illustration</span>
+              <div
+                class="win solo"
+                role="img"
+                aria-label="Illustration of the Disk Cleanup treemap coloured by file type"
+              >
+                <div class="pane">
+                  <h4>Disk Cleanup · C:</h4>
+                  <div class="row">
+                    <span class="chip">Scanned 412 GB</span><span class="chip">Free 88 GB</span
+                    ><span class="chip ok">Scan 41 s</span>
+                  </div>
+                  <div
+                    class="tm"
+                    aria-hidden="true"
+                  >
+                    <div
+                      class="a"
+                      style="--c: var(--ft-folder)"
+                    >
+                      Users<small>186 GB</small>
+                    </div>
+                    <div style="--c: var(--ft-video)">Videos<small>64 GB</small></div>
+                    <div style="--c: var(--ft-program)">Program Files<small>48 GB</small></div>
+                    <div style="--c: var(--ft-archive)">Backups<small>31 GB</small></div>
+                    <div
+                      class="e"
+                      style="--c: var(--ft-document)"
+                    >
+                      Documents<small>22 GB</small>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- FEATURES -->
+      <section
+        class="section"
+        id="features"
+      >
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Features</h2>
+            <p>
+              Built for people who copy and clean other people's servers and need proof of what
+              happened.
+            </p>
+          </div>
+          <div class="grid c4">
+            <div class="card">
+              <h3>Size and hash compare</h3>
+              <p>
+                Fast size compare by default. Tick the option to also compare contents when sizes
+                match.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Watch or Copy for me</h3>
+              <p>
+                Check files another tool copies (Explorer, robocopy, a backup agent), or let the app
+                copy and verify.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Keeps the details</h3>
+              <p>
+                Choose to keep dates, attributes, permissions, owner, audit rules and alternate data
+                streams.
+              </p>
+            </div>
+            <div class="card">
+              <h3>If it already exists</h3>
+              <p>
+                Leave it and list it, replace if newer, replace, or keep both as
+                <code>name (2).ext</code>.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Network-friendly</h3>
+              <p>
+                Dropped SMB connections are retried, and files in use are retried before being
+                reported.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Client-ready reports</h3>
+              <p>
+                Export a standalone HTML page or a CSV for Excel, with your company name and logo.
+                Print to PDF from the browser.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Recycle Bin first</h3>
+              <p>
+                Deletes go to the Recycle Bin by default. Permanent and big runs need administrator
+                and confirmation.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Portable option</h3>
+              <p>
+                Drop a <code>portable.txt</code> beside the exe to keep records, reports and logs in
+                a <code>Data</code> folder.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SAFETY -->
+      <section
+        class="section alt"
+        id="safety"
+      >
+        <div class="wrap split">
+          <div>
+            <h2>Careful by design</h2>
+            <p>
+              Cleanup tools get trusted with other people's data. These guardrails are built in.
+            </p>
+            <ul class="ticks">
+              <li>
+                Every delete goes through one pipeline and is written to
+                <code>Logs\deletions.jsonl</code>.
+              </li>
+              <li>
+                A never-delete list is checked after resolving 8.3 names,
+                <code>\\localhost\c$</code> paths and <code>subst</code> drives.
+              </li>
+              <li>Folder walks never follow symlinks, junctions or mount points.</li>
+              <li>Online-only OneDrive files are flagged and never opened, hashed or read.</li>
+              <li>
+                Saved files are written atomically, and exported HTML is escaped with a content
+                security policy.
+              </li>
+              <li>The app closes after inactivity (30 minutes by default) and warns first.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Requirements</h3>
+            <table class="tbl">
+              <tr>
+                <th>System</th>
+                <td>Windows 10 / 11, or Windows Server 2016+ with Desktop Experience. 64-bit.</td>
+              </tr>
+              <tr>
+                <th>Runtime</th>
+                <td>WebView2. The installer fetches it if it is missing.</td>
+              </tr>
+              <tr>
+                <th>Rights</th>
+                <td>
+                  Administrator for the installer, multi-item deletes, system quick cleanups, and
+                  keeping owner or audit rules.
+                </td>
+              </tr>
+              <tr>
+                <th>Data</th>
+                <td><code>%LOCALAPPDATA%\Deep Server Analyzer</code> (Records, Reports, Logs).</td>
+              </tr>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- INSTALL -->
+      <section
+        class="section"
+        id="install"
+      >
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Two ways to install</h2>
+            <p>Both come from the same release. Pick the one that fits the machine.</p>
+          </div>
+          <div class="grid c2">
+            <div class="card">
+              <span class="chip ok">Workstations</span>
+              <h3 style="margin-top: 10px">Windows installer</h3>
+              <p>
+                Run <code>…_x64-setup.exe</code>, accept the prompt. Installs per machine to
+                <code>C:\Program Files\Deep Server Analyzer</code>.
+              </p>
+              <p>Silent: <code>"Deep Server Analyzer_&lt;version&gt;_x64-setup.exe" /S</code></p>
+              <a href="how-to.html#install">Step by step →</a>
+            </div>
+            <div class="card">
+              <span class="chip warn">Servers</span>
+              <h3 style="margin-top: 10px">USB kit</h3>
+              <p>
+                Carry the zip on a USB stick. The kit checks the certificate, trusts it for a
+                limited time (8 hours by default), installs, and removes trust automatically.
+              </p>
+              <a href="how-to.html#usb-kit">Step by step →</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VERIFY -->
+      <section
+        class="section alt"
+        id="verify"
+      >
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Verify before you run</h2>
+            <p>
+              Release builds are signed with a self-signed certificate created for each release, so
+              Windows SmartScreen still warns. Checking the thumbprint and hash is how you know the
+              file is the real one.
+            </p>
+          </div>
+          <div class="grid c2">
+            <div class="card">
+              <h3>1. Match the thumbprint</h3>
+              <p>
+                The full SHA-1 thumbprint is shown in the download box above and in the release
+                notes. In the USB kit you paste it and the Install button stays disabled until it
+                matches.
+              </p>
+              <h3>2. Check the hash</h3>
+              <pre><code>Get-FileHash .\Deep-Server-Analyzer-usb-kit.zip -Algorithm SHA256</code></pre>
+              <p>Compare with <code>SHA256SUMS-release.txt</code> from the same release.</p>
+            </div>
+            <div class="card">
+              <h3>3. Check build provenance</h3>
+              <p>With the GitHub CLI installed:</p>
+              <pre><code>gh attestation verify &lt;file&gt; --repo Demonad112/special-memory-analyzer</code></pre>
+              <div class="note warn">
+                <strong>Browser warning?</strong> Edge or Chrome may say the file “isn't commonly
+                downloaded”. Choose <em>Keep</em>, then <em>Keep anyway</em>, then verify as above.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="wrap">
+        <span>Deep Server Analyzer · Apache-2.0</span>
+        <nav aria-label="Footer">
+          <a href="how-to.html">How-To</a>
+          <a href="faq.html">FAQ</a>
+          <a href="https://github.com/Demonad112/special-memory-analyzer/releases">All releases</a>
+          <a href="https://github.com/Demonad112/special-memory-analyzer/blob/main/CHANGELOG.md"
+            >Changelog</a
+          >
+          <a href="https://github.com/Demonad112/special-memory-analyzer">Source</a>
+        </nav>
+      </div>
+    </footer>
+    <script src="assets/site.js"></script>
+  </body>
+</html>

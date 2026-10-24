@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1"
+    />
+    <title>How-To · Deep Server Analyzer</title>
+    <meta
+      name="description"
+      content="Step-by-step guides for Deep Server Analyzer: install, USB kit for servers, compare folders, record a copy, clean up a disk, export reports and settings."
+    />
+    <meta
+      name="theme-color"
+      content="#005fb8"
+    />
+    <link
+      rel="icon"
+      href="assets/icon.png"
+      type="image/png"
+    />
+    <link
+      rel="stylesheet"
+      href="assets/site.css"
+    />
+    <script>
+      try {
+        var t = localStorage.getItem('dsa-theme')
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t)
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <a
+      class="skip"
+      href="#main"
+      >Skip to content</a
+    >
+
+    <header class="nav">
+      <div class="wrap">
+        <a
+          class="brand"
+          href="./"
+          ><img
+            src="assets/icon.png"
+            alt=""
+          /><span>Deep Server Analyzer</span></a
+        >
+        <nav
+          class="links"
+          aria-label="Main"
+        >
+          <a href="./">Home</a>
+          <a
+            href="./#features"
+            class="hide-sm"
+            >Features</a
+          >
+          <a
+            href="how-to.html"
+            aria-current="page"
+            >How-To</a
+          >
+          <a href="faq.html">FAQ</a>
+          <a
+            href="https://github.com/Demonad112/special-memory-analyzer"
+            class="hide-sm"
+            >GitHub</a
+          >
+        </nav>
+        <button
+          class="icon-btn"
+          id="theme-toggle"
+          type="button"
+          aria-label="Switch light and dark theme"
+          title="Switch theme"
+        >
+          ◐
+        </button>
+      </div>
+    </header>
+
+    <div class="page-head">
+      <div class="wrap">
+        <h1>How-To</h1>
+        <p>Practical steps for each job. Button and field names match the app.</p>
+      </div>
+    </div>
+
+    <main
+      id="main"
+      class="wrap doc"
+    >
+      <aside
+        class="toc"
+        aria-label="On this page"
+      >
+        <div class="toc-inner">
+          <strong>Get started</strong>
+          <a href="#install">Install</a>
+          <a href="#usb-kit">Install on a server (USB kit)</a>
+          <strong style="margin-top: 10px">Tools</strong>
+          <a href="#compare">Compare two folders</a>
+          <a href="#record">Record a copy</a>
+          <a href="#retry">Retry missed files</a>
+          <a href="#cleanup">Clean up a disk</a>
+          <a href="#restore">Restore a cleanup</a>
+          <strong style="margin-top: 10px">Output &amp; setup</strong>
+          <a href="#reports">Export a report</a>
+          <a href="#settings">Settings</a>
+          <a href="#portable">Portable mode</a>
+          <a href="#uninstall">Uninstall</a>
+        </div>
+      </aside>
+
+      <article>
+        <section id="install">
+          <h2>Install</h2>
+          <p class="time">About 2 minutes · needs administrator</p>
+          <ol class="steps">
+            <li>
+              <p>
+                Open the
+                <a href="https://github.com/Demonad112/special-memory-analyzer/releases/latest"
+                  >latest release</a
+                >
+                and download <code>…_x64-setup.exe</code>, plus <code>SHA256SUMS-release.txt</code>.
+              </p>
+            </li>
+            <li>
+              <p>Check the hash and compare it with the sums file:</p>
+              <pre><code>Get-FileHash ".\Deep Server Analyzer_&lt;version&gt;_x64-setup.exe" -Algorithm SHA256</code></pre>
+            </li>
+            <li>
+              <p>
+                Run the installer. If SmartScreen shows <em>Windows protected your PC</em>, choose
+                <strong>More info</strong>, then <strong>Run anyway</strong>. The warning appears
+                because the signing certificate is self-signed.
+              </p>
+            </li>
+            <li>
+              <p>
+                Accept the administrator prompt. The app installs for all users into
+                <code>C:\Program Files\Deep Server Analyzer</code>.
+              </p>
+            </li>
+          </ol>
+          <h3>Silent install (scripts, RMM)</h3>
+          <pre><code>"Deep Server Analyzer_&lt;version&gt;_x64-setup.exe" /S</code></pre>
+          <div class="note">
+            The installer downloads the WebView2 runtime if it is not already on the PC. Edge or
+            Chrome may say the file “isn't commonly downloaded”: choose <strong>Keep</strong>, then
+            <strong>Keep anyway</strong>.
+          </div>
+        </section>
+
+        <section id="usb-kit">
+          <h2>Install on a server with the USB kit</h2>
+          <p class="time">About 5 minutes · needs administrator</p>
+          <p>
+            Servers often block unknown publishers. The kit trusts the release certificate for a
+            limited time, installs the app, and removes trust again on a schedule.
+          </p>
+          <ol class="steps">
+            <li>
+              <p>
+                On a PC with internet, download <code>Deep-Server-Analyzer-usb-kit.zip</code> from
+                the release and note the <strong>Thumbprint (SHA-1)</strong> from the release notes.
+                Copy the zip to the server on a USB stick.
+              </p>
+            </li>
+            <li>
+              <p>
+                On the server, right-click the zip → <strong>Properties</strong> →
+                <strong>Unblock</strong>, then extract <em>the whole zip</em> to a folder. Do not
+                run it from inside the zip.
+              </p>
+            </li>
+            <li>
+              <p>
+                Double-click <code>DSA-Installer.cmd</code> and accept the administrator prompt. If
+                SmartScreen appears, choose <strong>More info → Run anyway</strong>.
+              </p>
+            </li>
+            <li>
+              <p>
+                Paste the <strong>full thumbprint</strong> from the release page. The
+                <strong>Install</strong> button stays disabled until it matches.
+              </p>
+            </li>
+            <li>
+              <p>
+                Choose how long trust lasts: 1, 4, <strong>8 (default)</strong>, 12 or 24 hours, a
+                custom time (15 minutes to 72 hours), or remove it right after install.
+              </p>
+            </li>
+            <li>
+              <p>
+                Click the blue <strong>Install</strong> button. The kit verifies itself, trusts the
+                certificate, schedules removal and runs the silent setup. The window shows
+                <em>Installed</em> and a countdown.
+              </p>
+            </li>
+            <li>
+              <p>
+                To finish early, click the red <strong>✕ Remove trust</strong>. An OK/FAIL checklist
+                runs and the window turns green with <em>Trust removed and verified</em>. Use
+                <strong>▲ +1 h</strong> to extend (maximum 72 hours from now).
+              </p>
+            </li>
+          </ol>
+          <div class="note warn">
+            <p>
+              <strong>While trust is active it is machine-wide.</strong> Only run the kit on servers
+              you are authorised to change. AppLocker or WDAC can block it, and endpoint protection
+              may flag the certificate change or the scheduled task <code>DSA-TrustExpiry</code>.
+              Ask the security team first if in doubt.
+            </p>
+          </div>
+          <h3>Unattended</h3>
+          <pre><code>Install-DSA.ps1 -NoPrompt -ExpectedThumbprint &lt;full thumbprint&gt; -TrustHours 8</code></pre>
+          <p>
+            Other switches: <code>-RemoveAfterInstall</code>, <code>-SkipInstall</code>. Details are
+            in the
+            <a
+              href="https://github.com/Demonad112/special-memory-analyzer/blob/main/docs/usb-install.md"
+              >USB install notes</a
+            >.
+          </p>
+          <p>
+            Not sure whether anything is still trusted? Run <code>Remove-Trust.cmd</code>. It is
+            safe when nothing is trusted. Log: <code>C:\ProgramData\DSA\trust.log</code>.
+          </p>
+        </section>
+
+        <section id="compare">
+          <h2>Compare two folders</h2>
+          <p class="time">Left nav → Compare &amp; Record</p>
+          <ol class="steps">
+            <li>
+              <p>
+                Choose the <strong>Source</strong> and the <strong>Destination</strong>. The swap
+                button flips them. Recent pairs on Home reopen the same comparison.
+              </p>
+            </li>
+            <li>
+              <p>Optional boxes:</p>
+              <ul>
+                <li>
+                  <strong>Also compare file contents</strong> is slower because every file is read
+                  twice.
+                </li>
+                <li>
+                  <strong>Ignore system and temp files</strong> skips <code>Thumbs.db</code>,
+                  <code>desktop.ini</code>, <code>~$</code> Office lock files and <code>.tmp</code>.
+                </li>
+              </ul>
+            </li>
+            <li>
+              <p>Start the compare. <strong>Cancel</strong> (<kbd>Esc</kbd>) stops it.</p>
+            </li>
+            <li>
+              <p>
+                Use the chips <strong>All</strong>, <strong>Differences</strong> and
+                <strong>Missing</strong> to focus the list. Folders that cannot be read, and
+                online-only cloud files, are shown as notices.
+              </p>
+            </li>
+            <li>
+              <p>
+                Compare again after fixing things, or open the saved report in the browser to print
+                or save as PDF.
+              </p>
+            </li>
+          </ol>
+        </section>
+
+        <section id="record">
+          <h2>Record a copy</h2>
+          <p class="time">
+            From a compare result, click <strong>Copy every missing file</strong>, or open Record
+            directly
+          </p>
+          <ol class="steps">
+            <li>
+              <p>Pick a mode:</p>
+              <ul>
+                <li>
+                  <strong>Watch</strong>: another program does the copy (Explorer, robocopy, a
+                  backup tool) and the app checks every file that arrives. Button:
+                  <strong>Start watching</strong>.
+                </li>
+                <li>
+                  <strong>Copy for me</strong>: the app copies, retries files in use and verifies
+                  each copy. Button: <strong>Start copy</strong>.
+                </li>
+              </ul>
+            </li>
+            <li>
+              <p>If a file already exists at the destination, choose one:</p>
+              <ul>
+                <li><strong>Leave it and list the file as not copied</strong> (default)</li>
+                <li><strong>Replace it only if the source is newer</strong></li>
+                <li><strong>Replace it</strong></li>
+                <li><strong>Keep both</strong> (saves the source as <code>name (2).ext</code>)</li>
+              </ul>
+            </li>
+            <li>
+              <p>
+                Tick what to <strong>Keep</strong>: dates, attributes, permissions, owner
+                (administrator), audit rules (administrator), alternate data streams.
+              </p>
+            </li>
+            <li>
+              <p>
+                Leave <strong>Download OneDrive online-only files</strong> off unless you want them
+                pulled down. Off means they are listed as not copied.
+              </p>
+            </li>
+            <li>
+              <p>
+                Watch the live counters: Files, Size, Speed,
+                <span class="tag-bad">Not copied</span> and the current file.
+              </p>
+            </li>
+            <li>
+              <p>
+                In Watch mode, press <strong>Finish and check</strong> when the other copy is done.
+                The report lists every file that did not make it, in red, with the reason.
+              </p>
+            </li>
+          </ol>
+          <div class="note">
+            A scan and an elevated (administrator) record cannot run at the same time. The second
+            one is refused with a message. Finish or cancel the first.
+          </div>
+        </section>
+
+        <section id="retry">
+          <h2>Retry missed files</h2>
+          <ol class="steps">
+            <li>
+              <p>
+                Open the record report from <strong>Recent records</strong> or
+                <strong>Reports</strong>.
+              </p>
+            </li>
+            <li>
+              <p>
+                Fix the cause shown beside each red file: close the program that holds it, rename an
+                invalid name, or reconnect the share.
+              </p>
+            </li>
+            <li>
+              <p>
+                Choose <strong>Retry</strong>. Only the files that did not make it are copied again.
+                A run that was cancelled or killed shows <em>Cancelled</em>, and Retry covers the
+                files it never reached.
+              </p>
+            </li>
+          </ol>
+        </section>
+
+        <section id="cleanup">
+          <h2>Clean up a disk</h2>
+          <p class="time">Left nav → Disk Cleanup</p>
+          <ol class="steps">
+            <li>
+              <p>
+                Pick a tile under <strong>Drives on this PC</strong>, or type a path under
+                <strong>Or scan one folder</strong>. <kbd>Esc</kbd> cancels a scan.
+              </p>
+            </li>
+            <li>
+              <p>
+                Read the treemap, <strong>Largest files</strong> and <strong>File types</strong>.
+                Open a folder to drill in; <kbd>Backspace</kbd> goes up one folder.
+              </p>
+            </li>
+            <li>
+              <p>
+                Switch between <strong>Size on disk</strong> (what deleting frees) and
+                <strong>Size</strong> (what Explorer shows).
+              </p>
+            </li>
+            <li>
+              <p>
+                Right-click an item: <strong>Show in Explorer</strong>,
+                <strong>Copy path</strong> or <strong>Move to Recycle Bin</strong>. Shift+Delete
+                deletes permanently.
+              </p>
+            </li>
+            <li>
+              <p>
+                Try <strong>Quick cleanups</strong> for common junk. System ones need administrator
+                and Windows asks first.
+              </p>
+            </li>
+            <li>
+              <p>
+                Bulk and permanent deletes show a confirmation such as
+                <em>This is a big cleanup</em>. Read it before confirming.
+              </p>
+            </li>
+          </ol>
+          <div class="note danger">
+            The app never deletes its own data folder, and a built-in never-delete list protects
+            system locations. Every delete is logged to <code>Logs\deletions.jsonl</code>.
+          </div>
+        </section>
+
+        <section id="restore">
+          <h2>Restore a cleanup</h2>
+          <ol class="steps">
+            <li>
+              <p>In Disk Cleanup choose <strong>Restore last cleanup</strong>.</p>
+            </li>
+            <li>
+              <p>
+                Confirm. Items sent to the Recycle Bin by the last bulk run go back to where they
+                were. Only the last bulk run is restored. Permanently deleted items cannot be
+                restored.
+              </p>
+            </li>
+          </ol>
+        </section>
+
+        <section id="reports">
+          <h2>Export a report</h2>
+          <p class="time">Left nav → Reports</p>
+          <ol class="steps">
+            <li>
+              <p>
+                Filter by <strong>All</strong>, <strong>Compare</strong>, <strong>Record</strong>,
+                <strong>Disk usage</strong> or <strong>Cleanup</strong>, or search by client, ticket
+                or folder.
+              </p>
+            </li>
+            <li>
+              <p>Use the row actions:</p>
+              <ul>
+                <li><strong>Open in browser</strong>: print or save as PDF from there.</li>
+                <li><strong>Export as HTML</strong>: one standalone page for the client.</li>
+                <li><strong>Export as CSV</strong>: for Excel.</li>
+              </ul>
+            </li>
+            <li>
+              <p>
+                Put your name on reports in <a href="#settings">Settings</a> (company name and
+                logo).
+              </p>
+            </li>
+          </ol>
+        </section>
+
+        <section id="settings">
+          <h2>Settings</h2>
+          <div class="scroll-x">
+            <table class="tbl">
+              <tr>
+                <th>Option</th>
+                <th>What it does</th>
+              </tr>
+              <tr>
+                <td>App theme</td>
+                <td>Light, Dark, or Use Windows setting.</td>
+              </tr>
+              <tr>
+                <td>Company name on reports</td>
+                <td>Shown on exported reports.</td>
+              </tr>
+              <tr>
+                <td>Company logo</td>
+                <td>Choose… or Change… to set the logo on reports.</td>
+              </tr>
+              <tr>
+                <td>Include job details in CSV</td>
+                <td>Adds job information to CSV exports.</td>
+              </tr>
+              <tr>
+                <td>Keep saved reports</td>
+                <td>Keep for ever (default), 30 days, 90 days or 1 year.</td>
+              </tr>
+              <tr>
+                <td>Close after inactivity</td>
+                <td>
+                  Off, or a delay; the default is 30 minutes. A warning appears first with a
+                  stay-open option.
+                </td>
+              </tr>
+            </table>
+          </div>
+        </section>
+
+        <section id="portable">
+          <h2>Portable mode and data folders</h2>
+          <ul>
+            <li>
+              Default data: <code>%LOCALAPPDATA%\Deep Server Analyzer\</code> with
+              <code>Records</code>, <code>Reports</code> and <code>Logs</code>.
+            </li>
+            <li>
+              Portable: create a file named <code>portable.txt</code> next to the exe. Data then
+              lives in a <code>Data</code> folder beside it. Delete the file to go back.
+            </li>
+            <li>
+              Override locations with <code>DEEP_SERVER_ANALYZER_RECORDS_DIR</code>,
+              <code>DEEP_SERVER_ANALYZER_REPORTS_DIR</code> and
+              <code>DEEP_SERVER_ANALYZER_LOGS_DIR</code>.
+            </li>
+            <li>
+              Theme, recent folders and company name stay in the web view on that PC, not in
+              <code>Data</code>.
+            </li>
+          </ul>
+        </section>
+
+        <section id="uninstall">
+          <h2>Uninstall</h2>
+          <ol class="steps">
+            <li>
+              <p>
+                Windows <strong>Settings → Apps → Installed apps</strong> → Deep Server Analyzer →
+                Uninstall. Or run silently:
+              </p>
+              <pre><code>"C:\Program Files\Deep Server Analyzer\uninstall.exe" /S</code></pre>
+            </li>
+            <li>
+              <p>
+                If you used the USB kit, make sure trust is gone (run
+                <code>Remove-Trust.cmd</code>), then delete the kit folder and, optionally,
+                <code>C:\ProgramData\DSA</code>.
+              </p>
+            </li>
+            <li><p>Saved reports stay in your data folder until you delete them.</p></li>
+          </ol>
+          <p>Stuck? See the <a href="faq.html">FAQ</a>.</p>
+        </section>
+      </article>
+    </main>
+
+    <footer class="foot">
+      <div class="wrap">
+        <span>Deep Server Analyzer · Apache-2.0</span>
+        <nav aria-label="Footer">
+          <a href="./">Home</a>
+          <a href="faq.html">FAQ</a>
+          <a href="https://github.com/Demonad112/special-memory-analyzer/releases">All releases</a>
+          <a href="https://github.com/Demonad112/special-memory-analyzer">Source</a>
+        </nav>
+      </div>
+    </footer>
+    <script src="assets/site.js"></script>
+  </body>
+</html>
