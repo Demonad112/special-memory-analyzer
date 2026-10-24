@@ -427,24 +427,52 @@ fn run_logged(
     root: &Path,
     token: Option<&str>,
 ) -> Result<(Vec<ItemResult>, Option<String>), String> {
-    let logs = report_core::logs_root();
+    run_logged_in(
+        targets,
+        Logged {
+            bulk,
+            permanent,
+            elevated,
+            protected: &protected(),
+            logs: &report_core::logs_root(),
+        },
+        root,
+        token,
+    )
+}
+
+/// How a run is done and where it is logged.
+struct Logged<'a> {
+    bulk: bool,
+    permanent: bool,
+    elevated: bool,
+    protected: &'a Protected,
+    logs: &'a Path,
+}
+
+fn run_logged_in(
+    targets: &[Target],
+    how: Logged<'_>,
+    root: &Path,
+    token: Option<&str>,
+) -> Result<(Vec<ItemResult>, Option<String>), String> {
+    let Logged {
+        bulk,
+        permanent,
+        elevated,
+        protected,
+        logs,
+    } = how;
     let run = bulk.then(|| format!("run-{}", transfer_core::now_ms()));
     let user = transfer_core::user_name();
     let mut log_error = None;
-    let results = bulk::run(
-        targets,
-        permanent,
-        &protected(),
-        root,
-        token,
-        &mut |result| {
-            let entry = log_entry(result, permanent, elevated, run.as_deref(), &user);
-            if let Err(err) = log::append(&logs, std::slice::from_ref(&entry)) {
-                log_error
-                    .get_or_insert_with(|| format!("The deletion log could not be written: {err}"));
-            }
-        },
-    )?;
+    let results = bulk::run(targets, permanent, protected, root, token, &mut |result| {
+        let entry = log_entry(result, permanent, elevated, run.as_deref(), &user);
+        if let Err(err) = log::append(logs, std::slice::from_ref(&entry)) {
+            log_error
+                .get_or_insert_with(|| format!("The deletion log could not be written: {err}"));
+        }
+    })?;
     if let Some(message) = &log_error {
         report_core::applog::error(message);
     }
@@ -580,6 +608,14 @@ pub fn cleanup_dupes_groups(
         .collect())
 }
 
+/// The totals of the last duplicate search, as they are after deletes.
+#[tauri::command]
+pub fn cleanup_dupes_summary(
+    state: State<'_, CleanupState>,
+) -> Result<Option<DupesSummary>, String> {
+    Ok(lock(&state.dupes)?.as_ref().map(DupesSummary::of))
+}
+
 /// What "Select all but the oldest in each group" ticks. Nothing is ever ticked unless the user
 /// presses that button.
 #[tauri::command]
@@ -613,18 +649,116 @@ pub struct DeleteManyResult {
 /// `bulk::needs_brake`) also needs the `confirm_token` the dry run issued for it.
 #[tauri::command]
 pub async fn cleanup_delete_many(
-    state: State<'_, CleanupState>,
+    app: AppHandle,
     ids: Vec<NodeId>,
     permanent: bool,
     confirm_token: Option<String>,
 ) -> Result<DeleteManyResult, String> {
     let elevated = cleanup_core::is_elevated();
-    if !elevated && (permanent || ids.len() > 1) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<CleanupState>();
+        delete_ids(
+            &state,
+            &ids,
+            None,
+            Logged {
+                bulk: true,
+                permanent,
+                elevated,
+                protected: &protected(),
+                logs: &report_core::logs_root(),
+            },
+            confirm_token.as_deref(),
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+/// Deletes the duplicates `ids` from the last duplicate search, through the same pipeline as
+/// any bulk delete. Before anything is touched, Rust checks that every group keeps a copy (even
+/// when the webview sends every id), re-hashes the kept copy, and re-checks the size and time
+/// of the others (`dupes::check_delete`).
+#[tauri::command]
+pub async fn cleanup_delete_duplicates(
+    app: AppHandle,
+    ids: Vec<NodeId>,
+    permanent: bool,
+    confirm_token: Option<String>,
+) -> Result<DeleteManyResult, String> {
+    let elevated = cleanup_core::is_elevated();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<CleanupState>();
+        delete_duplicates(
+            &state,
+            &ids,
+            Logged {
+                bulk: true,
+                permanent,
+                elevated,
+                protected: &protected(),
+                logs: &report_core::logs_root(),
+            },
+            confirm_token.as_deref(),
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+fn delete_duplicates(
+    state: &CleanupState,
+    ids: &[NodeId],
+    how: Logged<'_>,
+    token: Option<&str>,
+) -> Result<DeleteManyResult, String> {
+    if !how.elevated && (how.permanent || ids.len() > 1) {
         return Err(NEEDS_ADMIN.into());
     }
-    let (targets, root) = with_tree(&state, |tree| {
-        let protected = protected();
-        let preview = bulk::preview(tree, &protected, &ids);
+    let seq = state.scan_seq.load(Ordering::SeqCst);
+    // The search is copied out so the re-hash below holds no lock.
+    let found = lock(&state.dupes)?.clone().ok_or(NO_DUPES)?;
+    let picked = dupes::check_delete(&found, ids, &CancelToken::new())?;
+    if state.scan_seq.load(Ordering::SeqCst) != seq {
+        return Err(NO_DUPES.into());
+    }
+    let expected: std::collections::HashMap<NodeId, PathBuf> = found
+        .groups
+        .iter()
+        .flat_map(|group| group.members.iter())
+        .map(|member| (member.id, member.path.clone()))
+        .collect();
+    let done = delete_ids(state, &picked, Some(&expected), how, token)?;
+    let gone: std::collections::HashSet<NodeId> = done
+        .results
+        .iter()
+        .filter(|result| matches!(result.outcome, Outcome::Done | Outcome::NotFound))
+        .map(|result| result.id)
+        .collect();
+    let mut slot = lock(&state.dupes)?;
+    if state.scan_seq.load(Ordering::SeqCst) == seq {
+        if let Some(found) = slot.as_mut() {
+            found.forget(&gone);
+        }
+    }
+    Ok(done)
+}
+
+/// The bulk delete behind both commands: dry run, then `bulk::run` with a log line per item,
+/// then the tree and the saved report. With `expected`, every id must still name the path the
+/// caller saw, or nothing is deleted.
+fn delete_ids(
+    state: &CleanupState,
+    ids: &[NodeId],
+    expected: Option<&std::collections::HashMap<NodeId, PathBuf>>,
+    how: Logged<'_>,
+    token: Option<&str>,
+) -> Result<DeleteManyResult, String> {
+    if !how.elevated && (how.permanent || ids.len() > 1) {
+        return Err(NEEDS_ADMIN.into());
+    }
+    let (targets, root) = with_tree(state, |tree| {
+        let preview = bulk::preview(tree, how.protected, ids);
         let targets: Vec<Target> = preview
             .items
             .iter()
@@ -635,25 +769,21 @@ pub async fn cleanup_delete_many(
                 size: item.size,
             })
             .collect();
+        if let Some(expected) = expected {
+            if targets
+                .iter()
+                .any(|target| expected.get(&target.id) != Some(&target.path))
+            {
+                return Err(NO_DUPES.into());
+            }
+        }
         Ok((targets, tree.path(0)))
     })?;
     if targets.is_empty() {
         return Err("Nothing in the selection can be deleted.".into());
     }
-
-    let job_targets = targets.clone();
-    let (results, log_error) = tauri::async_runtime::spawn_blocking(move || {
-        run_logged(
-            &job_targets,
-            true,
-            permanent,
-            elevated,
-            &root,
-            confirm_token.as_deref(),
-        )
-    })
-    .await
-    .map_err(|err| err.to_string())??;
+    let permanent = how.permanent;
+    let (results, log_error) = run_logged_in(&targets, how, &root, token)?;
 
     let (overview, removed) = {
         let mut guard = lock(&state.tree)?;
@@ -1037,5 +1167,159 @@ mod quick_log_tests {
         );
         let installers = quick_log_entry(QuickId::OldInstallers, Path::new("D"), &done, false, "t");
         assert_eq!(installers.method, "recycle");
+    }
+}
+
+#[cfg(test)]
+mod duplicate_delete_tests {
+    use super::*;
+
+    /// A folder under the system temp dir, removed on drop.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            use std::sync::atomic::AtomicUsize;
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "dsa-dupes-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A scanned folder with one group of three equal files, searched as the panel would.
+    fn searched(dir: &Path) -> CleanupState {
+        let bytes: Vec<u8> = (0..200_000_u32).map(|at| (at % 251) as u8).collect();
+        for name in ["a.iso", "b.iso", "c.iso"] {
+            std::fs::write(dir.join(name), &bytes).unwrap();
+        }
+        let tree = scan(dir, &ScanState::default()).unwrap();
+        let found = dupes::find(
+            &tree,
+            64 * 1024,
+            &CancelToken::default(),
+            &dupes::Counters::default(),
+        )
+        .unwrap();
+        assert_eq!(found.groups.len(), 1);
+        let state = CleanupState::default();
+        *state.tree.lock().unwrap() = Some(tree);
+        *state.dupes.lock().unwrap() = Some(found);
+        state
+    }
+
+    fn group_ids(state: &CleanupState) -> Vec<NodeId> {
+        state.dupes.lock().unwrap().as_ref().unwrap().groups[0]
+            .members
+            .iter()
+            .map(|member| member.id)
+            .collect()
+    }
+
+    fn how<'a>(protected: &'a Protected, logs: &'a Path) -> Logged<'a> {
+        // Permanent: the Recycle Bin exists only on Windows.
+        Logged {
+            bulk: true,
+            permanent: true,
+            elevated: true,
+            protected,
+            logs,
+        }
+    }
+
+    #[test]
+    fn a_webview_call_with_every_copy_is_refused_and_touches_nothing() {
+        let (dir, logs) = (TempDir::new(), TempDir::new());
+        let state = searched(&dir.0);
+        let protected = Protected::new(&[], &[], &[]);
+        let every = group_ids(&state);
+
+        let err = delete_duplicates(&state, &every, how(&protected, &logs.0), None)
+            .err()
+            .unwrap();
+        assert!(err.contains("Every copy"), "{err}");
+        for name in ["a.iso", "b.iso", "c.iso"] {
+            assert!(dir.0.join(name).exists(), "{name} was deleted");
+        }
+        assert!(log::read_all(&logs.0).is_empty());
+    }
+
+    #[test]
+    fn each_deleted_duplicate_gets_a_log_line_and_leaves_the_search() {
+        let (dir, logs) = (TempDir::new(), TempDir::new());
+        let state = searched(&dir.0);
+        let protected = Protected::new(&[], &[], &[]);
+        let ids = group_ids(&state);
+
+        let done = delete_duplicates(&state, &ids[1..], how(&protected, &logs.0), None).unwrap();
+        assert_eq!(done.results.len(), 2);
+        assert!(done.results.iter().all(|r| r.outcome == Outcome::Done));
+
+        let lines = log::read_all(&logs.0);
+        let mut logged: Vec<&str> = lines.iter().map(|line| line.path.as_str()).collect();
+        let mut deleted: Vec<&str> = done.results.iter().map(|r| r.path.as_str()).collect();
+        logged.sort_unstable();
+        deleted.sort_unstable();
+        assert_eq!(logged, deleted);
+        assert!(lines
+            .iter()
+            .all(|line| line.result == "done" && line.run.is_some()));
+
+        let kept = state.tree.lock().unwrap().as_ref().unwrap().path(ids[0]);
+        assert!(kept.exists());
+        assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1);
+        // The group is down to one file, so it is no longer a group.
+        assert!(state
+            .dupes
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .groups
+            .is_empty());
+    }
+
+    #[test]
+    fn a_new_scan_makes_old_ids_useless() {
+        let (dir, logs) = (TempDir::new(), TempDir::new());
+        let state = searched(&dir.0);
+        let protected = Protected::new(&[], &[], &[]);
+        let ids = group_ids(&state);
+        // What `cleanup_scan` does to the search before it scans again.
+        {
+            let mut dupes = state.dupes.lock().unwrap();
+            state.scan_seq.fetch_add(1, Ordering::SeqCst);
+            dupes.take();
+        }
+        assert!(delete_duplicates(&state, &ids[1..], how(&protected, &logs.0), None).is_err());
+        assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn several_duplicates_need_administrator() {
+        let (dir, logs) = (TempDir::new(), TempDir::new());
+        let state = searched(&dir.0);
+        let protected = Protected::new(&[], &[], &[]);
+        let ids = group_ids(&state);
+        let not_admin = Logged {
+            elevated: false,
+            permanent: false,
+            ..how(&protected, &logs.0)
+        };
+        let err = delete_duplicates(&state, &ids[1..], not_admin, None)
+            .err()
+            .unwrap();
+        assert_eq!(err, NEEDS_ADMIN);
+        assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 3);
     }
 }

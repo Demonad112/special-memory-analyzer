@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, type Component } from 'vue'
+import DuplicatesPanel from '@/components/DuplicatesPanel.vue'
 import JunkPanel from '@/components/JunkPanel.vue'
 import QuickWins from '@/components/QuickWins.vue'
 
@@ -54,6 +55,11 @@ import {
   sizeMode,
   summarize,
   toggleTier,
+  dupeProgressLine,
+  findDuplicates,
+  groupsWithoutCopy,
+  tickedDisk,
+  type DupeGroup,
   type ItemResult,
   type RestoreResult,
   type JunkGroup,
@@ -647,5 +653,115 @@ describe('restore the last cleanup', () => {
     expect(restoreSentence([item('restored'), item('exists'), item('notInBin')])).toBe(
       '1 of 3 restored; 2 could not be put back.',
     )
+  })
+})
+
+describe('duplicates', () => {
+  const group = (id: number, ids: number[]): DupeGroup => ({
+    id,
+    size: 100,
+    reclaimable: 100 * (ids.length - 1),
+    members: ids.map((member) => ({
+      id: member,
+      name: 'setup.iso',
+      folder: `D:\\copy${String(member)}`,
+      modifiedMs: 1_600_000_000_000 + member,
+      disk: 100,
+    })),
+  })
+
+  afterEach(() => {
+    core.invoke.mockReset()
+    document.body.innerHTML = ''
+  })
+
+  it('flags a group whose every copy is ticked', () => {
+    const groups = [group(0, [1, 2, 3]), group(1, [4, 5])]
+    expect(groupsWithoutCopy(groups, new Set([2, 3, 5]))).toEqual([])
+    expect(groupsWithoutCopy(groups, new Set([1, 2, 3, 5])).map((g) => g.id)).toEqual([0])
+    expect(tickedDisk(groups, new Set([2, 3, 5]))).toBe(300)
+  })
+
+  it('describes each stage of the search', () => {
+    expect(dupeProgressLine(null)).toBe('Starting…')
+    expect(dupeProgressLine({ stage: 'ends', done: 3, total: 10, bytes: 0 })).toBe(
+      'Comparing the start and end of each file: 3 of 10…',
+    )
+    expect(dupeProgressLine({ stage: 'sizes', done: 0, total: 0, bytes: 0 })).toBe(
+      'Listing files of the same size…',
+    )
+  })
+
+  it('streams progress from the search and passes the minimum size', async () => {
+    const seen: string[] = []
+    core.invoke.mockImplementationOnce(() => {
+      core.channels[0]?.onmessage({ stage: 'full', done: 1, total: 2, bytes: 10 })
+      return Promise.resolve({ minSize: 1048576, groups: 0, files: 0, reclaimable: 0 })
+    })
+    await findDuplicates(1048576, (progress) => seen.push(progress.stage))
+    expect(core.invoke).toHaveBeenCalledWith('cleanup_dupes_find', {
+      minSize: 1048576,
+      onProgress: core.channels[0],
+    })
+    expect(seen).toEqual(['full'])
+  })
+
+  it('deletes duplicates through their own command', async () => {
+    cleanupJob.trail = [row(0, 'C:\\', 100)]
+    core.invoke
+      .mockResolvedValueOnce({ results: [], overview: overview(40) })
+      .mockResolvedValueOnce([])
+    await removeMany([2, 3], false, undefined, 'cleanup_delete_duplicates')
+    expect(core.invoke).toHaveBeenNthCalledWith(1, 'cleanup_delete_duplicates', {
+      ids: [2, 3],
+      permanent: false,
+    })
+    expect(core.invoke).not.toHaveBeenCalledWith('cleanup_delete_many', expect.anything())
+  })
+
+  it('ticks nothing until the button is pressed, then all but the oldest', async () => {
+    const groups = [group(0, [1, 2, 3])]
+    core.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'cleanup_dupes_find':
+          return Promise.resolve({
+            minSize: 1048576,
+            groups: 1,
+            files: 3,
+            reclaimable: 200,
+            skipped: { cloud: 2, hardLinked: 0, unreadable: 0 },
+          })
+        case 'cleanup_dupes_groups':
+          return Promise.resolve(groups)
+        case 'cleanup_dupes_all_but_oldest':
+          return Promise.resolve([2, 3])
+        default:
+          return Promise.reject(new Error(command))
+      }
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    createApp(DuplicatesPanel).mount(host)
+    const button = (label: string): HTMLButtonElement =>
+      [...host.querySelectorAll('button')].find((b) => b.textContent?.includes(label))!
+    const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+    button('Find duplicates').click()
+    await settle()
+    expect(host.textContent).toContain('1 group, 3 files')
+    expect(host.textContent).toContain('2 online-only files (never downloaded)')
+    expect(host.querySelectorAll('input[type="checkbox"]')).toHaveLength(3)
+    expect(host.querySelectorAll('input[type="checkbox"]:checked')).toHaveLength(0)
+
+    button('Select all but the oldest').click()
+    await settle()
+    const boxes = [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+    expect(boxes.map((box) => box.checked)).toEqual([false, true, true])
+    expect(button('Review').disabled).toBe(false)
+
+    boxes[0]?.click()
+    await settle()
+    expect(host.textContent).toContain('Keep at least one copy of each.')
+    expect(button('Review').disabled).toBe(true)
   })
 })
