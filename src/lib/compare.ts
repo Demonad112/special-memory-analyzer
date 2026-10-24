@@ -56,6 +56,8 @@ export interface DiffRow {
   different: number
   cloud: boolean
   error: string | null
+  /** The name is not valid Unicode, so it is never paired with a name on the other side. */
+  lossyName: boolean
   hasChildren: boolean
 }
 

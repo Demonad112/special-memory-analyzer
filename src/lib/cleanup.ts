@@ -455,7 +455,7 @@ export interface JunkGroup {
   items: JunkItem[]
 }
 
-export type PreviewStatus = 'go' | 'protected' | 'reparse' | 'gone' | 'inside'
+export type PreviewStatus = 'go' | 'protected' | 'reparse' | 'badName' | 'gone' | 'inside'
 
 export interface PreviewItem {
   id: number

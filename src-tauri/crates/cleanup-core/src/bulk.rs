@@ -29,6 +29,8 @@ pub enum PreviewStatus {
     Protected,
     /// A symlink or junction: left alone, so a delete can never reach what it points to.
     Reparse,
+    /// The name is not valid Unicode, so the scan cannot rebuild the item's real path.
+    BadName,
     /// Already deleted, or not part of this scan.
     Gone,
     /// A folder above it is also selected, so it goes with that folder.
@@ -115,6 +117,11 @@ pub fn preview(tree: &Tree, protected: &Protected, ids: &[NodeId]) -> Preview {
                     "A shortcut or junction. Skipped, so what it points to is never touched."
                         .into(),
                 ),
+            )
+        } else if node.lossy_name {
+            (
+                PreviewStatus::BadName,
+                Some("The name is not valid Unicode, so it can't be deleted here. Delete it in Explorer.".into()),
             )
         } else {
             match protected.check(&path, &root) {
@@ -828,5 +835,40 @@ mod tests {
         assert!(root.join("held.bin").exists());
         // One locked file does not stop the next.
         assert_eq!(results[1].outcome, Outcome::Done);
+    }
+
+    #[test]
+    fn an_item_whose_name_is_not_unicode_is_refused_with_a_reason() {
+        #[cfg(windows)]
+        let odd = {
+            use std::os::windows::ffi::OsStringExt;
+            std::ffi::OsString::from_wide(&[0xD800, u16::from(b'a')])
+        };
+        #[cfg(unix)]
+        let odd = {
+            use std::os::unix::ffi::OsStringExt;
+            std::ffi::OsString::from_vec(vec![0xFF, b'a'])
+        };
+        let temp = tempfile::tempdir().unwrap();
+        write(&temp.path().join("fine.bin"));
+        if fs::write(temp.path().join(&odd), b"abc").is_err() {
+            return; // this file system cannot hold such names
+        }
+        let tree = scan(temp.path(), &ScanState::default()).unwrap();
+        let odd_id = tree
+            .live_children(0)
+            .find(|&child| tree.node(child).lossy_name)
+            .expect("the odd name is listed");
+        let fine = id(&tree, &["fine.bin"]);
+
+        let plan = preview(&tree, &Protected::default(), &[odd_id, fine]);
+
+        assert_eq!(plan.items[0].status, PreviewStatus::BadName);
+        let reason = plan.items[0].reason.as_deref().unwrap();
+        assert!(reason.contains("not valid Unicode") && reason.contains("Explorer"));
+        assert_eq!(plan.items[1].status, PreviewStatus::Go);
+        assert_eq!(plan.go_count, 1);
+        // Nothing was deleted.
+        assert!(temp.path().join(&odd).exists());
     }
 }

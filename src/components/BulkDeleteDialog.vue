@@ -43,6 +43,7 @@ const STATUS_LABELS: Record<PreviewStatus, string> = {
   go: '',
   protected: 'Protected',
   reparse: 'Link, not followed',
+  badName: 'Name is not valid Unicode',
   gone: 'Already gone',
   inside: 'Inside another picked item',
 }

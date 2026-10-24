@@ -55,6 +55,9 @@ pub struct DiffNode {
     pub cloud: bool,
     /// Either side could not be read completely here.
     pub error: Option<String>,
+    /// The name is not valid Unicode on either side (see [`Node::lossy_name`]). Such names are
+    /// never paired, because two different ones read the same once their characters are replaced.
+    pub lossy_name: bool,
     /// The destination's spelling of the name when it differs from the source's (case only).
     right_name: Option<String>,
     parent: NodeId,
@@ -78,6 +81,7 @@ pub struct DiffRow {
     pub different: u64,
     pub cloud: bool,
     pub error: Option<String>,
+    pub lossy_name: bool,
     pub has_children: bool,
 }
 
@@ -151,6 +155,7 @@ impl DiffTree {
             different: node.different,
             cloud: node.cloud,
             error: node.error.clone(),
+            lossy_name: node.lossy_name,
             has_children: node.child_count > 0,
         })
     }
@@ -301,6 +306,8 @@ fn diff(name: String, left: Pick<'_>, right: Pick<'_>) -> Owned {
         error: left_node
             .and_then(|node| node.error.clone())
             .or_else(|| right_node.and_then(|node| node.error.clone())),
+        lossy_name: left_node.is_some_and(|node| node.lossy_name)
+            || right_node.is_some_and(|node| node.lossy_name),
         right_name: match (left_node, right_node) {
             (Some(l), Some(r)) if l.name != r.name => Some(r.name.clone()),
             _ => None,
@@ -390,7 +397,11 @@ fn pair_children<'a>(left: Pick<'a>, right: Pick<'a>) -> Vec<(Pick<'a>, Pick<'a>
     let mut exact: HashMap<&str, usize> = HashMap::new();
     let mut folded: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, &id) in right_ids.iter().enumerate() {
-        let name = right_tree.node(id).name.as_str();
+        let node = right_tree.node(id);
+        if node.lossy_name {
+            continue;
+        }
+        let name = node.name.as_str();
         exact.insert(name, index);
         folded.entry(name.to_lowercase()).or_default().push(index);
     }
@@ -399,8 +410,9 @@ fn pair_children<'a>(left: Pick<'a>, right: Pick<'a>) -> Vec<(Pick<'a>, Pick<'a>
     let mut pairs = Vec::with_capacity(left_ids.len().max(right_ids.len()));
     let mut unmatched = Vec::new();
     for &id in &left_ids {
-        let name = left_tree.node(id).name.as_str();
-        match exact.get(name) {
+        let node = left_tree.node(id);
+        let name = node.name.as_str();
+        match exact.get(name).filter(|_| !node.lossy_name) {
             Some(&index) if !used[index] => {
                 used[index] = true;
                 pairs.push((Some((left_tree, id)), Some((right_tree, right_ids[index]))));
@@ -409,9 +421,11 @@ fn pair_children<'a>(left: Pick<'a>, right: Pick<'a>) -> Vec<(Pick<'a>, Pick<'a>
         }
     }
     for id in unmatched {
-        let name = left_tree.node(id).name.to_lowercase();
+        let node = left_tree.node(id);
+        let name = node.name.to_lowercase();
         let index = folded
             .get(&name)
+            .filter(|_| !node.lossy_name)
             .and_then(|candidates| candidates.iter().copied().find(|&index| !used[index]));
         let right_side = index.map(|index| {
             used[index] = true;
@@ -655,5 +669,47 @@ mod tests {
         let diff = compare_dirs(left.path(), left.path());
         assert!(diff.children(999).is_none());
         assert_eq!(diff.children(0).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn names_that_are_not_unicode_are_never_paired() {
+        // Both names read "\u{FFFD}a.bin" as text but are different files.
+        #[cfg(windows)]
+        let (odd_left, odd_right) = {
+            use std::os::windows::ffi::OsStringExt;
+            (
+                std::ffi::OsString::from_wide(&[0xD800, u16::from(b'a')]),
+                std::ffi::OsString::from_wide(&[0xD801, u16::from(b'a')]),
+            )
+        };
+        #[cfg(unix)]
+        let (odd_left, odd_right) = {
+            use std::os::unix::ffi::OsStringExt;
+            (
+                std::ffi::OsString::from_vec(vec![0xFF, b'a']),
+                std::ffi::OsString::from_vec(vec![0xFE, b'a']),
+            )
+        };
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        if fs::write(left.path().join(&odd_left), b"abc").is_err()
+            || fs::write(right.path().join(&odd_right), b"abc").is_err()
+        {
+            return; // this file system cannot hold such names
+        }
+        write(&left.path().join("same.bin"), 10);
+        write(&right.path().join("same.bin"), 10);
+
+        let diff = compare_dirs(left.path(), right.path());
+        let rows = diff.children(0).unwrap();
+
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        let lossy: Vec<_> = rows.iter().filter(|row| row.lossy_name).collect();
+        assert_eq!(lossy.len(), 2);
+        let statuses: Vec<_> = lossy.iter().map(|row| row.status).collect();
+        assert!(statuses.contains(&DiffStatus::OnlyLeft), "{statuses:?}");
+        assert!(statuses.contains(&DiffStatus::OnlyRight), "{statuses:?}");
+        assert!(!row(&rows, "same.bin").lossy_name);
+        assert_eq!(row(&rows, "same.bin").status, DiffStatus::Same);
     }
 }
