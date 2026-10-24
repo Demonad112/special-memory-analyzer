@@ -332,6 +332,10 @@ impl<'a> Copier<'a> {
         let mut options = self.options.clone();
         if let Some(conflict) = conflict {
             options.conflict = conflict;
+            if conflict == ConflictPolicy::Overwrite {
+                // A bad copy keeps the source's size and time, so it would count as identical.
+                options.skip_identical = false;
+            }
         }
         let source = destination_path(&self.source, relative_path);
         let target = destination_path(&self.destination, relative_path);
@@ -673,6 +677,65 @@ mod tests {
 
         assert_eq!(summary.totals.not_copied, 0);
         assert_eq!(fs::read(dir.path("dst/a.txt")).unwrap(), b"from source");
+    }
+
+    #[test]
+    fn retrying_a_verify_mismatch_recopies_a_same_size_same_time_file() {
+        let dir = TempDir::new("run-mismatch");
+        dir.write("src/a.txt", b"from source");
+        let id = prepared(&dir);
+        run_copy(
+            &dir.path("runs"),
+            &id,
+            None,
+            &CancelToken::default(),
+            &mut NullSink,
+        )
+        .unwrap();
+
+        // Corrupt one byte, keeping both the length and the modified time of the source.
+        let target = dir.path("dst/a.txt");
+        let source_time = fs::metadata(dir.path("src/a.txt"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        fs::write(&target, b"from sourcX").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&target)
+            .unwrap()
+            .set_modified(source_time)
+            .unwrap();
+
+        let store = RunStore::open(&dir.path("runs"), &id).unwrap();
+        let mut writer = store.results_writer().unwrap();
+        writer
+            .write(&ItemResult::not_copied(
+                "a.txt",
+                ItemKind::File,
+                11,
+                FailureReason::VerifyMismatch,
+                Some(Side::Destination),
+                "mismatch",
+            ))
+            .unwrap();
+        writer.finish().unwrap();
+
+        let selection = Selection {
+            paths: vec!["a.txt".to_owned()],
+            reason: None,
+        };
+        let summary = retry(
+            &dir.path("runs"),
+            &id,
+            &selection,
+            &CancelToken::default(),
+            &mut NullSink,
+        )
+        .unwrap();
+
+        assert_eq!(summary.totals.not_copied, 0);
+        assert_eq!(fs::read(&target).unwrap(), b"from source");
     }
 
     #[cfg(windows)]
