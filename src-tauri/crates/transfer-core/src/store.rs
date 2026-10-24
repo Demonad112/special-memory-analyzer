@@ -260,6 +260,25 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
         .map_err(|error| TransferError::BadRun(format!("{}: {error}", path.display())))
 }
 
+/// Writes `bytes` to a `.tmp` file next to `path`, flushes it to disk and renames it over
+/// `path`, so a crash or power loss never leaves a half-written or empty file.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let result = (|| {
+        let mut file = File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// Written to a `.tmp` file and renamed, so a crash never leaves half a file.
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let tmp = path.with_extension("json.tmp");
@@ -274,6 +293,16 @@ mod tests {
     use super::*;
     use crate::test_support::TempDir;
     use crate::FailureReason;
+
+    #[test]
+    fn write_atomic_replaces_the_file_and_leaves_no_tmp_behind() {
+        let dir = TempDir::new("store-atomic");
+        let path = dir.path("out.json");
+        write_atomic(&path, b"first").unwrap();
+        write_atomic(&path, b"second").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"second");
+        assert!(!dir.path("out.json.tmp").exists());
+    }
 
     #[test]
     fn run_ids_sort_by_time_and_do_not_collide() {

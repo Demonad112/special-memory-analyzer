@@ -173,7 +173,8 @@ pub fn write(root: &Path, saved: &Saved) -> Result<(), String> {
         serde_json::to_vec_pretty(saved)
     }
     .map_err(|err| err.to_string())?;
-    fs::write(&path, json).map_err(|err| format!("Could not save the report: {err}"))
+    transfer_core::store::write_atomic(&path, &json)
+        .map_err(|err| format!("Could not save the report: {err}"))
 }
 
 pub fn load(root: &Path, id: &str) -> Result<Saved, String> {
