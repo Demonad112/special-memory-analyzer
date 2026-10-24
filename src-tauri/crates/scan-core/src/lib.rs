@@ -10,6 +10,7 @@ pub mod names;
 mod paths;
 mod portable;
 mod scan;
+pub mod security;
 
 pub use diff::{
     compare, DiffNode, DiffRow, DiffSide, DiffStatus, DiffSummary, DiffTree, MissingEntry, Side,

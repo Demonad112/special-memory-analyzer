@@ -179,6 +179,10 @@ fn is_link_tag(tag: u32) -> bool {
     tag & TAG_NAME_SURROGATE != 0
 }
 
+/// The path as NUL-terminated UTF-16 for Win32 calls, `\\?\`-prefixed when long.
+#[cfg(windows)]
+pub(crate) use nt::wide as wide_path;
+
 #[cfg(windows)]
 mod nt {
     use super::{is_link_tag, plain, Entry, Listing};
@@ -258,7 +262,7 @@ mod nt {
     }
 
     /// The path as UTF-16 with a trailing NUL. Very long paths get the `\\?\` prefix.
-    fn wide(path: &Path) -> Vec<u16> {
+    pub(crate) fn wide(path: &Path) -> Vec<u16> {
         let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
         let verbatim: Vec<u16> = r"\\?\".encode_utf16().collect();
         if wide.len() >= 240 && !wide.starts_with(&verbatim) {
