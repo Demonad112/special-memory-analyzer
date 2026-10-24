@@ -120,6 +120,10 @@ pub struct Node {
     /// Files: another name for the same data exists in this scan (hard link). Only the first name
     /// keeps its [`Node::disk`].
     pub hard_linked: bool,
+    /// The name is not valid Unicode (NTFS allows unpaired surrogates), so [`Node::name`] holds
+    /// replacement characters and a path built from it would point at a different, missing item.
+    /// Such a folder is not entered.
+    pub lossy_name: bool,
     first_child: NodeId,
     child_count: u32,
     parent: NodeId,
@@ -143,6 +147,7 @@ impl Node {
             error_code: None,
             modified_ms: None,
             hard_linked: false,
+            lossy_name: false,
             first_child: 0,
             child_count: 0,
             parent: 0,
@@ -332,6 +337,7 @@ impl Owned {
         node.cloud_files = u64::from(entry.cloud);
         node.cloud_bytes = if entry.cloud { entry.size } else { 0 };
         node.modified_ms = entry.modified_ms;
+        node.lossy_name = entry.lossy;
         Self {
             node,
             children: Vec::new(),
@@ -444,7 +450,15 @@ fn scan_dir(path: &Path, name: String, state: &ScanState) -> Owned {
         if state.ignore_junk && is_junk(&entry.name, entry.kind == Kind::Dir) {
             continue;
         }
-        if entry.kind == Kind::Dir {
+        if entry.kind == Kind::Dir && entry.lossy {
+            // No path can be built from the name, so the folder is listed but not entered.
+            let mut folder = Owned::leaf(entry);
+            folder.node.error = Some(
+                "The folder name has characters that are not valid Unicode, so it was not opened."
+                    .to_owned(),
+            );
+            dir.children.push(folder);
+        } else if entry.kind == Kind::Dir {
             subdirs.push((path.join(&entry.name), entry.name));
         } else {
             if entry.kind == Kind::File {
@@ -634,6 +648,51 @@ mod tests {
             scan(&file, &ScanState::default()),
             Err(ScanError::NotADirectory(_))
         ));
+    }
+
+    #[test]
+    fn a_name_that_is_not_valid_unicode_is_flagged_and_its_folder_is_not_entered() {
+        #[cfg(windows)]
+        let odd = {
+            use std::os::windows::ffi::OsStringExt;
+            std::ffi::OsString::from_wide(&[0xD800, u16::from(b'a')])
+        };
+        #[cfg(unix)]
+        let odd = {
+            use std::os::unix::ffi::OsStringExt;
+            std::ffi::OsString::from_vec(vec![0xFF, b'a'])
+        };
+        let temp = tempfile::tempdir().unwrap();
+        write(&temp.path().join("fine.bin"), 5);
+        let folder = temp.path().join(&odd);
+        if fs::create_dir(&folder).is_err()
+            || fs::write(temp.path().join(&odd).join("x"), b"x").is_err()
+        {
+            return; // this file system cannot hold such names
+        }
+        let file_name = {
+            let mut name = odd.clone();
+            name.push(".bin");
+            name
+        };
+        fs::write(temp.path().join(file_name), b"abc").unwrap();
+
+        let tree = scan_ok(temp.path());
+
+        let flagged: Vec<_> = tree
+            .live_children(0)
+            .map(|id| tree.node(id))
+            .filter(|node| node.lossy_name)
+            .collect();
+        assert_eq!(flagged.len(), 2);
+        let dir = flagged.iter().find(|node| node.kind == Kind::Dir).unwrap();
+        assert!(dir.error.is_some() && !dir.has_children(), "not entered");
+        assert_eq!(tree.root().errors, 1);
+        assert!(
+            !tree
+                .node(tree.child_by_name(0, "fine.bin").unwrap())
+                .lossy_name
+        );
     }
 
     #[test]

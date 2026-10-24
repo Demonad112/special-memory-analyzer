@@ -11,6 +11,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// Which not-copied rows an action applies to. No paths and no reason means all of them.
@@ -453,6 +454,10 @@ impl<'a> Copier<'a> {
                             ItemKind::File,
                             size,
                             cloud && skip_cloud,
+                        ))),
+                        Entry::InvalidName { relative_path, .. } => entries.push(Err((
+                            prefix(&relative_path),
+                            io::Error::from(io::ErrorKind::InvalidFilename),
                         ))),
                         Entry::Link => {}
                         Entry::Unreadable {
