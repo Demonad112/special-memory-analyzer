@@ -38,6 +38,59 @@ pub fn check_pair(left: &Path, right: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The folder to scan or delete in, in one canonical form: symlinks, 8.3 short names and `subst`
+/// drives resolved, the `\\?\` prefix gone. Refuses roots that reach the local machine by another
+/// name (`\\localhost\c$`, `\\?\GLOBALROOT`, `\\?\Volume{...}`), which a path-prefix check
+/// against `C:\Windows` would never match. A path that does not resolve is an error, so callers
+/// refuse to delete rather than guess.
+pub fn canonical_root(path: &Path) -> Result<PathBuf, String> {
+    let computer = std::env::var("COMPUTERNAME").ok();
+    refuse_alias(&path.to_string_lossy(), computer.as_deref())?;
+    let resolved = fs::canonicalize(path)
+        .map_err(|err| format!("Can't resolve {}: {err}", path.to_string_lossy()))?;
+    let text = resolved.to_string_lossy();
+    refuse_alias(&text, computer.as_deref())?;
+    Ok(PathBuf::from(strip_verbatim(&text)))
+}
+
+/// `\\?\C:\x` becomes `C:\x`; `\\?\UNC\host\share\x` becomes `\\host\share\x`.
+pub fn strip_verbatim(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        if rest.len() >= 4 && rest[..4].eq_ignore_ascii_case(r"UNC\") {
+            return format!(r"\\{}", &rest[4..]);
+        }
+        return rest.to_string();
+    }
+    path.to_string()
+}
+
+const REFUSED_ROOT: &str = "This folder is reached through a name that hides where it really is (a local network share, a volume GUID or a device path). Pick it by its drive letter, for example C:\\Users.";
+
+/// Rejects spellings of the local disk that do not match a protected folder by name.
+fn refuse_alias(path: &str, computer: Option<&str>) -> Result<(), String> {
+    let lower = path.trim().replace('/', "\\").to_lowercase();
+    if lower.starts_with(r"\\?\globalroot") || lower.starts_with(r"\\?\volume{") {
+        return Err(REFUSED_ROOT.into());
+    }
+    let unc = lower.strip_prefix(r"\\?\unc\").or_else(|| {
+        lower
+            .strip_prefix(r"\\")
+            .filter(|rest| !rest.starts_with(['?']))
+    });
+    let Some(unc) = unc else {
+        return Ok(());
+    };
+    let host = unc.split('\\').next().unwrap_or_default();
+    let own = computer.map(str::to_lowercase);
+    let local = matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]" | ".")
+        || host.ends_with(".ipv6-literal.net") && host.starts_with("0-0-0-0-0-0-0-1")
+        || own.as_deref() == Some(host);
+    if local {
+        return Err(REFUSED_ROOT.into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,5 +121,65 @@ mod tests {
             .contains("source is inside"));
         assert!(check_pair(&inner, &other).is_ok());
         assert!(check_pair(&inner, &temp.path().join("missing")).is_ok());
+    }
+
+    #[test]
+    fn verbatim_prefixes_are_stripped() {
+        assert_eq!(strip_verbatim(r"\\?\C:\Windows"), r"C:\Windows");
+        assert_eq!(strip_verbatim(r"\\?\UNC\srv\share\x"), r"\\srv\share\x");
+        assert_eq!(strip_verbatim(r"\\?\unc\srv\share"), r"\\srv\share");
+        assert_eq!(strip_verbatim(r"D:\Data"), r"D:\Data");
+    }
+
+    #[test]
+    fn aliases_of_the_local_disk_are_refused() {
+        for path in [
+            r"\\localhost\c$\Windows",
+            r"\\LOCALHOST\C$",
+            r"\\127.0.0.1\c$\Windows",
+            r"\\::1\c$",
+            r"\\.\C:\Windows",
+            r"\\?\UNC\localhost\c$\Windows",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume3\Windows",
+            r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\Windows",
+            r"//localhost/c$/Windows",
+            r"\\SERVER01\c$\Windows",
+        ] {
+            let computer = Some("server01");
+            assert!(refuse_alias(path, computer).is_err(), "{path}");
+        }
+        for path in [
+            r"C:\Windows",
+            r"\\?\C:\Windows",
+            r"\\fileserver\share\x",
+            r"\\?\UNC\fileserver\share",
+        ] {
+            assert!(refuse_alias(path, Some("server01")).is_ok(), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_missing_root_is_an_error_and_a_real_one_resolves() {
+        let temp = tempfile::tempdir().unwrap();
+        let resolved = canonical_root(temp.path()).unwrap();
+        assert!(resolved.is_dir());
+        assert!(!resolved.to_string_lossy().starts_with(r"\\?\"));
+        assert!(canonical_root(&temp.path().join("missing")).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_short_name_resolves_to_the_long_one() {
+        assert_eq!(
+            canonical_root(Path::new(r"C:\PROGRA~1")).unwrap(),
+            PathBuf::from(r"C:\Program Files")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_admin_share_of_this_pc_is_refused() {
+        let err = canonical_root(Path::new(r"\\localhost\c$\Windows")).unwrap_err();
+        assert!(err.contains("hides where it really is"), "{err}");
     }
 }

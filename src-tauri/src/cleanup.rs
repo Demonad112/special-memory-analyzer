@@ -75,6 +75,9 @@ pub async fn cleanup_scan(
     if path.as_os_str().is_empty() {
         return Err("Pick a drive or folder to scan.".into());
     }
+    // One canonical form for the tree root, so every later never-delete check sees the real
+    // folder whatever name the user typed (short name, admin share, subst drive).
+    let path = scan_core::canonical_root(&path)?;
     let cancel = CancelToken::new();
     if let Some(previous) = lock(&state.cancel)?.replace(cancel.clone()) {
         previous.cancel();
@@ -313,6 +316,30 @@ fn log_entry(
     }
 }
 
+/// The `deletions.jsonl` summary line for one quick-cleanup folder. It has no run id, so
+/// "Restore last cleanup" never mistakes it for a bulk delete.
+fn quick_log_entry(
+    id: QuickId,
+    target: &Path,
+    done: &quick::Cleaned,
+    elevated: bool,
+    user: &str,
+) -> LogEntry {
+    let now = transfer_core::now_ms();
+    LogEntry {
+        time: transfer_core::format_utc(now),
+        time_ms: now,
+        user: user.to_string(),
+        elevated,
+        path: target.to_string_lossy().into_owned(),
+        size: done.freed,
+        method: id.log_method().into(),
+        result: "done".into(),
+        detail: Some(format!("{} files, quick cleanup {id:?}", done.removed)),
+        run: None,
+    }
+}
+
 /// Runs the deletes and appends each item's log line as soon as that item is done, so a crash
 /// or kill mid-run still leaves a record of what went. The deletes happened whether or not the
 /// log could be written, so a failed append is returned beside the results, not as an error.
@@ -475,7 +502,8 @@ pub async fn cleanup_restore_last() -> Result<Vec<RestoreResult>, String> {
         if restore::last_run(&entries).is_empty() {
             return Err("There is no cleanup to restore.".to_string());
         }
-        let results = restore::restore_last(&entries, &cleanup_core::recycle_bin_items()?);
+        let results =
+            restore::restore_last(&entries, &cleanup_core::recycle_bin_items()?, &protected());
 
         let now = transfer_core::now_ms();
         let user = transfer_core::user_name();
@@ -568,7 +596,16 @@ pub async fn cleanup_quick_clean(ids: Vec<QuickId>, job: JobInfo) -> Result<Quic
                         ..CleanedItem::default()
                     };
                 }
-                match quick::clean(&places, id) {
+                let logs = report_core::logs_root();
+                let user = transfer_core::user_name();
+                // One summary line per folder, written as soon as that folder is done.
+                let mut log_target = |target: &Path, done: &quick::Cleaned| {
+                    let entry = quick_log_entry(id, target, done, elevated, &user);
+                    if let Err(err) = log::append(&logs, std::slice::from_ref(&entry)) {
+                        eprintln!("The deletion log could not be written: {err}");
+                    }
+                };
+                match quick::clean_with(&places, id, &mut log_target) {
                     Ok(cleaned) => CleanedItem {
                         title: id.title().into(),
                         freed: cleaned.freed,
@@ -722,5 +759,28 @@ mod tests {
             )),
             "x is open in another program."
         );
+    }
+}
+
+#[cfg(test)]
+mod quick_log_tests {
+    use super::*;
+
+    #[test]
+    fn a_quick_cleanup_folder_becomes_one_summary_line_outside_any_run() {
+        let done = quick::Cleaned {
+            freed: 2048,
+            removed: 7,
+            skipped: 1,
+        };
+        let entry = quick_log_entry(QuickId::UserTemp, Path::new(r"C:\T"), &done, true, "tech");
+        assert_eq!(entry.method, "permanent");
+        assert_eq!((entry.size, entry.run.clone()), (2048, None));
+        assert_eq!(
+            entry.detail.as_deref(),
+            Some("7 files, quick cleanup UserTemp")
+        );
+        let installers = quick_log_entry(QuickId::OldInstallers, Path::new("D"), &done, false, "t");
+        assert_eq!(installers.method, "recycle");
     }
 }
