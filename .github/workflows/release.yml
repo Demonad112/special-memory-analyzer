@@ -202,7 +202,13 @@ jobs:
             printf 'Thumbprint (SHA-1): `%s`\n\n' "$THUMBPRINT"
             printf 'The certificate is ephemeral. Its private key was deleted after signing, so this release cannot be re-signed.\n'
           } >> "$notes"
+          # A tag with a suffix (v1.2.0-test.1) is a test build: pre-release, never "Latest".
+          flags=()
+          case "$GITHUB_REF_NAME" in
+            *-*) flags=(--prerelease --latest=false) ;;
+          esac
           gh release create "$GITHUB_REF_NAME" installer/*.exe kit/* SHA256SUMS-release.txt \
             --repo "$GITHUB_REPOSITORY" \
             --title "Deep Server Analyzer $GITHUB_REF_NAME" \
-            --notes-file "$notes"
+            --notes-file "$notes" \
+            "${flags[@]}"
