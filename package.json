@@ -19,14 +19,6 @@
     "check": "corepack pnpm quality && corepack pnpm test && corepack pnpm rust:test",
     "tauri": "tauri"
   },
-  "lint-staged": {
-    "*.{ts,vue,js,json,md,css,html}": [
-      "prettier --write"
-    ],
-    "*.rs": [
-      "rustfmt --edition 2021"
-    ]
-  },
   "dependencies": {
     "@lucide/vue": "1.52.0",
     "@tauri-apps/api": "2.12.1",
