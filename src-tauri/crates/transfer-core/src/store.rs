@@ -5,7 +5,7 @@ use crate::{
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -108,23 +108,79 @@ impl RunStore {
         JsonlWriter::create(&self.dir.join(RESULTS_FILE), true)
     }
 
-    /// The latest outcome per relative path.
+    /// The latest outcome per relative path, every row kept. Only for callers that need whole
+    /// rows for everything; the others below hold a fraction of this.
     pub fn latest_results(&self) -> Result<BTreeMap<String, ItemResult>> {
-        let path = self.dir.join(RESULTS_FILE);
+        self.latest_results_where(|_| true)
+    }
+
+    /// The latest outcome per relative path, keeping only the rows `keep` accepts. The first
+    /// pass remembers where each path's last row is (16 bytes of key and a row number per path),
+    /// the second keeps the wanted ones, so memory follows the selection, not the run.
+    pub fn latest_results_where(
+        &self,
+        keep: impl Fn(&ItemResult) -> bool,
+    ) -> Result<BTreeMap<String, ItemResult>> {
         let mut latest = BTreeMap::new();
-        if !path.is_file() {
+        let Some(rows) = self.result_rows()? else {
             return Ok(latest);
+        };
+        let mut last: HashMap<PathKey, u64> = HashMap::new();
+        for (number, row) in (0_u64..).zip(rows) {
+            last.insert(PathKey::of(&row?.relative_path), number);
         }
-        for row in read_jsonl::<ItemResult>(self, &path)? {
+        let Some(rows) = self.result_rows()? else {
+            return Ok(latest);
+        };
+        for (number, row) in (0_u64..).zip(rows) {
             let row = row?;
-            latest.insert(row.relative_path.clone(), row);
+            if last.get(&PathKey::of(&row.relative_path)) == Some(&number) && keep(&row) {
+                latest.insert(row.relative_path.clone(), row);
+            }
         }
         Ok(latest)
     }
 
+    /// Fingerprints of every path that has a result row.
+    pub fn result_keys(&self) -> Result<HashSet<PathKey>> {
+        let mut keys = HashSet::new();
+        if let Some(rows) = self.result_rows()? {
+            for row in rows {
+                keys.insert(PathKey::of(&row?.relative_path));
+            }
+        }
+        Ok(keys)
+    }
+
+    /// Totals over the latest outcome per path: counts from `planned`, the rest from the results.
+    /// Streams the file and keeps 32 bytes per path instead of the rows.
+    pub fn latest_totals(&self, planned: &RunTotals) -> Result<RunTotals> {
+        let mut latest: HashMap<PathKey, Counted> = HashMap::new();
+        if let Some(rows) = self.result_rows()? {
+            for row in rows {
+                let row = row?;
+                latest.insert(PathKey::of(&row.relative_path), Counted::of(&row));
+            }
+        }
+        let mut tally = Tally::new(planned);
+        for counted in latest.values() {
+            tally.add(counted.kind, counted.status, counted.size);
+        }
+        Ok(tally.totals)
+    }
+
+    /// The rows of `results.jsonl` in the order written, or `None` before the file exists.
+    fn result_rows(&self) -> Result<Option<impl Iterator<Item = Result<ItemResult>>>> {
+        let path = self.dir.join(RESULTS_FILE);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        read_jsonl::<ItemResult>(self, &path).map(Some)
+    }
+
     /// Recounts copied/skipped/not-copied from the results; planned counts are kept.
     pub fn refresh_totals(&self, summary: &mut RunSummary) -> Result<()> {
-        summary.totals = totals_from(&summary.totals, self.latest_results()?.values());
+        summary.totals = self.latest_totals(&summary.totals)?;
         Ok(())
     }
 
@@ -153,36 +209,83 @@ impl RunStore {
     }
 }
 
+/// A fingerprint of a relative path, 128 bits of its BLAKE3 hash: enough to tell paths apart
+/// without keeping them. Collisions are not a practical concern at this size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PathKey([u8; 16]);
+
+impl PathKey {
+    pub fn of(path: &str) -> Self {
+        let hash = blake3::hash(path.as_bytes());
+        let mut key = [0; 16];
+        key.copy_from_slice(&hash.as_bytes()[..16]);
+        Self(key)
+    }
+}
+
+/// What the totals need from a result row.
+#[derive(Clone, Copy)]
+struct Counted {
+    kind: ItemKind,
+    status: ItemStatus,
+    size: u64,
+}
+
+impl Counted {
+    fn of(item: &ItemResult) -> Self {
+        Self {
+            kind: item.kind,
+            status: item.status,
+            size: item.size,
+        }
+    }
+}
+
+struct Tally {
+    totals: RunTotals,
+}
+
+impl Tally {
+    fn new(planned: &RunTotals) -> Self {
+        Self {
+            totals: RunTotals {
+                planned_files: planned.planned_files,
+                planned_bytes: planned.planned_bytes,
+                folders: planned.folders,
+                excluded: planned.excluded,
+                ..RunTotals::default()
+            },
+        }
+    }
+
+    fn add(&mut self, kind: ItemKind, status: ItemStatus, size: u64) {
+        let totals = &mut self.totals;
+        // Folders count only when they could not be copied (an unreadable folder).
+        match status {
+            ItemStatus::Copied | ItemStatus::Arrived if kind == ItemKind::File => {
+                totals.copied += 1;
+                totals.copied_bytes += size;
+            }
+            ItemStatus::SkippedIdentical if kind == ItemKind::File => totals.skipped_identical += 1,
+            ItemStatus::Copied | ItemStatus::Arrived | ItemStatus::SkippedIdentical => {}
+            ItemStatus::NotCopied => {
+                totals.not_copied += 1;
+                totals.not_copied_bytes += size;
+            }
+        }
+    }
+}
+
 /// Planned counts from `planned`, outcome counts from `results`.
 pub fn totals_from<'a>(
     planned: &RunTotals,
     results: impl Iterator<Item = &'a ItemResult>,
 ) -> RunTotals {
-    let mut totals = RunTotals {
-        planned_files: planned.planned_files,
-        planned_bytes: planned.planned_bytes,
-        folders: planned.folders,
-        excluded: planned.excluded,
-        ..RunTotals::default()
-    };
+    let mut tally = Tally::new(planned);
     for item in results {
-        // Folders count only when they could not be copied (an unreadable folder).
-        match item.status {
-            ItemStatus::Copied | ItemStatus::Arrived if item.kind == ItemKind::File => {
-                totals.copied += 1;
-                totals.copied_bytes += item.size;
-            }
-            ItemStatus::SkippedIdentical if item.kind == ItemKind::File => {
-                totals.skipped_identical += 1
-            }
-            ItemStatus::Copied | ItemStatus::Arrived | ItemStatus::SkippedIdentical => {}
-            ItemStatus::NotCopied => {
-                totals.not_copied += 1;
-                totals.not_copied_bytes += item.size;
-            }
-        }
+        tally.add(item.kind, item.status, item.size);
     }
-    totals
+    tally.totals
 }
 
 /// Every run under `root`, newest first. Folders that are not runs are skipped.
@@ -505,5 +608,193 @@ mod tests {
             (totals.copied, totals.copied_bytes, totals.not_copied),
             (2, 6, 0)
         );
+    }
+
+    const BENCH_ROWS: u64 = 1_000_000;
+
+    /// Writes `BENCH_ROWS` rows (a few repeated, as after a retry) straight to disk, so building
+    /// the file does not show up in the measurements.
+    fn bench_store(dir: &TempDir) -> RunStore {
+        let store = RunStore::create(&dir.path("runs")).unwrap();
+        let mut file = BufWriter::new(File::create(store.dir().join(RESULTS_FILE)).unwrap());
+        for n in 0..BENCH_ROWS {
+            let path = format!("Projects/client-{}/drawings/sheet-{n:07}.dwg", n % 500);
+            let mut row = if n % 50 == 0 {
+                ItemResult::not_copied(
+                    path,
+                    ItemKind::File,
+                    n,
+                    FailureReason::FileLocked,
+                    None,
+                    "The file is open in another program.",
+                )
+            } else {
+                ItemResult::done(path, n, ItemStatus::Copied)
+            };
+            row.source_hash = Some(format!("{n:064x}"));
+            row.dest_hash = row.source_hash.clone();
+            serde_json::to_writer(&mut file, &row).unwrap();
+            file.write_all(b"\n").unwrap();
+            if n % 100 == 20 {
+                // A retry that finished an earlier failure (every other failed row).
+                let earlier = n - 20;
+                let fixed = ItemResult::done(
+                    format!(
+                        "Projects/client-{}/drawings/sheet-{earlier:07}.dwg",
+                        earlier % 500
+                    ),
+                    earlier,
+                    ItemStatus::Copied,
+                );
+                serde_json::to_writer(&mut file, &fixed).unwrap();
+                file.write_all(b"\n").unwrap();
+            }
+        }
+        file.flush().unwrap();
+        store
+    }
+
+    /// Peak resident memory of this process in MB, where Linux reports it.
+    fn peak_mb() -> Option<f64> {
+        let status = fs::read_to_string("/proc/self/status").ok()?;
+        let line = status.lines().find(|line| line.starts_with("VmHWM:"))?;
+        let kb: f64 = line.split_whitespace().nth(1)?.parse().ok()?;
+        Some(kb / 1024.0)
+    }
+
+    fn report(name: &str, started: std::time::Instant, base: Option<f64>, totals: &RunTotals) {
+        let peak = peak_mb().zip(base).map(|(peak, base)| peak - base);
+        println!(
+            "{name}: {BENCH_ROWS} rows, {:?}, peak +{:.0} MB, copied {} not copied {}",
+            started.elapsed(),
+            peak.unwrap_or(f64::NAN),
+            totals.copied,
+            totals.not_copied
+        );
+    }
+
+    /// Run each benchmark alone so the peak is its own:
+    /// `cargo test -p transfer-core --release totals_benchmark_map -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark: writes a 1M-row results file"]
+    fn totals_benchmark_map() {
+        let dir = TempDir::new("store-bench-map");
+        let store = bench_store(&dir);
+        let base = peak_mb();
+        let started = std::time::Instant::now();
+        let totals = totals_from(
+            &RunTotals::default(),
+            store.latest_results().unwrap().values(),
+        );
+        report("latest_results map", started, base, &totals);
+    }
+
+    fn mixed_rows(store: &RunStore) {
+        let locked = |path: &str, size| {
+            ItemResult::not_copied(
+                path,
+                ItemKind::File,
+                size,
+                FailureReason::FileLocked,
+                None,
+                "in use",
+            )
+        };
+        let mut writer = store.results_writer().unwrap();
+        for row in [
+            locked("a.txt", 4),
+            ItemResult::done("b.txt", 2, ItemStatus::Copied),
+            ItemResult::done("c.txt", 8, ItemStatus::SkippedIdentical),
+            locked("d.txt", 16),
+            ItemResult::not_copied(
+                "Unreadable",
+                ItemKind::Folder,
+                0,
+                FailureReason::AccessDenied,
+                None,
+                "no",
+            ),
+            ItemResult::done("Fine", 0, ItemStatus::Copied),
+            // Later rows win: a.txt was fixed by a retry, b.txt then failed.
+            ItemResult::done("a.txt", 4, ItemStatus::Copied),
+            locked("b.txt", 2),
+            ItemResult::done("e.txt", 32, ItemStatus::Arrived),
+        ] {
+            writer.write(&row).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn streamed_totals_match_the_totals_of_the_latest_rows() {
+        let dir = TempDir::new("store-totals");
+        let store = RunStore::create(&dir.path("runs")).unwrap();
+        mixed_rows(&store);
+        let planned = RunTotals {
+            planned_files: 7,
+            planned_bytes: 99,
+            folders: 2,
+            excluded: 1,
+            ..RunTotals::default()
+        };
+
+        let latest = store.latest_results().unwrap();
+        assert_eq!(latest.len(), 7);
+        let expected = totals_from(&planned, latest.values());
+        assert_eq!(store.latest_totals(&planned).unwrap(), expected);
+        assert_eq!(
+            (expected.copied, expected.copied_bytes, expected.not_copied),
+            (3, 36, 3)
+        );
+        assert_eq!((expected.planned_files, expected.excluded), (7, 1));
+    }
+
+    #[test]
+    fn selecting_rows_never_resurrects_a_path_whose_latest_row_does_not_match() {
+        let dir = TempDir::new("store-where");
+        let store = RunStore::create(&dir.path("runs")).unwrap();
+        mixed_rows(&store);
+
+        let not_copied = store
+            .latest_results_where(|row| row.status == ItemStatus::NotCopied)
+            .unwrap();
+        // a.txt failed first, but its latest row is a success.
+        let paths: Vec<&str> = not_copied.keys().map(String::as_str).collect();
+        assert_eq!(paths, ["Unreadable", "b.txt", "d.txt"]);
+        let everything: Vec<ItemResult> = store
+            .latest_results()
+            .unwrap()
+            .into_values()
+            .filter(|row| row.status == ItemStatus::NotCopied)
+            .collect();
+        assert_eq!(not_copied.into_values().collect::<Vec<_>>(), everything);
+    }
+
+    #[test]
+    fn result_keys_cover_every_path_once_and_none_before_the_file_exists() {
+        let dir = TempDir::new("store-keys");
+        let store = RunStore::create(&dir.path("runs")).unwrap();
+        assert!(store.result_keys().unwrap().is_empty());
+        assert_eq!(
+            store.latest_totals(&RunTotals::default()).unwrap(),
+            RunTotals::default()
+        );
+        mixed_rows(&store);
+        let keys = store.result_keys().unwrap();
+        assert_eq!(keys.len(), 7);
+        assert!(keys.contains(&PathKey::of("a.txt")));
+        assert!(!keys.contains(&PathKey::of("A.TXT")));
+    }
+
+    /// `cargo test -p transfer-core --release totals_benchmark_stream -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark: writes a 1M-row results file"]
+    fn totals_benchmark_stream() {
+        let dir = TempDir::new("store-bench-stream");
+        let store = bench_store(&dir);
+        let base = peak_mb();
+        let started = std::time::Instant::now();
+        let totals = store.latest_totals(&RunTotals::default()).unwrap();
+        report("latest_totals stream", started, base, &totals);
     }
 }

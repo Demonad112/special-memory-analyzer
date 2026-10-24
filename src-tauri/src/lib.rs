@@ -1,11 +1,12 @@
 mod cleanup;
 mod compare;
 mod record;
+mod report_writer;
 mod reports;
 
 use serde::Serialize;
 use tauri::window::{Effect, EffectsBuilder};
-use tauri::Manager;
+use tauri::{Manager, RunEvent};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,7 +47,7 @@ fn app_info(app: tauri::AppHandle) -> AppInfo {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(cleanup::CleanupState::default())
@@ -101,6 +102,12 @@ pub fn run() {
             record::record_reveal,
             record::share_connect,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Deep Server Analyzer");
+        .build(tauri::generate_context!())
+        .expect("error while building Deep Server Analyzer");
+    app.run(|handle, event| {
+        // Removals wait a couple of seconds for their report write; nothing may be left behind.
+        if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+            handle.state::<cleanup::CleanupState>().flush_report();
+        }
+    });
 }

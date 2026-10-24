@@ -3,13 +3,14 @@
 use crate::copy::{copy_file_with_retry, ConflictPolicy, CopyOptions, CopyOutcome};
 use crate::prepare::{destination_path, safe_relative, ManifestEntry};
 use crate::reason::{classify, FailureReason, Side};
-use crate::store::{JsonlWriter, LogStatus, RunStore};
+use crate::store::{JsonlWriter, LogStatus, PathKey, RunStore};
 use crate::walk::{self, Entry};
 use crate::{
     now_ms, CancelToken, ItemKind, ItemResult, ItemStatus, Phase, Result, RunState, RunSummary,
     TransferError, TransferProgress, TransferSettings, TransferSink,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -25,10 +26,15 @@ pub struct Selection {
 }
 
 impl Selection {
-    pub fn matches(&self, item: &ItemResult) -> bool {
-        item.status == ItemStatus::NotCopied
-            && (self.paths.is_empty() || self.paths.contains(&item.relative_path))
-            && self.reason.is_none_or(|reason| item.reason == Some(reason))
+    /// Builds the row filter once. The path list becomes a set, so checking a row is O(1)
+    /// instead of a scan of every selected path.
+    pub fn matcher(&self) -> impl Fn(&ItemResult) -> bool + '_ {
+        let paths: HashSet<&str> = self.paths.iter().map(String::as_str).collect();
+        move |item| {
+            item.status == ItemStatus::NotCopied
+                && (paths.is_empty() || paths.contains(item.relative_path.as_str()))
+                && self.reason.is_none_or(|reason| item.reason == Some(reason))
+        }
     }
 }
 
@@ -97,10 +103,10 @@ pub fn retry(
 ) -> Result<RunSummary> {
     let store = RunStore::open(root, run_id)?;
     let mut summary = store.summary()?;
+    let matches = selection.matcher();
     let selected: Vec<ItemResult> = store
-        .latest_results()?
+        .latest_results_where(matches)?
         .into_values()
-        .filter(|item| selection.matches(item))
         .filter(|item| {
             // Online-only files stay put: a new record with "Download" on copies them.
             !matches!(
@@ -182,12 +188,12 @@ pub fn recover_interrupted(store: &RunStore) -> Result<bool> {
     if !matches!(summary.state, RunState::Running | RunState::Watching) {
         return Ok(false);
     }
-    let seen = store.latest_results()?;
+    let seen = store.result_keys()?;
     let mut results = store.results_writer()?;
     let mut listed = 0_u64;
     for row in store.manifest::<ManifestEntry>()? {
         let row = row?;
-        if row.kind != ItemKind::File || seen.contains_key(&row.relative_path) {
+        if row.kind != ItemKind::File || seen.contains(&PathKey::of(&row.relative_path)) {
             continue;
         }
         results.write(&ItemResult::not_copied(
@@ -582,6 +588,72 @@ mod tests {
         .unwrap()
         .0
         .id
+    }
+
+    fn not_copied(path: &str, reason: FailureReason) -> ItemResult {
+        ItemResult {
+            relative_path: path.to_owned(),
+            kind: ItemKind::File,
+            size: 1,
+            status: ItemStatus::NotCopied,
+            reason: Some(reason),
+            side: None,
+            os_code: None,
+            message: None,
+            source_hash: None,
+            dest_hash: None,
+            attempts: 0,
+            inferred: false,
+            recoverable: false,
+            at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn selection_matcher_filters_by_path_reason_and_status() {
+        let a = not_copied("a.txt", FailureReason::AccessDenied);
+        let b = not_copied("b.txt", FailureReason::InvalidName);
+        let mut copied = not_copied("a.txt", FailureReason::AccessDenied);
+        copied.status = ItemStatus::Copied;
+
+        let all = Selection::default();
+        let all = all.matcher();
+        assert!(all(&a) && all(&b) && !all(&copied));
+
+        let by_path = Selection {
+            paths: vec!["a.txt".to_owned()],
+            reason: None,
+        };
+        let by_path = by_path.matcher();
+        assert!(by_path(&a) && !by_path(&b));
+
+        let by_reason = Selection {
+            paths: Vec::new(),
+            reason: Some(FailureReason::InvalidName),
+        };
+        let by_reason = by_reason.matcher();
+        assert!(!by_reason(&a) && by_reason(&b));
+    }
+
+    #[test]
+    fn selection_matcher_handles_a_large_selection() {
+        let selection = Selection {
+            paths: (0..50_000).map(|n| format!("dir/file-{n}.bin")).collect(),
+            reason: None,
+        };
+        let matches = selection.matcher();
+        let started = std::time::Instant::now();
+        let hits = (0..100_000)
+            .filter(|n| {
+                matches(&not_copied(
+                    &format!("dir/file-{n}.bin"),
+                    FailureReason::Unknown,
+                ))
+            })
+            .count();
+        assert_eq!(hits, 50_000);
+        // A Vec scan here is about 5 x 10^9 comparisons; the set is milliseconds.
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     struct CancelAfter {

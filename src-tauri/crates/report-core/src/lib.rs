@@ -6,6 +6,7 @@
 
 mod doc;
 pub mod explorer;
+mod header;
 mod kinds;
 mod recovery;
 
@@ -218,9 +219,9 @@ pub fn list(reports: &Path, records: &Path) -> Vec<Entry> {
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
             let id = name.strip_suffix(".json")?;
-            load(reports, id).ok()
+            header::read(&report_path(reports, id).ok()?, id).ok()
         })
-        .map(|saved| kinds::entry(&saved))
+        .map(kinds::header_entry)
         .collect();
     for run in list_runs(records) {
         let job = RunStore::open(records, &run.id)
@@ -355,6 +356,120 @@ mod tests {
             size: 2048,
             ..UsageReport::default()
         })
+    }
+
+    #[test]
+    fn list_rows_match_the_rows_built_from_fully_loaded_reports() {
+        let temp = tempfile::tempdir().unwrap();
+        let reports = temp.path().join("Reports");
+        let job = JobInfo {
+            client: "Acme".into(),
+            ticket: "T-1".into(),
+            technician: "Pat".into(),
+        };
+        let compare = Body::Compare(CompareReport {
+            source: r"D:\a".into(),
+            destination: r"E:\a".into(),
+            missing: 2,
+            missing_bytes: 3 << 20,
+            missing_paths: vec![MissingFile {
+                path: "x.txt".into(),
+                size: 5,
+            }],
+            ..CompareReport::default()
+        });
+        let usage = Body::DiskUsage(UsageReport {
+            path: r"C:\".into(),
+            size: 9 << 30,
+            removed: vec![
+                Removed {
+                    path: r"C:\old.iso".into(),
+                    size: 4 << 20,
+                    permanent: false,
+                },
+                Removed {
+                    path: r"C:\old2.iso".into(),
+                    size: 1 << 20,
+                    permanent: true,
+                },
+            ],
+            explorer: Some(crate::explorer::Explorer::default()),
+            ..UsageReport::default()
+        });
+        let clean = Body::Cleanup(CleanReport {
+            items: vec![
+                CleanedItem {
+                    title: "Temp files".into(),
+                    freed: 1000,
+                    ..CleanedItem::default()
+                },
+                CleanedItem {
+                    title: "Browser caches".into(),
+                    freed: 2000,
+                    ..CleanedItem::default()
+                },
+            ],
+        });
+        let mut ids = Vec::new();
+        for body in [compare, usage, clean] {
+            ids.push(save(&reports, job.clone(), body).unwrap().id);
+        }
+        // An old report with only a body takes its id from the file name.
+        let old = serde_json::json!({ "body": serde_json::to_value(self::usage()).unwrap() });
+        fs::write(reports.join("old-report.json"), old.to_string()).unwrap();
+        ids.push("old-report".into());
+        fs::write(reports.join("broken.json"), "{ not json").unwrap();
+
+        let listed = list(&reports, &temp.path().join("Records"));
+        assert_eq!(listed.len(), ids.len());
+        for id in ids {
+            let expected = kinds::entry(&load(&reports, &id).unwrap());
+            let row = listed.iter().find(|row| row.id == id).unwrap();
+            assert_eq!(row, &expected);
+        }
+    }
+
+    /// `cargo test -p report-core --release list_benchmark_twenty -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark: writes 100 MB of reports"]
+    fn list_benchmark_twenty_reports_of_five_megabytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let reports = temp.path().join("Reports");
+        let nodes: Vec<crate::explorer::ExplorerNode> = (0..90_000u32)
+            .map(|n| crate::explorer::ExplorerNode {
+                name: format!("folder-{n}.bin"),
+                disk: u64::from(n) * 4096,
+                files: 1,
+                kind: crate::explorer::KIND_FILE,
+                parent: n / 8,
+            })
+            .collect();
+        for n in 0..20 {
+            let body = Body::DiskUsage(UsageReport {
+                path: format!(r"D:\Share{n}"),
+                size: 2048 + n,
+                explorer: Some(crate::explorer::Explorer {
+                    nodes: nodes.clone(),
+                    ..Default::default()
+                }),
+                ..UsageReport::default()
+            });
+            save(&reports, JobInfo::default(), body).unwrap();
+        }
+        let bytes: u64 = fs::read_dir(&reports)
+            .unwrap()
+            .map(|entry| entry.unwrap().metadata().unwrap().len())
+            .sum();
+        let records = temp.path().join("Records");
+        let started = std::time::Instant::now();
+        let rows = list(&reports, &records);
+        let elapsed = started.elapsed();
+        assert_eq!(rows.len(), 20);
+        println!(
+            "list: 20 reports, {:.1} MB total, {:?}",
+            bytes as f64 / 1e6,
+            elapsed
+        );
     }
 
     #[test]
