@@ -407,7 +407,7 @@ pub struct Readiness {
 pub fn run(root: &Path, options: &Options, state: &ReadinessState) -> Result<Readiness, ScanError> {
     let probes = Probes {
         supported: cfg!(windows),
-        probe: &inuse::probe,
+        probe: &|path: &Path| inuse::probe(&exact_path(path)),
         holders: &|path: &Path| {
             inuse::holders(&[path.to_path_buf()], 1, Duration::MAX)
                 .pop()
@@ -417,6 +417,30 @@ pub fn run(root: &Path, options: &Options, state: &ReadinessState) -> Result<Rea
         deadline: HOLDER_DEADLINE,
     };
     run_with(root, options, state, &probes)
+}
+
+/// The `\\?\` form of an absolute Windows path, so a name Win32 would change (`ends.`, `top `,
+/// `CON`) is opened exactly as listed instead of as the file it normalizes to. Other paths, and
+/// every path off Windows, are returned as they are.
+fn exact_path(path: &Path) -> PathBuf {
+    if !cfg!(windows) {
+        return path.to_path_buf();
+    }
+    verbatim_form(&path.to_string_lossy()).map_or_else(|| path.to_path_buf(), PathBuf::from)
+}
+
+/// [`exact_path`] on text: `None` when the path is already verbatim or is not absolute.
+fn verbatim_form(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    if text.starts_with(r"\\?\") || text.starts_with(r"\\.\") {
+        None
+    } else if let Some(share) = text.strip_prefix(r"\\") {
+        Some(format!(r"\\?\UNC\{share}"))
+    } else if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && &bytes[1..3] == br":\" {
+        Some(format!(r"\\?\{text}"))
+    } else {
+        None
+    }
 }
 
 /// The Windows calls behind the in-use pass, passed in so the pass is tested everywhere.
@@ -904,6 +928,21 @@ mod tests {
             .filter(|problem| problem.path == path)
             .map(|problem| problem.rule.as_str())
             .collect()
+    }
+
+    #[test]
+    fn absolute_paths_are_opened_in_their_verbatim_form() {
+        assert_eq!(
+            verbatim_form(r"C:\data\ends.").as_deref(),
+            Some(r"\\?\C:\data\ends.")
+        );
+        assert_eq!(
+            verbatim_form(r"\\srv\share\top ").as_deref(),
+            Some(r"\\?\UNC\srv\share\top ")
+        );
+        assert_eq!(verbatim_form(r"\\?\C:\data\CON"), None);
+        assert_eq!(verbatim_form(r"data\file.txt"), None);
+        assert_eq!(verbatim_form(""), None);
     }
 
     #[test]
