@@ -455,6 +455,16 @@ mod tests {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::LocalFree;
 
+    /// The privileges are switched on and off for the whole process, so the test that toggles
+    /// them and the tests whose copy result depends on them run one at a time.
+    static PRIVILEGE_STATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn privilege_state() -> std::sync::MutexGuard<'static, ()> {
+        PRIVILEGE_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn temp(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("ds-secure-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -518,6 +528,7 @@ mod tests {
 
     #[test]
     fn privileges_are_switched_off_again_when_the_job_ends() {
+        let _state = privilege_state();
         enable_privileges();
         let held = privileges();
         // A token without the privilege (a standard user) can only be checked for "off".
@@ -636,6 +647,7 @@ mod tests {
             .status;
         assert!(status.success());
         assert_ne!(sddl(&source), sddl(&target));
+        let _state = privilege_state();
 
         let warnings = copy_security(&source, &target, &PreserveOptions::default());
 
@@ -662,6 +674,7 @@ mod tests {
             audit: true,
             ..PreserveOptions::default()
         };
+        let _state = privilege_state();
 
         let warnings = copy_security(&source, &target, &options);
 
