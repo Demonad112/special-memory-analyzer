@@ -89,6 +89,69 @@ pub struct UsageReport {
     /// The pruned size tree and the biggest files per type, for the report's explorer. Absent in
     /// reports saved before it existed.
     pub explorer: Option<Explorer>,
+    /// The last duplicate search on this scan, as it stood after deletes. Absent when none ran.
+    /// Boxed (same JSON) to keep `Body` small.
+    #[serde(default)]
+    pub duplicates: Option<Box<DuplicateTotals>>,
+    /// The last stale data report shown for this scan. Absent when none was shown.
+    #[serde(default)]
+    pub stale: Option<Box<StaleTotals>>,
+}
+
+/// Duplicate files found in a Disk Cleanup scan.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DuplicateTotals {
+    /// Smallest file compared, in bytes.
+    pub min_size: u64,
+    pub groups: u64,
+    pub files: u64,
+    /// Space freed by keeping one copy of each group.
+    pub reclaimable: u64,
+    /// The groups worth most, largest first (at most 25).
+    pub top: Vec<DuplicateItem>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DuplicateItem {
+    pub name: String,
+    /// Length of each copy.
+    pub size: u64,
+    pub copies: u64,
+    pub reclaimable: u64,
+    /// Where the copies are, oldest first.
+    pub paths: Vec<String>,
+}
+
+/// Files not modified in a number of years, per first-level folder.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StaleTotals {
+    pub years: u32,
+    /// The last-access time was also required to be that old.
+    pub not_opened: bool,
+    /// When the threshold was measured from.
+    pub now_ms: u64,
+    pub stale_files: u64,
+    pub stale_bytes: u64,
+    /// Files with a missing, future or pre-1980 date: not counted as stale.
+    pub unknown_files: u64,
+    pub unknown_bytes: u64,
+    /// Most stale space first (at most 25).
+    pub folders: Vec<StaleFolder>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StaleFolder {
+    pub name: String,
+    pub stale_files: u64,
+    pub stale_bytes: u64,
+    /// Space of the whole folder.
+    pub folder_bytes: u64,
+    /// The most recent change among its stale files.
+    pub newest_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

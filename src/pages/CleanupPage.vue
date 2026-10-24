@@ -20,12 +20,14 @@ import CleanupBrowser from '@/components/CleanupBrowser.vue'
 import ContextMenu, { type MenuItem } from '@/components/ContextMenu.vue'
 import DeleteConfirm from '@/components/DeleteConfirm.vue'
 import DriveTiles from '@/components/DriveTiles.vue'
+import DuplicatesPanel from '@/components/DuplicatesPanel.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import JobFields from '@/components/JobFields.vue'
 import JunkPanel from '@/components/JunkPanel.vue'
 import PathField from '@/components/PathField.vue'
 import QuickWins from '@/components/QuickWins.vue'
 import RestoreLast from '@/components/RestoreLast.vue'
+import StalePanel from '@/components/StalePanel.vue'
 import TypeGroups from '@/components/TypeGroups.vue'
 import {
   appAdmin,
@@ -187,6 +189,8 @@ const checked = ref(new Set<number>())
 const bulkEl = ref<InstanceType<typeof BulkDeleteDialog> | null>(null)
 const restoreEl = ref<InstanceType<typeof RestoreLast> | null>(null)
 const junkEl = ref<InstanceType<typeof JunkPanel> | null>(null)
+const dupesEl = ref<InstanceType<typeof DuplicatesPanel> | null>(null)
+const staleEl = ref<InstanceType<typeof StalePanel> | null>(null)
 watch(
   () => [job.overview, job.trail.length],
   () => {
@@ -214,11 +218,18 @@ function reviewJunk(items: JunkItem[]): void {
   )
 }
 
+/** Ticked duplicates; Rust re-checks that each group keeps a copy. */
+function reviewDuplicates(ids: number[]): void {
+  void bulkEl.value?.show(ids, new Map(), 'cleanup_delete_duplicates')
+}
+
 function onBulkFinished(): void {
   checked.value = new Set()
   picked.value = null
   void refreshDrives()
   void junkEl.value?.reload()
+  void dupesEl.value?.reload()
+  void staleEl.value?.reload()
   void restoreEl.value?.reload()
 }
 
@@ -714,6 +725,18 @@ onBeforeUnmount(() => {
         ref="junkEl"
         class="mt-6"
         @review="reviewJunk"
+      />
+
+      <DuplicatesPanel
+        ref="dupesEl"
+        class="mt-6"
+        @review="reviewDuplicates"
+      />
+
+      <StalePanel
+        ref="staleEl"
+        class="mt-6"
+        @review="reviewIds"
       />
     </div>
 

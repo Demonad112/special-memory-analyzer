@@ -5,7 +5,7 @@
 //! write happens outside every lock the delete path holds. A new scan and app exit flush first,
 //! so a quit loses nothing; only a crash inside the delay can.
 
-use report_core::{Body, Removed, Saved};
+use report_core::{Body, Removed, Saved, UsageReport};
 use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::Condvar;
@@ -33,6 +33,9 @@ struct Inner {
     flushed: Condvar,
 }
 
+/// A change to the tracked disk usage report.
+type Edit = Box<dyn FnOnce(&mut UsageReport) + Send>;
+
 #[derive(Default)]
 struct Slot {
     /// Changes with every new scan, so a write that started for the old report puts nothing back.
@@ -42,6 +45,8 @@ struct Slot {
     /// has the report out of the slot, so removals arriving mid-write are queued, not dropped.
     tracking: bool,
     pending: Vec<Removed>,
+    /// Changes to the report's other fields (duplicate and stale totals), applied in order.
+    edits: Vec<Edit>,
     /// A write failed; the report on disk is behind `saved`.
     stale: bool,
     timer_running: bool,
@@ -90,6 +95,7 @@ impl ReportWriter {
         );
         slot.saved = saved;
         slot.pending.clear();
+        slot.edits.clear();
         slot.stale = false;
         slot.error = None;
     }
@@ -102,6 +108,24 @@ impl ReportWriter {
             return None;
         }
         slot.pending.extend(items);
+        self.schedule(&mut slot);
+        slot.error.take()
+    }
+
+    /// Queues a change to the report's other fields, written like removals. Returns the error of
+    /// an earlier write that failed, once.
+    pub fn amend(&self, edit: impl FnOnce(&mut UsageReport) + Send + 'static) -> Option<String> {
+        let mut slot = lock(&self.inner.slot);
+        if !slot.tracking {
+            return None;
+        }
+        slot.edits.push(Box::new(edit));
+        self.schedule(&mut slot);
+        slot.error.take()
+    }
+
+    /// Starts the delayed write unless one is already waiting.
+    fn schedule(&self, slot: &mut Slot) {
         if !slot.timer_running {
             slot.timer_running = true;
             let writer = self.clone();
@@ -111,7 +135,6 @@ impl ReportWriter {
                 writer.flush();
             });
         }
-        slot.error.take()
     }
 
     /// Writes queued removals now. A failure is kept for the next [`removed`](Self::removed) and
@@ -122,7 +145,7 @@ impl ReportWriter {
         let queued;
         let (epoch, saved) = {
             let mut slot = lock(&self.inner.slot);
-            if slot.pending.is_empty() && !slot.stale {
+            if slot.pending.is_empty() && slot.edits.is_empty() && !slot.stale {
                 return;
             }
             let Some(mut saved) = slot.saved.take() else {
@@ -133,8 +156,12 @@ impl ReportWriter {
             {
                 queued = pending.len();
             }
+            let edits = std::mem::take(&mut slot.edits);
             if let Body::DiskUsage(report) = &mut saved.body {
                 report.removed.extend(pending);
+                for edit in edits {
+                    edit(report);
+                }
             }
             (slot.epoch, saved)
         };
@@ -269,6 +296,49 @@ mod tests {
         assert_eq!(writes(&writer), 1);
         writer.flush();
         assert_eq!(writes(&writer), 1, "nothing queued, nothing written");
+    }
+
+    #[test]
+    fn amendments_are_written_with_removals_and_in_order() {
+        let dir = TempDir::new();
+        let saved = scan_report(dir.0.as_path());
+        let id = saved.id.clone();
+        let writer = ReportWriter::new(Some(dir.0.as_path().to_path_buf()), LONG);
+        writer.set(Some(saved));
+
+        let totals = |groups| report_core::DuplicateTotals {
+            groups,
+            ..report_core::DuplicateTotals::default()
+        };
+        assert_eq!(
+            writer.amend(move |report| report.duplicates = Some(Box::new(totals(3)))),
+            None
+        );
+        assert_eq!(writer.removed(vec![removal(1)]), None);
+        assert_eq!(
+            writer.amend(move |report| report.duplicates = Some(Box::new(totals(2)))),
+            None
+        );
+        writer.flush();
+        let Body::DiskUsage(report) = report_core::load(dir.0.as_path(), &id).unwrap().body else {
+            panic!("not a disk usage report")
+        };
+        assert_eq!(report.duplicates.map(|dupes| dupes.groups), Some(2));
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(writes(&writer), 1, "one write for both");
+
+        // A new scan drops what the old one still had queued.
+        writer.amend(|report| report.stale = Some(Box::default()));
+        writer.set(None);
+        assert_eq!(writer.amend(|report| report.path.clear()), None);
+        let Body::DiskUsage(report) = report_core::load(dir.0.as_path(), &id).unwrap().body else {
+            panic!("not a disk usage report")
+        };
+        assert!(
+            report.stale.is_some(),
+            "flushed by the new scan before it took over"
+        );
+        assert_eq!(report.path, r"C:\scan");
     }
 
     #[test]

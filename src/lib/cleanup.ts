@@ -569,6 +569,12 @@ export function rowsByNode(items: JunkItem[]): Map<number, JunkItem> {
   return new Map(items.flatMap((item) => item.ids.map((id) => [id, item] as const)))
 }
 
+/**
+ * The command behind a bulk delete. Duplicates have their own, which refuses to delete every copy
+ * of a group and re-checks the files first.
+ */
+export type DeleteCommand = 'cleanup_delete_many' | 'cleanup_delete_duplicates'
+
 /** Dry run: what a delete of these items would do. Removes nothing. */
 export function previewDelete(ids: number[]): Promise<DeletePreview> {
   return invoke<DeletePreview>('cleanup_delete_preview', { ids })
@@ -582,9 +588,10 @@ export async function removeMany(
   ids: number[],
   permanent: boolean,
   confirmToken?: string,
+  command: DeleteCommand = 'cleanup_delete_many',
 ): Promise<ItemResult[]> {
   const done = await trackJob(() =>
-    invoke<DeleteManyResult>('cleanup_delete_many', { ids, permanent, confirmToken }),
+    invoke<DeleteManyResult>(command, { ids, permanent, confirmToken }),
   )
   cleanupJob.overview = done.overview
   const notices = [done.logError, done.overview.warning].filter(Boolean)
@@ -677,4 +684,176 @@ export function restoreSentence(results: RestoreResult[]): string {
   const left = results.length - restored
   const base = `${String(restored)} of ${String(results.length)} restored`
   return left > 0 ? `${base}; ${String(left)} could not be put back.` : `${base}.`
+}
+
+const KIB = 1024
+const MIB = 1024 * KIB
+
+/** The minimum sizes the duplicate finder offers; 1 MiB is the default. */
+export const DUPE_MIN_SIZES = [64 * KIB, MIB, 10 * MIB, 100 * MIB]
+export const DEFAULT_DUPE_MIN = MIB
+
+export type DupeStage = 'sizes' | 'ends' | 'full' | 'done'
+
+export interface DupeProgress {
+  stage: DupeStage
+  /** Files finished in this stage, of `total`. */
+  done: number
+  total: number
+  /** Bytes read so far. */
+  bytes: number
+}
+
+export interface DupeMember {
+  id: number
+  name: string
+  folder: string
+  modifiedMs: number | null
+  /** Space on disk for this copy. */
+  disk: number
+}
+
+export interface DupeGroup {
+  id: number
+  /** Length of each copy. */
+  size: number
+  /** Space freed by keeping one copy. */
+  reclaimable: number
+  /** Oldest first. */
+  members: DupeMember[]
+}
+
+export interface DupesSummary {
+  minSize: number
+  groups: number
+  files: number
+  reclaimable: number
+  skipped: { cloud: number; hardLinked: number; unreadable: number }
+}
+
+/** Groups loaded per page. */
+export const DUPE_PAGE = 100
+
+/** Searches the current scan for files with identical content; progress about every 100 ms. */
+export function findDuplicates(
+  minSize: number,
+  progress: (progress: DupeProgress) => void,
+): Promise<DupesSummary> {
+  const onProgress = new Channel<DupeProgress>()
+  onProgress.onmessage = progress
+  return trackJob(() => invoke<DupesSummary>('cleanup_dupes_find', { minSize, onProgress }))
+}
+
+export function cancelDuplicates(): Promise<void> {
+  return invoke('cleanup_dupes_cancel')
+}
+
+export function loadDuplicateGroups(offset: number, limit = DUPE_PAGE): Promise<DupeGroup[]> {
+  return invoke<DupeGroup[]>('cleanup_dupes_groups', { offset, limit })
+}
+
+/** The totals of the last search, after deletes; null when there is none. */
+export function loadDuplicateSummary(): Promise<DupesSummary | null> {
+  return invoke<DupesSummary | null>('cleanup_dupes_summary')
+}
+
+/** Every copy but the oldest in each group, for the button that ticks them. */
+export function allButOldest(): Promise<number[]> {
+  return invoke<number[]>('cleanup_dupes_all_but_oldest')
+}
+
+const DUPE_STAGES: Record<DupeStage, string> = {
+  sizes: 'Listing files of the same size',
+  ends: 'Comparing the start and end of each file',
+  full: 'Comparing whole files',
+  done: 'Finishing',
+}
+
+/** One line for the progress of a duplicate search. */
+export function dupeProgressLine(progress: DupeProgress | null): string {
+  if (!progress) {
+    return 'Starting…'
+  }
+  const label = DUPE_STAGES[progress.stage]
+  return progress.total > 0
+    ? `${label}: ${String(progress.done)} of ${String(progress.total)}…`
+    : `${label}…`
+}
+
+/** Groups (of those loaded) in which every copy is ticked. Rust refuses those anyway. */
+export function groupsWithoutCopy(groups: DupeGroup[], ticked: ReadonlySet<number>): DupeGroup[] {
+  return groups.filter((group) => group.members.every((member) => ticked.has(member.id)))
+}
+
+/** Space the ticked copies take on disk, over the loaded groups. */
+export function tickedDisk(groups: DupeGroup[], ticked: ReadonlySet<number>): number {
+  return groups
+    .flatMap((group) => group.members)
+    .filter((member) => ticked.has(member.id))
+    .reduce((sum, member) => sum + member.disk, 0)
+}
+
+/** The ages the stale report offers, in years; 3 is the default. */
+export const STALE_YEARS = [1, 2, 3, 5, 7, 10]
+export const DEFAULT_STALE_YEARS = 3
+
+/** Whether Windows keeps last-access times on NTFS on this PC. */
+export type LastAccess = 'kept' | 'off' | 'unknown'
+
+export interface StaleGroup {
+  /** The first-level folder's id; 0 for the files directly in the scanned folder. */
+  id: number
+  name: string
+  isFolder: boolean
+  staleFiles: number
+  staleBytes: number
+  folderBytes: number
+  newestMs: number | null
+}
+
+export interface StaleReport {
+  years: number
+  notOpened: boolean
+  nowMs: number
+  groups: StaleGroup[]
+  staleFiles: number
+  staleBytes: number
+  unknownFiles: number
+  unknownBytes: number
+  cloudFiles: number
+  totalBytes: number
+  lastAccess: LastAccess
+}
+
+export interface StaleFile {
+  id: number
+  /** Below the scanned folder. */
+  path: string
+  size: number
+  modifiedMs: number | null
+  accessedMs: number | null
+}
+
+export function loadStale(years: number, notOpened: boolean): Promise<StaleReport> {
+  return invoke<StaleReport>('cleanup_stale', { years, notOpened })
+}
+
+export function loadStaleFiles(
+  group: number,
+  years: number,
+  notOpened: boolean,
+): Promise<StaleFile[]> {
+  return invoke<StaleFile[]>('cleanup_stale_files', { group, years, notOpened })
+}
+
+/** The note under "Also not opened": access times are only as good as Windows keeps them. */
+export function lastAccessNote(lastAccess: LastAccess): string {
+  switch (lastAccess) {
+    case 'off':
+      return 'Windows is not keeping last-access times on this PC (NtfsDisableLastAccessUpdate), so "not opened" is unreliable here.'
+    case 'unknown':
+      return 'Could not check whether Windows keeps last-access times; treat "not opened" as a hint.'
+    case 'kept':
+      return 'Windows keeps last-access times on this PC, but programs such as backup or antivirus can update them.'
+  }
 }

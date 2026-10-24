@@ -3,6 +3,7 @@
 
 pub mod bulk;
 pub mod catalog;
+pub mod dupes;
 pub mod junk;
 pub mod log;
 mod os;
@@ -10,6 +11,7 @@ mod pathsafe;
 mod protect;
 pub mod quick;
 pub mod restore;
+pub mod stale;
 
 pub use os::{delete_permanently, drives, is_elevated, recycle, recycle_bin_items, Drive};
 pub use protect::Protected;
