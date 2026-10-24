@@ -1,6 +1,7 @@
 //! Disk Cleanup commands: scan one folder or drive with streamed progress, keep the tree in
 //! memory, hand the UI one folder level at a time, and recycle or delete items from it.
 
+use crate::report_writer::ReportWriter;
 use cleanup_core::bulk::{self, ItemResult, Outcome, Preview, PreviewStatus, Target};
 use cleanup_core::junk::{self, JunkGroup};
 use cleanup_core::log::{self, LogEntry};
@@ -8,8 +9,7 @@ use cleanup_core::quick::{self, Places, QuickId, QuickWin};
 use cleanup_core::restore::{self, LastRun, RestoreResult};
 use cleanup_core::{Drive, Overview, Protected, Row};
 use report_core::{
-    Body, CleanReport, CleanedItem, FileItem, FolderItem, JobInfo, Removed, Saved, TypeItem,
-    UsageReport,
+    Body, CleanReport, CleanedItem, FileItem, FolderItem, JobInfo, Removed, TypeItem, UsageReport,
 };
 use scan_core::{clean_path, scan, CancelToken, NodeId, ScanProgress, ScanState, Tree};
 use serde::Serialize;
@@ -43,8 +43,15 @@ fn protected_with(data_roots: impl IntoIterator<Item = PathBuf>) -> Protected {
 pub struct CleanupState {
     cancel: Mutex<Option<CancelToken>>,
     tree: Mutex<Option<Tree>>,
-    /// The scan's saved report; deletes are added to it.
-    report: Mutex<Option<Saved>>,
+    /// The scan's saved report; deletes are added to it, a few seconds later (see `ReportWriter`).
+    report: ReportWriter,
+}
+
+impl CleanupState {
+    /// Writes removals still waiting for the report. Called on exit.
+    pub fn flush_report(&self) {
+        self.report.flush();
+    }
 }
 
 #[derive(Serialize)]
@@ -82,8 +89,10 @@ pub async fn cleanup_scan(
     if let Some(previous) = lock(&state.cancel)?.replace(cancel.clone()) {
         previous.cancel();
     }
-    // Free the previous tree before building the next one.
+    // Free the previous tree before building the next one, and write the removals the previous
+    // scan's report is still waiting for.
     lock(&state.tree)?.take();
+    state.report.flush();
 
     let started = Instant::now();
     let job_cancel = cancel.clone();
@@ -130,7 +139,7 @@ pub async fn cleanup_scan(
         report_id: saved.as_ref().map(|saved| saved.id.clone()),
     };
     *lock(&state.tree)? = Some(tree);
-    *lock(&state.report)? = saved;
+    state.report.set(saved);
     Ok(result)
 }
 
@@ -271,31 +280,31 @@ pub async fn cleanup_delete(
         .ok_or("The delete returned no result.".to_string())?;
 
     let gone = matches!(result.outcome, Outcome::Done | Outcome::NotFound);
-    let mut guard = lock(&state.tree)?;
-    let tree = guard.as_mut().ok_or(NO_RESULT)?;
-    // A new scan may have replaced the tree while Windows was deleting.
-    let mut warning = None;
-    if gone && tree.is_live(id) && tree.path(id) == target.path {
-        tree.remove(id);
-        if let Some(saved) = lock(&state.report)?.as_mut() {
-            if let Body::DiskUsage(report) = &mut saved.body {
-                report.removed.push(Removed {
-                    path: result.path.clone(),
-                    size: target.size,
-                    permanent,
-                });
-                // The delete happened, so a report that can't be updated is a warning, not an error.
-                if let Err(err) = report_core::write(&report_core::reports_root(), saved) {
-                    warning = Some(report_warning(&err));
-                }
-            }
+    let (overview, removed) = {
+        let mut guard = lock(&state.tree)?;
+        let tree = guard.as_mut().ok_or(NO_RESULT)?;
+        // A new scan may have replaced the tree while Windows was deleting.
+        let removed = gone && tree.is_live(id) && tree.path(id) == target.path;
+        if removed {
+            tree.remove(id);
         }
-    }
+        (cleanup_core::overview(tree), removed)
+    };
+    // The report is queued outside the tree lock: the write itself comes later.
+    let warning = if removed {
+        state.report.removed(vec![Removed {
+            path: result.path.clone(),
+            size: target.size,
+            permanent,
+        }])
+    } else {
+        None
+    };
     if !gone {
         return Err(single_error(result));
     }
-    let mut overview = cleanup_core::overview(tree);
-    overview.warning = warning;
+    let mut overview = overview;
+    overview.warning = warning.map(|err| report_warning(&err));
     Ok(overview)
 }
 
@@ -479,31 +488,28 @@ pub async fn cleanup_delete_many(
     .await
     .map_err(|err| err.to_string())??;
 
-    let mut guard = lock(&state.tree)?;
-    let tree = guard.as_mut().ok_or(NO_RESULT)?;
-    let mut removed = Vec::new();
-    for result in results.iter().filter(|r| r.outcome == Outcome::Done) {
-        // A new scan may have replaced the tree while Windows was deleting.
-        if tree.is_live(result.id) && tree.path(result.id).display().to_string() == result.path {
-            tree.remove(result.id);
-        }
-        removed.push(Removed {
-            path: result.path.clone(),
-            size: result.size,
-            permanent,
-        });
-    }
-    let mut warning = None;
-    if let Some(saved) = lock(&state.report)?.as_mut() {
-        if let Body::DiskUsage(report) = &mut saved.body {
-            report.removed.extend(removed);
-            if let Err(err) = report_core::write(&report_core::reports_root(), saved) {
-                warning = Some(report_warning(&err));
+    let (overview, removed) = {
+        let mut guard = lock(&state.tree)?;
+        let tree = guard.as_mut().ok_or(NO_RESULT)?;
+        let mut removed = Vec::new();
+        for result in results.iter().filter(|r| r.outcome == Outcome::Done) {
+            // A new scan may have replaced the tree while Windows was deleting.
+            if tree.is_live(result.id) && tree.path(result.id).display().to_string() == result.path
+            {
+                tree.remove(result.id);
             }
+            removed.push(Removed {
+                path: result.path.clone(),
+                size: result.size,
+                permanent,
+            });
         }
-    }
-    let mut overview = cleanup_core::overview(tree);
-    overview.warning = warning;
+        (cleanup_core::overview(tree), removed)
+    };
+    // The report is queued outside the tree lock: the write itself comes later.
+    let warning = state.report.removed(removed);
+    let mut overview = overview;
+    overview.warning = warning.map(|err| report_warning(&err));
     Ok(DeleteManyResult {
         results,
         overview,
