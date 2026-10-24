@@ -12,6 +12,7 @@
 //! Runs are plain files so they survive a restart and can be reopened.
 
 pub mod copy;
+mod csv;
 pub mod meta;
 pub mod prepare;
 pub mod reason;
@@ -25,6 +26,7 @@ mod walk;
 pub mod watch;
 
 pub use copy::{ConflictPolicy, CopyOptions, VerifyLevel};
+pub use csv::csv_cell;
 pub use meta::PreserveOptions;
 pub use reason::{classify, FailureReason, Side};
 pub use scan_core::CancelToken;

@@ -2,6 +2,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use transfer_core::csv_cell;
 
 use crate::explorer;
 
@@ -494,20 +495,6 @@ fn json_island(data: &serde_json::Value) -> String {
         }
     }
     out
-}
-
-fn csv_cell(cell: &str) -> String {
-    // A leading = + - @ (or tab / CR) would run as a formula in Excel.
-    let cell = if cell.starts_with(['=', '+', '-', '@', '\t', '\r']) {
-        format!("'{cell}")
-    } else {
-        cell.to_string()
-    };
-    if cell.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", cell.replace('"', "\"\""))
-    } else {
-        cell
-    }
 }
 
 fn esc(text: &str) -> String {
