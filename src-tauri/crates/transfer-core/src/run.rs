@@ -1,7 +1,7 @@
 //! Step 2: copy the files of a prepared run, and later retry what was not copied.
 
 use crate::copy::{copy_file_with_retry, ConflictPolicy, CopyOptions, CopyOutcome};
-use crate::prepare::{destination_path, ManifestEntry};
+use crate::prepare::{destination_path, safe_relative, ManifestEntry};
 use crate::reason::{classify, FailureReason, Side};
 use crate::store::{JsonlWriter, LogStatus, RunStore};
 use crate::walk::{self, Entry};
@@ -129,6 +129,17 @@ pub fn retry(
 
     let outcome = (|| -> Result<()> {
         for item in &selected {
+            if !safe_relative(&item.relative_path) {
+                copier.record(ItemResult::not_copied(
+                    item.relative_path.clone(),
+                    item.kind,
+                    item.size,
+                    FailureReason::InvalidName,
+                    None,
+                    FailureReason::InvalidName.explanation(),
+                ))?;
+                continue;
+            }
             match item.kind {
                 ItemKind::Folder => copier.copy_folder_tree(&item.relative_path)?,
                 ItemKind::File => {

@@ -511,6 +511,16 @@ fn blocked_result(
     )
 }
 
+/// Whether a `/`-separated relative path stays inside the folder it is joined to: no `.` or `..`
+/// part, and no part that names a drive or starts a root (`:` or `\\`). Paths in the run files
+/// come from preflight and are always safe; this guards against a run file edited by hand.
+pub fn safe_relative(relative_path: &str) -> bool {
+    relative_path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .all(|part| part != "." && part != ".." && !part.contains([':', '\\']))
+}
+
 /// `dest` joined with a `/`-separated relative path.
 pub fn destination_path(destination: &Path, relative_path: &str) -> PathBuf {
     relative_path
@@ -726,6 +736,20 @@ mod tests {
         let rows: Vec<ManifestEntry> = store.manifest().unwrap().map(|row| row.unwrap()).collect();
         let paths: Vec<&str> = rows.iter().map(|row| row.relative_path.as_str()).collect();
         assert_eq!(paths, vec!["a.txt", "sub", "sub/b.txt"]);
+    }
+
+    #[test]
+    fn relative_paths_that_could_leave_the_folder_are_not_safe() {
+        assert!(safe_relative(""));
+        assert!(safe_relative("docs/report, final.txt"));
+        assert!(safe_relative("/leading/slash.txt"));
+        assert!(!safe_relative("../outside.txt"));
+        assert!(!safe_relative("docs/../../outside.txt"));
+        assert!(!safe_relative("./here.txt"));
+        assert!(!safe_relative("C:/Windows/x.dll"));
+        assert!(!safe_relative(r"docs\..\x.txt"));
+        assert!(!safe_relative(r"\\server\share\x.txt"));
+        assert!(!safe_relative("file.txt:stream"));
     }
 
     #[test]

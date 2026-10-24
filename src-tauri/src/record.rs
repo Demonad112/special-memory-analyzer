@@ -471,6 +471,9 @@ fn reveal_target(
     side: RevealSide,
     recovery: Option<PathBuf>,
 ) -> Result<PathBuf, String> {
+    if !transfer_core::prepare::safe_relative(relative_path) {
+        return Err("That path is not allowed.".into());
+    }
     let base = match side {
         RevealSide::Source => PathBuf::from(source),
         RevealSide::Destination => PathBuf::from(destination),
@@ -520,6 +523,12 @@ mod reveal_tests {
         );
         let target = reveal_target(r"C:\Src", r"D:\Dst", "", RevealSide::Destination, None);
         assert_eq!(target.unwrap(), PathBuf::from(r"D:\Dst"));
+    }
+
+    #[test]
+    fn refuses_a_relative_path_that_leaves_the_folder() {
+        let target = reveal_target("s", "d", "../x", RevealSide::Source, None);
+        assert!(target.is_err());
     }
 
     #[test]

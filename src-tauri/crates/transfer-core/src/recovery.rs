@@ -2,7 +2,7 @@
 //! destination) with their folder structure, plus a `NOT-COPIED.csv` listing them.
 
 use crate::copy::{copy_file, ConflictPolicy, CopyOptions, CopyOutcome};
-use crate::prepare::destination_path;
+use crate::prepare::{destination_path, safe_relative};
 use crate::reason::{FailureReason, Side};
 use crate::run::Selection;
 use crate::store::{LogStatus, RunStore};
@@ -100,6 +100,8 @@ pub fn copy_to_recovery(
             Some("The source could not be read, so there is nothing to copy.".to_owned())
         } else if item.reason == Some(FailureReason::DiskFull) && same_volume {
             Some("The recovery folder is on the same full disk as the destination.".to_owned())
+        } else if !safe_relative(&item.relative_path) {
+            Some(FailureReason::InvalidName.explanation().to_owned())
         } else if cancel.is_cancelled() {
             Some("Cancelled".to_owned())
         } else {
