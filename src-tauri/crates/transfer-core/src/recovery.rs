@@ -78,10 +78,11 @@ pub fn copy_to_recovery(
     fs::create_dir_all(&folder)?;
     let same_volume = volume(&folder) == volume(&destination);
 
+    let matches = selection.matcher();
     let selected: Vec<ItemResult> = store
         .latest_results()?
         .into_values()
-        .filter(|item| selection.matches(item))
+        .filter(|item| matches(item))
         .collect();
     let options = CopyOptions {
         conflict: ConflictPolicy::Overwrite,
