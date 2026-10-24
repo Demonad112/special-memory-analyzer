@@ -7,7 +7,7 @@ Decisions already made (the prompt builds them in):
 | Question                   | Choice                                                                              |
 | -------------------------- | ----------------------------------------------------------------------------------- |
 | Where Rust batches run     | **Cloud** (B04, B05, B06, B07, B09, B10). Local `cargo` is blocked on this machine. |
-| Where non-Rust batches run | **Local** (B08 frontend, B11 docs and deps).                                        |
+| Where non-Rust batches run | **Local** (B08 frontend, B11 docs and deps). B12 (Rust) runs in the cloud.          |
 | Merging                    | **You merge**, then tell the chat "merged". It never merges.                        |
 | Archiving                  | The chat **offers** after each merge and archives only when you say yes.            |
 | Parallelism                | B08 runs next to B04 (disjoint files). Everything else is one at a time.            |
@@ -36,7 +36,9 @@ PLAN (run in this order; "needs" means that batch is merged to main):
   5. B09  prompts/B09-performance.md         CLOUD   needs B03, B05, B06
   6. B10  prompts/B10-refactor.md            CLOUD   needs B01 to B09. Run it TWICE, one at a time
                                                      (the file names the two halves); merge between.
-  7. B11  prompts/B11-docs-deps.md           LOCAL   any time after B01. Run last.
+  7. B12  prompts/B12-followups.md           CLOUD   needs B10 (both sessions)
+  8. B11  prompts/B11-docs-deps.md           LOCAL   needs B12. Run last. Ends with the 1.2.0 version bump;
+                                                     the owner tags the release after the manual checklists.
 Paths are under docs/review/. Never run two batches that share Rust files at once.
 
 HOW TO START A BATCH:
@@ -76,8 +78,8 @@ existing branch.
 
 STOP AND ASK ME if: a prerequisite is unmerged, CI is red and the session is stopped, a PR touches files outside
 its batch's list, two PRs conflict on 02-FINDINGS-REGISTER.md (fix: merge main in, take main's file, re-add that
-batch's "Fixed in" marks), or anything needs a product decision. DSA-018 (vite bump) stays skipped until I
-approve Q-deps; remind me when B11 starts.
+batch's "Fixed in" marks), or anything needs a product decision. Q-deps was approved on 2026-10-23, so DSA-018
+(vite bump) is done in B11.
 
 DECISIONS ALREADY MADE (the batch prompts carry them; do not re-ask): Quick cleanups stay permanent but logged
 and protection-checked; elevated use is normal; canonical repo is Demonad112/special-memory-analyzer; no ESLint,

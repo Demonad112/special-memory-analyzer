@@ -23,7 +23,8 @@ _Updated 2026-10-23._
 | 8   | B08        | Frontend correctness and UX | DSA-025, 026, 027, 035, 036, 043, 044, 051, 055, 057, 061 | B01 merged                       | Medium                                 |
 | 9   | B09        | Performance                 | DSA-030, 031, 032, 033, 052                               | B03, B05, B06 merged             | Medium                                 |
 | 10  | B10        | Refactor and quality        | DSA-041, 042, 045, 048, 053, 054, 056, 060, 070           | All above merged                 | Large: split over 2 sessions if needed |
-| 11  | B11        | Docs, deps, polish          | DSA-058, 062, 064, 065, 066, 068                          | **Q4, Q7, Q8 answered**          | Small                                  |
+| 11  | B12        | Follow-ups from the fixes   | DSA-071, 072, 073, 074, 075, 077                          | B10 merged (both sessions)       | Medium–large                           |
+| 12  | B11        | Docs, deps, polish          | DSA-018, 058, 062, 064, 065, 066, 068; 1.2.0 version bump | B12 merged; all Q answered       | Small                                  |
 
 All 9 High findings are fixed after session 7. If the budget runs short, stop there: the rest is Medium and below.
 
