@@ -11,6 +11,7 @@ use cleanup_core::quick::{self, Places, QuickId, QuickWin};
 use cleanup_core::restore::{self, LastRun, RestoreResult};
 use cleanup_core::stale::{self, StaleFile, StaleReport};
 use cleanup_core::{Drive, Overview, Protected, Row};
+use report_core::snapshots::{self, Forecast, Growth, RootHistory, Snapshot};
 use report_core::{
     Body, CleanReport, CleanedItem, DuplicateItem, DuplicateTotals, FileItem, FolderItem, JobInfo,
     OwnerItem, OwnerTotals, Removed, StaleFolder, StaleTotals, TypeItem, UsageReport,
@@ -56,9 +57,17 @@ pub struct CleanupState {
     /// The owner of each file of this scan, once "By owner" has run (D-15). Dropped by a new scan.
     owners: Mutex<Option<OwnerIndex>>,
     owners_cancel: Mutex<Option<CancelToken>>,
+    /// The root of the current scan, and when its snapshot was saved (`None` when history is off
+    /// or the write failed). Replaced by every scan.
+    history: Mutex<Option<ScanHistory>>,
     /// Changes with every scan (under the `dupes` lock), so a search that started on the previous
     /// tree keeps nothing.
     scan_seq: AtomicU64,
+}
+
+struct ScanHistory {
+    root: String,
+    saved_ms: Option<u64>,
 }
 
 impl CleanupState {
@@ -91,6 +100,8 @@ pub async fn cleanup_scan(
     record: State<'_, crate::record::RecordState>,
     path: String,
     job: JobInfo,
+    // Settings > Keep scan history; on when the webview does not say.
+    history: Option<bool>,
     on_progress: Channel<ScanProgress>,
 ) -> Result<ScanResult, String> {
     let path = clean_path(&path);
@@ -123,6 +134,7 @@ pub async fn cleanup_scan(
     // Free the previous tree before building the next one, and write the removals the previous
     // scan's report is still waiting for.
     lock(&state.tree)?.take();
+    lock(&state.history)?.take();
     state.report.flush();
 
     let started = Instant::now();
@@ -169,6 +181,16 @@ pub async fn cleanup_scan(
         elapsed_ms,
         report_id: saved.as_ref().map(|saved| saved.id.clone()),
     };
+    // A completed scan (not a cancelled one: that returned above) adds to the history.
+    let saved_ms = if history.unwrap_or(true) {
+        save_snapshot(&path, &tree)
+    } else {
+        None
+    };
+    *lock(&state.history)? = Some(ScanHistory {
+        root: path.display().to_string(),
+        saved_ms,
+    });
     *lock(&state.tree)? = Some(tree);
     state.report.set(saved);
     Ok(result)
@@ -177,6 +199,38 @@ pub async fn cleanup_scan(
 /// What the page shows when the scan's saved report could not be written or updated.
 fn report_warning(err: &str) -> String {
     format!("The saved report is out of date: {err}")
+}
+
+/// The drive `path` is the root of, when it is one.
+fn drive_of(path: &std::path::Path) -> Option<Drive> {
+    cleanup_core::drives().into_iter().find(|drive| {
+        drive
+            .path
+            .trim_end_matches('\\')
+            .eq_ignore_ascii_case(path.display().to_string().trim_end_matches(['\\', '/']))
+    })
+}
+
+/// Writes the scan's history snapshot. A failure is logged, never shown: the scan itself worked.
+fn save_snapshot(path: &std::path::Path, tree: &Tree) -> Option<u64> {
+    let drive = drive_of(path);
+    let taken = transfer_core::now_ms();
+    let snapshot = Snapshot::from_tree(
+        &path.display().to_string(),
+        tree,
+        (
+            drive.as_ref().map(|d| d.total),
+            drive.as_ref().map(|d| d.free),
+        ),
+        taken,
+    );
+    match snapshots::save(&report_core::reports_root(), &snapshot, taken) {
+        Ok(_) => Some(taken),
+        Err(err) => {
+            report_core::applog::error(&format!("Could not save the scan history: {err}"));
+            None
+        }
+    }
 }
 
 /// Lines kept per list in a saved disk usage report.
@@ -190,12 +244,7 @@ fn usage_report(
     elapsed_ms: u64,
 ) -> UsageReport {
     let root = &overview.root;
-    let drive = cleanup_core::drives().into_iter().find(|drive| {
-        drive
-            .path
-            .trim_end_matches('\\')
-            .eq_ignore_ascii_case(path.display().to_string().trim_end_matches(['\\', '/']))
-    });
+    let drive = drive_of(path);
     UsageReport {
         path: path.display().to_string(),
         size: root.size,
@@ -727,6 +776,127 @@ pub fn cleanup_owner_children(
     let owners = lock(&state.owners)?;
     let index = owners.as_ref().ok_or(NO_OWNERS)?;
     with_tree(&state, |tree| Ok(index.rows_for(tree, id, owner)))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotInfo {
+    taken_ms: u64,
+    size: u64,
+    drive_used: Option<u64>,
+    drive_total: Option<u64>,
+    /// Saved by the scan on screen.
+    current: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct History {
+    root: String,
+    /// Newest first.
+    snapshots: Vec<SnapshotInfo>,
+    forecast: Forecast,
+    now_ms: u64,
+}
+
+/// The saved snapshots of the scanned folder and the forecast from them.
+#[tauri::command]
+pub async fn cleanup_history(app: AppHandle) -> Result<History, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<CleanupState>();
+        let (root, current) = scan_history(&state)?;
+        let saved = snapshots::list(&report_core::reports_root(), &root);
+        let now_ms = transfer_core::now_ms();
+        let forecast = snapshots::forecast(&saved, now_ms);
+        Ok(History {
+            root,
+            snapshots: saved
+                .iter()
+                .rev()
+                .map(|snapshot| SnapshotInfo {
+                    taken_ms: snapshot.taken_ms,
+                    size: snapshot.size,
+                    drive_used: snapshot.drive_used(),
+                    drive_total: snapshot.drive_total,
+                    current: current == Some(snapshot.taken_ms),
+                })
+                .collect(),
+            forecast,
+            now_ms,
+        })
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+fn scan_history(state: &CleanupState) -> Result<(String, Option<u64>), String> {
+    lock(&state.history)?
+        .as_ref()
+        .map(|history| (history.root.clone(), history.saved_ms))
+        .ok_or_else(|| NO_RESULT.to_string())
+}
+
+/// Rows of the growth list sent to the webview.
+const GROWTH_ROWS: usize = 200;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrowthView {
+    #[serde(flatten)]
+    growth: Growth,
+    /// Changed folders beyond the rows sent.
+    hidden: usize,
+}
+
+/// What grew since an earlier snapshot of this folder (`from_ms`; the newest earlier scan when
+/// omitted), measured against the scan as it is now, deletes included.
+#[tauri::command]
+pub async fn cleanup_growth(app: AppHandle, from_ms: Option<u64>) -> Result<GrowthView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<CleanupState>();
+        let (root, current) = scan_history(&state)?;
+        let saved = snapshots::list(&report_core::reports_root(), &root);
+        let earlier = match from_ms {
+            Some(at) => saved.iter().find(|snapshot| snapshot.taken_ms == at),
+            None => saved
+                .iter()
+                .rev()
+                .find(|snapshot| Some(snapshot.taken_ms) != current),
+        }
+        .ok_or("There is no earlier scan of this folder to compare with yet.")?;
+        let now = with_tree(&state, |tree| {
+            Ok(Snapshot::from_tree(
+                &root,
+                tree,
+                (None, None),
+                transfer_core::now_ms(),
+            ))
+        })?;
+        let mut growth = snapshots::growth(earlier, &now);
+        let hidden = growth.rows.len().saturating_sub(GROWTH_ROWS);
+        growth.rows.truncate(GROWTH_ROWS);
+        Ok(GrowthView { growth, hidden })
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+/// Every folder that has scan history, for Settings.
+#[tauri::command]
+pub async fn history_roots() -> Result<Vec<RootHistory>, String> {
+    tauri::async_runtime::spawn_blocking(|| snapshots::roots(&report_core::reports_root()))
+        .await
+        .map_err(|err| err.to_string())
+}
+
+/// Deletes the scan history of one folder (`key` from `history_roots`) or, without a key, of all.
+#[tauri::command]
+pub async fn history_delete(key: Option<String>) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        snapshots::delete(&report_core::reports_root(), key.as_deref())
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 /// Owners kept in a saved disk usage report.

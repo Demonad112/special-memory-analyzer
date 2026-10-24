@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { invoke } from '@tauri-apps/api/core'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick } from 'vue'
 
 const reports = vi.hoisted(() => ({
@@ -45,6 +46,11 @@ function button(host: HTMLElement, text: string): HTMLButtonElement {
 const png = 'data:image/png;base64,iVBO'
 
 describe('SettingsPage company logo', () => {
+  beforeEach(() => {
+    // No scan history saved.
+    vi.mocked(invoke).mockResolvedValue([])
+  })
+
   afterEach(() => {
     vi.resetAllMocks()
     document.body.innerHTML = ''
@@ -102,5 +108,33 @@ describe('SettingsPage company logo', () => {
     await settle()
     expect(button(host, 'Change').disabled).toBe(false)
     expect(host.querySelector('img')?.getAttribute('src')).toBe(png)
+  })
+
+  it('lists scan history per folder and deletes one folder or all of it', async () => {
+    const entries = [
+      {
+        key: 'k1',
+        root: 'D:\\Shares',
+        count: 3,
+        firstMs: 1_700_000_000_000,
+        lastMs: 1_710_000_000_000,
+      },
+      { key: 'k2', root: 'E:\\', count: 1, firstMs: 1_700_000_000_000, lastMs: 1_700_000_000_000 },
+    ]
+    vi.mocked(invoke).mockImplementation((command: string) =>
+      Promise.resolve(command === 'history_roots' ? entries : 1),
+    )
+    reports.loadLogo.mockResolvedValue(null)
+    const host = mount()
+    await settle()
+    expect(host.textContent).toContain('D:\\Shares')
+    expect(host.textContent).toContain('3 scans')
+
+    button(host, 'Delete').click()
+    await settle()
+    expect(invoke).toHaveBeenCalledWith('history_delete', { key: 'k1' })
+    button(host, 'Delete all history').click()
+    await settle()
+    expect(invoke).toHaveBeenCalledWith('history_delete', { key: null })
   })
 })
