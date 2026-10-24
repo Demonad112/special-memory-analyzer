@@ -5,6 +5,7 @@
 
 mod diff;
 pub mod hash;
+pub mod inuse;
 mod list;
 pub mod names;
 mod paths;
