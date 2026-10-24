@@ -11,6 +11,8 @@ Folder walks never follow symlinks or junctions, and OneDrive online-only files 
 
 ## Install
 
+Website with the latest download, How-To and FAQ: <https://demonad112.github.io/special-memory-analyzer/>.
+
 Download the installer from the releases page, or build it yourself (below). See [docs/install.md](docs/install.md) for silent install, portable mode and data folders. Release builds are signed with an ephemeral self-signed certificate that Windows does not trust, so SmartScreen still warns. For servers, the USB kit ([docs/usb-install.md](docs/usb-install.md)) trusts the certificate for the length of the install only.
 
 ## Build

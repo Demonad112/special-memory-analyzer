@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added a GitHub Pages site (`site/`) with the latest download, features, How-To and FAQ. It deploys from `main` through `.github/workflows/pages.yml`.
+
 ## 1.2.0
 
 Fixes from the 2026-10 audit.
