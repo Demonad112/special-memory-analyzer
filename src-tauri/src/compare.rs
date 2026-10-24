@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 /// Returned when a compare is cancelled; the UI matches on it to stay quiet.
@@ -146,22 +146,25 @@ pub async fn compare_start(
     let started = std::time::Instant::now();
     let job_cancel = cancel.clone();
     let (job_left, job_right) = (left.clone(), right.clone());
-    let diff = tauri::async_runtime::spawn_blocking(move || {
-        run(&job_left, &job_right, ignore_junk, &job_cancel, &on_event)
+    // Diffing and saving the report (which walks every missing entry) both stay off the
+    // async runtime.
+    let (diff, elapsed_ms, report_id) = tauri::async_runtime::spawn_blocking(move || {
+        let diff = run(&job_left, &job_right, ignore_junk, &job_cancel, &on_event)?;
+        // A newer compare (or a cancel) arrived while this one was diffing.
+        if job_cancel.is_cancelled() {
+            return Err(CANCELLED.to_string());
+        }
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let report_id = save_report(&job_left, &job_right, &diff, elapsed_ms, job);
+        Ok::<_, String>((diff, elapsed_ms, report_id))
     })
     .await
     .map_err(|err| err.to_string())??;
-    // A newer compare (or a cancel) arrived while this one was diffing.
-    if cancel.is_cancelled() {
-        return Err(CANCELLED.to_string());
-    }
-
-    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let result = CompareResult {
         summary: diff.summary().clone(),
         rows: diff.children(0).unwrap_or_default(),
         elapsed_ms,
-        report_id: save_report(&left, &right, &diff, elapsed_ms, job),
+        report_id,
     };
     *state.result.lock().map_err(|err| err.to_string())? = Some(Compared {
         left,
@@ -261,15 +264,22 @@ pub struct MissingList {
     paths: Vec<String>,
 }
 
+/// Building every missing path can take a while on a big tree, so it runs on the blocking
+/// pool; the state is reached through the handle because the closure must be `'static`.
 #[tauri::command]
-pub fn compare_missing(state: State<'_, CompareState>) -> Result<MissingList, String> {
-    let result = state.result.lock().map_err(|err| err.to_string())?;
-    let compared = result.as_ref().ok_or(NO_RESULT)?;
-    Ok(MissingList {
-        source: compared.left.display().to_string(),
-        destination: compared.right.display().to_string(),
-        paths: compared.diff.missing_paths(),
+pub async fn compare_missing(app: AppHandle) -> Result<MissingList, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<CompareState>();
+        let result = state.result.lock().map_err(|err| err.to_string())?;
+        let compared = result.as_ref().ok_or(NO_RESULT)?;
+        Ok(MissingList {
+            source: compared.left.display().to_string(),
+            destination: compared.right.display().to_string(),
+            paths: compared.diff.missing_paths(),
+        })
     })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]

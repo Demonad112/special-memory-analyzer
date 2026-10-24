@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 /// Returned when a scan is cancelled; the UI matches on it to stay quiet.
@@ -403,10 +403,16 @@ pub fn app_elevated() -> bool {
 
 /// Junk the scan found, in groups. Nothing is selected for the user.
 #[tauri::command]
-pub async fn cleanup_junk(state: State<'_, CleanupState>) -> Result<Vec<JunkGroup>, String> {
-    with_tree(&state, |tree| {
-        Ok(junk::find(tree, &protected(), transfer_core::now_ms()))
+pub async fn cleanup_junk(app: AppHandle) -> Result<Vec<JunkGroup>, String> {
+    // The search walks the whole tree: keep it on the blocking pool.
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<CleanupState>();
+        with_tree(&state, |tree| {
+            Ok(junk::find(tree, &protected(), transfer_core::now_ms()))
+        })
     })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 /// A dry run: what deleting `ids` would do to each item. Touches nothing.
