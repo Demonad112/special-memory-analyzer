@@ -328,7 +328,8 @@ impl CheckContext<'_> {
         meta.len() == entry.size
             && times_match(source_time, meta.modified().ok())
             && open_exclusively(target)
-            && (!self.hashed || self.hashes_match(entry, target))
+            // An online-only source is not read, so it has no hash to compare; size and time stand.
+            && (!self.hashed || entry.cloud || self.hashes_match(entry, target))
     }
 
     fn hashes_match(&self, entry: &ManifestEntry, target: &Path) -> bool {
@@ -355,6 +356,15 @@ impl CheckContext<'_> {
             item
         };
         let Ok(meta) = fs::metadata(&target) else {
+            if entry.cloud {
+                // Opening the source would download it, so its state is not checked.
+                return inferred(
+                    FailureReason::CloudOnly,
+                    Some(Side::Source),
+                    "Online-only file; it was not opened, so nothing says why it did not arrive"
+                        .to_owned(),
+                );
+            }
             // Why might the other program have skipped it? Check the source for a likely cause.
             let source = destination_path(self.source, &entry.relative_path);
             if let Err(error) = fs::File::open(&source) {
@@ -614,5 +624,39 @@ mod tests {
             .latest_results()
             .unwrap();
         assert_eq!(latest["a.txt"].reason, Some(FailureReason::VerifyMismatch));
+    }
+
+    fn cloud_entry(size: u64) -> ManifestEntry {
+        ManifestEntry {
+            relative_path: "online.docx".to_owned(),
+            kind: ItemKind::File,
+            size,
+            modified_at_ms: None,
+            blocked: None,
+            cloud: true,
+        }
+    }
+
+    #[test]
+    fn an_online_only_source_is_never_hashed_or_opened() {
+        // The source is not there at all: any attempt to read it would fail the check.
+        let dir = TempDir::new("watch-cloud");
+        dir.write("dst/online.docx", b"12345");
+        let context = CheckContext {
+            destination: &dir.path("dst"),
+            source: &dir.path("src"),
+            stable_for: Duration::ZERO,
+            hashed: true,
+        };
+        let entry = cloud_entry(5);
+
+        assert!(context.matches(&entry, &dir.path("dst/online.docx")));
+        let item = context.verdict(&entry);
+        assert_eq!(item.status, ItemStatus::Arrived);
+
+        fs::remove_file(dir.path("dst/online.docx")).unwrap();
+        let item = context.verdict(&entry);
+        assert_eq!(item.reason, Some(FailureReason::CloudOnly));
+        assert_eq!(item.side, Some(Side::Source));
     }
 }

@@ -35,6 +35,10 @@ pub struct ManifestEntry {
     /// Set when pre-flight found a problem that stops this file from being copied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked: Option<FailureReason>,
+    /// An online-only (OneDrive) file. Reading it would download it, so Watch never hashes or
+    /// opens such a source.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cloud: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -358,6 +362,7 @@ impl ScanState<'_> {
                     size: 0,
                     modified_at_ms: None,
                     blocked,
+                    cloud: false,
                 };
                 // A blocked folder cannot be created, so its contents cannot be copied either.
                 (Some(row), result, blocked.is_none())
@@ -394,6 +399,7 @@ impl ScanState<'_> {
                     size,
                     modified_at_ms,
                     blocked,
+                    cloud,
                 };
                 (Some(row), result, false)
             }
