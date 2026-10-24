@@ -74,6 +74,7 @@ pub async fn cleanup_drives() -> Result<Vec<Drive>, String> {
 #[tauri::command]
 pub async fn cleanup_scan(
     state: State<'_, CleanupState>,
+    record: State<'_, crate::record::RecordState>,
     path: String,
     job: JobInfo,
     on_progress: Channel<ScanProgress>,
@@ -85,6 +86,8 @@ pub async fn cleanup_scan(
     // One canonical form for the tree root, so every later never-delete check sees the real
     // folder whatever name the user typed (short name, admin share, subst drive).
     let path = scan_core::canonical_root(&path)?;
+    // Held until the scan is done: an elevated record and a scan must not overlap.
+    let _scan = record.scan_guard()?;
     let cancel = CancelToken::new();
     if let Some(previous) = lock(&state.cancel)?.replace(cancel.clone()) {
         previous.cancel();
@@ -625,7 +628,10 @@ pub struct QuickList {
 }
 
 #[tauri::command]
-pub async fn cleanup_quick_list() -> Result<QuickList, String> {
+pub async fn cleanup_quick_list(
+    record: tauri::State<'_, crate::record::RecordState>,
+) -> Result<QuickList, String> {
+    let _scan = record.scan_guard()?;
     tauri::async_runtime::spawn_blocking(|| QuickList {
         elevated: cleanup_core::is_elevated(),
         items: quick::list(&Places::for_this_pc()),
@@ -643,7 +649,12 @@ pub struct QuickResult {
 
 /// Runs the chosen quick cleanups one after another and saves what they freed as a report.
 #[tauri::command]
-pub async fn cleanup_quick_clean(ids: Vec<QuickId>, job: JobInfo) -> Result<QuickResult, String> {
+pub async fn cleanup_quick_clean(
+    record: tauri::State<'_, crate::record::RecordState>,
+    ids: Vec<QuickId>,
+    job: JobInfo,
+) -> Result<QuickResult, String> {
+    let _scan = record.scan_guard()?;
     tauri::async_runtime::spawn_blocking(move || {
         let places = Places::for_this_pc();
         let elevated = cleanup_core::is_elevated();

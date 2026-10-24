@@ -134,6 +134,7 @@ fn save_report(
 #[tauri::command]
 pub async fn compare_start(
     state: State<'_, CompareState>,
+    record: State<'_, crate::record::RecordState>,
     left: String,
     right: String,
     ignore_junk: bool,
@@ -143,6 +144,8 @@ pub async fn compare_start(
     let left = clean_path(&left);
     let right = clean_path(&right);
     check_pair(&left, &right)?;
+    // Held until the scan is done: an elevated record and a scan must not overlap.
+    let _scan = record.scan_guard()?;
     let cancel = CancelToken::new();
     if let Some(previous) = state
         .cancel

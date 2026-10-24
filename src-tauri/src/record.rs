@@ -6,6 +6,7 @@ use crate::compare::CompareState;
 use scan_core::{check_pair, clean_path};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::ipc::Channel;
@@ -28,13 +29,40 @@ const MAX_NOT_COPIED_ROWS: usize = 10_000;
 /// The running record's cancel and finish switches. One record at a time.
 // ponytail: one job slot; a job map if two records ever need to run at once.
 #[derive(Default)]
-pub struct RecordState(Mutex<Option<WatchControl>>);
+pub struct RecordState(
+    Mutex<Option<WatchControl>>,
+    /// Compare and Cleanup scans in flight; see [`RecordState::scan_guard`].
+    AtomicUsize,
+);
+
+/// Held by a Compare or Cleanup scan while it runs. It keeps a record that would switch on
+/// backup rights (administrator) from starting underneath it.
+pub struct ScanGuard<'a>(&'a AtomicUsize);
+
+impl Drop for ScanGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 impl RecordState {
     fn begin(&self) -> Result<WatchControl, String> {
+        self.begin_as(cleanup_core::is_elevated())
+    }
+
+    fn begin_as(&self, elevated: bool) -> Result<WatchControl, String> {
         let mut job = self.0.lock().map_err(|err| err.to_string())?;
         if job.is_some() {
             return Err("A record is already running. Finish or cancel it first.".into());
+        }
+        // The privileges below sit in the process token, so a scan running now would suddenly
+        // read folders the user could not. Scans and privileged records exclude each other.
+        if elevated && self.1.load(Ordering::SeqCst) > 0 {
+            return Err(
+                "A Compare or Cleanup scan is running. Let it finish or cancel it, then \
+                        start the record: as administrator a record changes what a scan can read."
+                    .into(),
+            );
         }
         // Copying may use backup rights to keep permissions and owner; scans never do.
         transfer_core::secure::enable_privileges();
@@ -67,6 +95,27 @@ impl RecordState {
 
     fn control(&self) -> Option<WatchControl> {
         self.0.lock().ok().and_then(|job| job.clone())
+    }
+
+    /// Taken by a Compare or Cleanup scan for as long as it runs. While an administrator's record
+    /// holds backup rights the scan is refused: it would open folders with them and report what
+    /// the user could not see. Without administrator rights nothing is switched on, so scans and
+    /// records run side by side as before.
+    pub fn scan_guard(&self) -> Result<ScanGuard<'_>, String> {
+        self.scan_guard_as(cleanup_core::is_elevated())
+    }
+
+    fn scan_guard_as(&self, elevated: bool) -> Result<ScanGuard<'_>, String> {
+        let job = self.0.lock().map_err(|err| err.to_string())?;
+        if elevated && job.is_some() {
+            return Err(
+                "A record is running as administrator. Finish or cancel it before \
+                        scanning, or the scan would read folders you can't open yourself."
+                    .into(),
+            );
+        }
+        self.1.fetch_add(1, Ordering::SeqCst);
+        Ok(ScanGuard(&self.1))
     }
 
     /// True while a record is running (the app must not exit under it).
@@ -554,5 +603,46 @@ mod reveal_tests {
         let target = reveal_target("s", "d", "", RevealSide::Recovery, Some(folder.clone()));
         assert_eq!(target.unwrap(), folder);
         assert!(reveal_target("s", "d", "", RevealSide::Recovery, None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod scan_exclusion_tests {
+    use super::*;
+
+    #[test]
+    fn an_elevated_record_refuses_scans_until_it_ends() {
+        let state = RecordState::default();
+        assert!(state.scan_guard_as(true).is_ok());
+        let control = state.begin_as(true).unwrap();
+        drop(control);
+
+        let refused = state.scan_guard_as(true).err().unwrap();
+        assert!(refused.contains("running as administrator"), "{refused}");
+        state.end();
+        assert!(state.scan_guard_as(true).is_ok());
+    }
+
+    #[test]
+    fn a_running_scan_keeps_an_elevated_record_from_starting() {
+        let state = RecordState::default();
+        let scan = state.scan_guard_as(true).unwrap();
+        let refused = state.begin_as(true).err().unwrap();
+        assert!(refused.contains("scan is running"), "{refused}");
+        assert!(!state.is_running(), "the refused record left no job behind");
+
+        drop(scan);
+        assert!(state.begin_as(true).is_ok());
+        state.end();
+    }
+
+    #[test]
+    fn without_administrator_scans_and_records_overlap_freely() {
+        let state = RecordState::default();
+        let scan = state.scan_guard_as(false).unwrap();
+        assert!(state.begin_as(false).is_ok());
+        assert!(state.scan_guard_as(false).is_ok());
+        drop(scan);
+        state.end();
     }
 }
