@@ -15,15 +15,23 @@ pub const MAX_BYTES: u64 = 5 * 1024 * 1024;
 #[serde(rename_all = "camelCase")]
 pub struct LogEntry {
     /// `2026-09-30 06:15:02 UTC`.
+    #[serde(default)]
     pub time: String,
+    #[serde(default)]
     pub time_ms: u64,
+    #[serde(default)]
     pub user: String,
+    #[serde(default)]
     pub elevated: bool,
+    #[serde(default)]
     pub path: String,
+    #[serde(default)]
     pub size: u64,
     /// "recycle", "permanent", or "restore" for an item put back from the Recycle Bin.
+    #[serde(default)]
     pub method: String,
     /// "done", "inUse", "accessDenied", "notFound", "skipped" or "failed".
+    #[serde(default)]
     pub result: String,
     pub detail: Option<String>,
     /// Groups the entries of one bulk delete, so the last one can be restored. Absent in logs
@@ -87,6 +95,14 @@ mod tests {
             detail: None,
             run: None,
         }
+    }
+
+    #[test]
+    fn a_log_line_with_only_a_path_and_time_parses() {
+        let entry: LogEntry = serde_json::from_str(r#"{"path":"C:\\a","timeMs":5}"#).unwrap();
+        assert_eq!(entry.path, "C:\\a");
+        assert_eq!(entry.time_ms, 5);
+        assert!(entry.user.is_empty() && !entry.elevated && entry.run.is_none());
     }
 
     #[test]

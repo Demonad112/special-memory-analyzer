@@ -80,9 +80,13 @@ pub enum ReportKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Saved {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub created_at_ms: u64,
+    #[serde(default)]
     pub machine: String,
+    #[serde(default)]
     pub user: String,
     #[serde(default)]
     pub job: JobInfo,
@@ -175,7 +179,12 @@ pub fn write(root: &Path, saved: &Saved) -> Result<(), String> {
 pub fn load(root: &Path, id: &str) -> Result<Saved, String> {
     let text = fs::read(report_path(root, id)?)
         .map_err(|_| "That report is no longer there.".to_string())?;
-    serde_json::from_slice(&text).map_err(|err| format!("The report could not be read: {err}"))
+    let mut saved: Saved = serde_json::from_slice(&text)
+        .map_err(|err| format!("The report could not be read: {err}"))?;
+    if saved.id.is_empty() {
+        saved.id = id.to_string();
+    }
+    Ok(saved)
 }
 
 fn report_path(root: &Path, id: &str) -> Result<PathBuf, String> {
@@ -325,6 +334,19 @@ pub fn plural(count: u64, one: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_report_with_only_a_body_loads_and_takes_its_id_from_the_file_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let body = serde_json::to_value(usage()).unwrap();
+        let text = serde_json::json!({ "body": body }).to_string();
+        fs::write(temp.path().join("old-report.json"), text).unwrap();
+        let saved = load(temp.path(), "old-report").unwrap();
+        assert_eq!(saved.id, "old-report");
+        assert_eq!(saved.created_at_ms, 0);
+        assert!(saved.machine.is_empty());
+        assert!(saved.job.is_empty());
+    }
 
     fn usage() -> Body {
         Body::DiskUsage(UsageReport {
