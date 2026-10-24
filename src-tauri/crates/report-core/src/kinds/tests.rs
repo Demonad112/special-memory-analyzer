@@ -19,6 +19,7 @@ fn every_report_body_loads_from_an_empty_object() {
         r#"{"kind":"compare","data":{}}"#,
         r#"{"kind":"diskUsage","data":{}}"#,
         r#"{"kind":"cleanup","data":{}}"#,
+        r#"{"kind":"readiness","data":{}}"#,
     ] {
         serde_json::from_str::<Body>(body).unwrap();
     }
@@ -501,4 +502,103 @@ fn record_verdict_matrix() {
         record_verdict(&run(RunState::Completed, 0, Some("disk full"))),
         Verdict::Bad
     );
+}
+
+fn readiness_report() -> ReadinessReport {
+    use migrate_core::{Problem, ProblemKind, RuleCount};
+    let problem = |path: &str, kind, rule: &str, blocker| Problem {
+        path: path.into(),
+        dir: false,
+        kind,
+        rule: rule.into(),
+        hint: format!("fix {path}"),
+        blocker,
+    };
+    let count = |kind, rule: &str, count, blocker| RuleCount {
+        kind,
+        rule: rule.into(),
+        count,
+        blocker,
+    };
+    ReadinessReport {
+        source: r"F:\Finance".into(),
+        destination_root: r"D:\Shares\Finance".into(),
+        files: 10,
+        dirs: 2,
+        cloud_files: 3,
+        name_problems: 1,
+        long_paths: 3,
+        blockers: 1,
+        links: 1,
+        problems_total: 5,
+        counts: vec![
+            count(ProblemKind::Name, "reserved", 1, true),
+            count(ProblemKind::LongPath, "pathTooLong", 3, false),
+            count(ProblemKind::Link, "link", 1, false),
+        ],
+        problems: vec![
+            problem(r"a\CON.txt", ProblemKind::Name, "reserved", true),
+            problem(r"deep\x.txt", ProblemKind::LongPath, "pathTooLong", false),
+            problem("=cmd|x", ProblemKind::Link, "link", false),
+        ],
+        ..ReadinessReport::default()
+    }
+}
+
+#[test]
+fn readiness_row_and_document_group_problems_by_type() {
+    let saved = saved(Body::Readiness(readiness_report()));
+    let row = entry(&saved);
+    assert_eq!(row.kind, ReportKind::Readiness);
+    assert_eq!(row.title, "Migration readiness");
+    assert_eq!(row.subject, r"F:\Finance → D:\Shares\Finance");
+    assert_eq!(
+        row.headline,
+        "1 name problem · 3 long paths · 1 link not followed"
+    );
+    assert!(row.problem);
+
+    let doc = document(&saved);
+    assert_eq!(doc.verdict, Some(Verdict::Bad));
+    let headings: Vec<&str> = doc.tables.iter().map(|t| t.heading.as_str()).collect();
+    assert_eq!(
+        headings,
+        [
+            "Problems by rule",
+            "Names the target cannot hold",
+            "Paths too long",
+            "Links and junctions (not followed)"
+        ]
+    );
+    assert_eq!(doc.tables[1].rows[0][1], "Reserved device name");
+    assert_eq!(doc.tables[2].footnote, "The first 1 of 3 are listed.");
+    assert!(doc
+        .meta
+        .contains(&("Target".into(), "File server (NTFS)".into())));
+    assert!(doc.notes.iter().any(|note| note.contains("3 cloud files")));
+
+    let csv = doc.csv();
+    assert!(csv.contains("Type,Rule,Path (relative to the source),Item,Blocks the copy,Fix\r\n"));
+    assert!(csv.contains(r"Name,Reserved device name,a\CON.txt,File,Yes,fix a\CON.txt"));
+    // A path that looks like a formula is defused.
+    assert!(!csv.contains(",=cmd"), "{csv}");
+    let html = doc.html("Acme", "now");
+    assert!(html.contains("Paths too long"));
+}
+
+#[test]
+fn a_readiness_report_without_problems_is_good() {
+    let saved = saved(Body::Readiness(ReadinessReport {
+        source: r"F:\x".into(),
+        files: 4,
+        ..ReadinessReport::default()
+    }));
+    let row = entry(&saved);
+    assert_eq!(row.headline, "No problems found");
+    assert!(!row.problem);
+    assert_eq!(row.subject, r"F:\x");
+    let doc = document(&saved);
+    assert_eq!(doc.verdict, Some(Verdict::Good));
+    assert_eq!(doc.tables.len(), 1);
+    assert!(doc.notes[0].contains("measured at the source"));
 }

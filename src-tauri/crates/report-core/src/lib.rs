@@ -1,4 +1,4 @@
-//! Saved reports: Compare and Disk Cleanup results are saved as JSON files here; Record runs
+//! Saved reports: Compare, Migration readiness and Disk Cleanup results are saved as JSON files here; Record runs
 //! are already saved by `transfer-core` and are listed and exported alongside them.
 //!
 //! Every report becomes a [`Document`] (title, summary tiles, tables), which is what the HTML
@@ -18,6 +18,7 @@ pub use kinds::{
     CleanReport, CleanedItem, CompareReport, FileItem, FolderItem, MissingFile, Removed, TypeItem,
     UsageReport,
 };
+pub use migrate_core::ReadinessReport;
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -77,6 +78,7 @@ pub enum ReportKind {
     Record,
     DiskUsage,
     Cleanup,
+    Readiness,
 }
 
 /// A saved Compare or Disk Cleanup report.
@@ -102,6 +104,7 @@ pub enum Body {
     Compare(CompareReport),
     DiskUsage(UsageReport),
     Cleanup(CleanReport),
+    Readiness(ReadinessReport),
 }
 
 impl Body {
@@ -110,6 +113,7 @@ impl Body {
             Body::Compare(_) => ReportKind::Compare,
             Body::DiskUsage(_) => ReportKind::DiskUsage,
             Body::Cleanup(_) => ReportKind::Cleanup,
+            Body::Readiness(_) => ReportKind::Readiness,
         }
     }
 }
@@ -121,7 +125,7 @@ pub struct Entry {
     pub id: String,
     pub kind: ReportKind,
     pub created_at_ms: u64,
-    /// "Compare", "Copy for me", "Disk usage", "Quick cleanup".
+    /// "Compare", "Copy for me", "Disk usage", "Quick cleanup", "Migration readiness".
     pub title: String,
     /// What it was about: the folders or the drive.
     pub subject: String,
@@ -143,6 +147,7 @@ pub fn save(root: &Path, job: JobInfo, body: Body) -> Result<Saved, String> {
     let prefix = match body.kind() {
         ReportKind::Compare => "compare",
         ReportKind::DiskUsage => "usage",
+        ReportKind::Readiness => "readiness",
         ReportKind::Cleanup | ReportKind::Record => "cleanup",
     };
     let base = format!("{prefix}-{}-{:03}", stamp, created_at_ms % 1000);
@@ -412,8 +417,21 @@ mod tests {
                 },
             ],
         });
+        let readiness = Body::Readiness(ReadinessReport {
+            source: r"F:\Finance".into(),
+            destination_root: r"\\nas\finance".into(),
+            name_problems: 2,
+            links: 1,
+            problems: vec![migrate_core::Problem {
+                path: "CON.txt".into(),
+                rule: "reserved".into(),
+                blocker: true,
+                ..migrate_core::Problem::default()
+            }],
+            ..ReadinessReport::default()
+        });
         let mut ids = Vec::new();
-        for body in [compare, usage, clean] {
+        for body in [compare, usage, clean, readiness] {
             ids.push(save(&reports, job.clone(), body).unwrap().id);
         }
         // An old report with only a body takes its id from the file name.
@@ -421,6 +439,10 @@ mod tests {
         fs::write(reports.join("old-report.json"), old.to_string()).unwrap();
         ids.push("old-report".into());
         fs::write(reports.join("broken.json"), "{ not json").unwrap();
+        // A kind this build does not know (what a reverted build sees for a readiness report) is
+        // left out of the list, and the rest still lists.
+        let unknown = r#"{"id":"x","createdAtMs":1,"body":{"kind":"hologram","data":{}}}"#;
+        fs::write(reports.join("future-1.json"), unknown).unwrap();
 
         let listed = list(&reports, &temp.path().join("Records"));
         assert_eq!(listed.len(), ids.len());

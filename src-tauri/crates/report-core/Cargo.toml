@@ -7,6 +7,7 @@ description = "Saved Compare, Record and Disk Cleanup reports for Deep Server An
 
 [dependencies]
 base64 = "0.22"
+migrate-core = { path = "../migrate-core" }
 scan-core = { path = "../scan-core" }
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10"

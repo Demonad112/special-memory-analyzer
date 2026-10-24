@@ -5,7 +5,8 @@ use crate::explorer::{self, Explorer};
 use crate::header::{BodyHeader, Header};
 use crate::recovery::{Options, Plan};
 use crate::{
-    format_bytes, format_count, plural, record_job, Body, Entry, JobInfo, ReportKind, Saved,
+    format_bytes, format_count, plural, record_job, Body, Entry, JobInfo, ReadinessReport,
+    ReportKind, Saved,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -197,6 +198,13 @@ pub(crate) fn header_entry(header: Header) -> Entry {
             ),
             false,
         ),
+        BodyHeader::Readiness(report) => (
+            ReportKind::Readiness,
+            "Migration readiness".to_string(),
+            readiness::subject(&report.source, &report.destination_root),
+            readiness::headline(&report),
+            report.has_problems(),
+        ),
     };
     Entry {
         id: header.id,
@@ -248,10 +256,12 @@ pub(crate) fn document(saved: &Saved) -> Document {
         Body::Compare(report) => compare::document(report, meta),
         Body::DiskUsage(report) => usage::disk_usage(report, meta),
         Body::Cleanup(report) => usage::cleanup(report, meta),
+        Body::Readiness(report) => readiness::document(report, meta),
     }
 }
 
 mod compare;
+mod readiness;
 mod record;
 #[cfg(test)]
 mod tests;
