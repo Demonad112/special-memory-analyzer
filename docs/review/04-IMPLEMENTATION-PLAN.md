@@ -34,9 +34,10 @@ Eleven batches, each sized for one Sonnet session. Finding details (location, ev
 | B08 | Frontend correctness and UX                             | DSA-025, DSA-026, DSA-027, DSA-035, DSA-036, DSA-043, DSA-044, DSA-051, DSA-055, DSA-057, DSA-061 | any Rust-only batch                                           |
 | B09 | Performance                                             | DSA-030, DSA-031, DSA-032, DSA-033, DSA-052                                                       | B08 (after B03, B05, B06)                                     |
 | B10 | Refactor and quality                                    | DSA-041, DSA-042, DSA-045, DSA-048, DSA-053, DSA-054, DSA-056, DSA-060, DSA-070                   | none: run alone, last code batch                              |
-| B11 | Docs, deps, polish                                      | DSA-058, DSA-062, DSA-064, DSA-065, DSA-066, DSA-068                                              | any                                                           |
+| B12 | Follow-ups found during the fixes                       | DSA-071, DSA-072, DSA-073, DSA-074, DSA-075, DSA-077                                              | none: run alone, after B10                                    |
+| B11 | Docs, deps, polish                                      | DSA-058, DSA-062, DSA-064, DSA-065, DSA-066, DSA-068                                              | none: run last, after B12                                     |
 
-Every ID from DSA-001 to DSA-070 appears exactly once above.
+Every ID from DSA-001 to DSA-070 appears exactly once above. B12 (added 2026-10-23) holds the open findings logged while fixing: DSA-071 to DSA-075 and DSA-077. DSA-076 is a duplicate of DSA-071. B12 runs before B11 so that B11 stays the last batch and ends with the version bump for the next release.
 
 "Parallel" means the batches touch disjoint files and can be separate sessions or branches. Merge order still follows the table.
 
@@ -330,16 +331,45 @@ Run this alone, after B01–B09. Make pure moves first, then cleanups. **One com
 
 ---
 
-## B11: Docs, deps, polish
+## B12: Follow-ups found during the fixes
+
+**Prerequisite:** B10 (both sessions).
+
+**Files:** `src-tauri/crates/scan-core/src/{list.rs,scan.rs,diff.rs}`, `src-tauri/crates/transfer-core/src/{secure.rs,walk.rs,copy.rs,run.rs,store.rs,recovery.rs}`, `src-tauri/crates/cleanup-core/src/{log.rs,pathsafe.rs,restore.rs}`, `src-tauri/src/{cleanup.rs,compare.rs,record.rs}`, and the Cleanup/Compare page components that show a warning.
 
 **Steps**
 
-1. **DSA-065.** Fix the README install text and the `tauri.conf.json` `homepage` (Q4). If the owner wants it, commit `HANDOFF.md`, otherwise keep it ignored.
-2. **DSA-058.** Default (Q8): remove the dead `lint-staged` block and the stray `eslint-disable` comment.
-3. **DSA-062.** Default (Q7): keep `en-US`. Make the 500-row cap visible, if it is not already.
-4. **DSA-064.** Owner action. Document the GitHub settings to apply (environment `release` with required reviewer, tag ruleset `v*`) in `docs/install.md` → "Releasing". Add `environment: release` to the release job **only after** the owner has created it, or the workflow will wait forever.
-5. **DSA-068.** _Needs approval for `@vue/test-utils`._ Add the BulkDeleteDialog tests.
-6. **DSA-066.** Write `docs/signing-options.md` comparing the current kit with Azure Trusted Signing. No code.
-7. Merge `docs/review/CLAUDE.proposed.md` into `CLAUDE.md` if the owner approves.
+1. **DSA-071 (TF).** Fill `file_id` from `MetadataExt::ino()` (with `dev`) in the Unix `read_dir` fallback, so `hard_links_take_disk_space_once` runs and passes on Linux. Gate the test with `#[cfg(windows)]` only if `ino` changes non-test behaviour. Keep the assertions as they are. After this, `cargo test --workspace` is green on Linux.
+2. **DSA-072.** Show a failed single-delete log append through `Overview.warning`. Owner decision (2026-10-23): "Restore last cleanup" covers bulk runs only, so single deletes are written with `run: None`. Test both.
+3. **DSA-073 (TF).** Save the recovery folder next to the run (`recovery.json`, `#[serde(default)]`). `record_reveal` reads it after a restart and falls back to `recovery_folder(destination, None, run_id)` when that folder exists.
+4. **DSA-075 (TF).** Small option: `cleanup_delete` refuses a node with `lossy_name` and says why ("name is not valid Unicode; delete it in Explorer"). Compare marks such rows and does not treat two lossy names as the same file. Do not move the tree to `OsString`.
+5. **DSA-074.** Enable backup/restore privileges on the copy threads only (`ImpersonateSelf`, `OpenThreadToken`, `AdjustTokenPrivileges` on the thread token, `RevertToSelf` when the thread finishes). Do this on every thread that copies, including pool workers. If the copy can't be confined to known threads, fall back to the other option: refuse to start a Compare or Cleanup scan while a record runs, with a clear message. Say which option was used in the PR. Windows-only: verified by CI.
+6. **DSA-077.** Run the scan on a dedicated rayon pool with `stack_size(64 << 20)`, and make `total_up`, `diff` and the `Owned` drop iterative. Last, because it is the largest step. If budget is short, leave it in "Not done yet" and leave the register row as it is. Add a test with a deep tree (a few thousand levels, built in a temp dir where the OS allows, or as an in-memory tree).
 
-**Acceptance:** `corepack pnpm check` passes. The docs render on GitHub.
+**Acceptance**
+
+- `cargo test --workspace` passes on Linux (DSA-071 fixed) and in Windows CI.
+- The explorer fixture is unchanged (run it without `UPDATE_FIXTURES`).
+- Report and run formats change additively only (Q5).
+
+**Rollback:** revert per commit.
+
+---
+
+## B11: Docs, deps, polish
+
+**Prerequisite:** B10 and B12 merged. Run last.
+
+**Steps**
+
+1. **DSA-065.** Fix the README install text and the `tauri.conf.json` `homepage` (Q4: `Demonad112/special-memory-analyzer`). `HANDOFF.md` stays untracked (Q10). Make sure it is in `.prettierignore` and `.gitignore`.
+2. **DSA-058.** Q8: remove the dead `lint-staged` block and the stray `eslint-disable` comment. No ESLint.
+3. **DSA-062.** Q7: report dates stay `en-US`, and UI dates use the user locale (`undefined`). Make the 500-row cap visible ("Showing 500 of N; the full list is in the CSV"), if it is not already.
+4. **DSA-064.** Owner action, not done by the session. Document the GitHub settings in `docs/install.md` → "Releasing": environment `release` with the owner as required reviewer, and a tag ruleset for `v*` limited to the owner. Do **not** add `environment: release` to `release.yml` in this batch, or the workflow will wait forever until the owner creates the environment. Leave DSA-064 open with the note "docs done; owner applies the settings, then adds `environment: release`".
+5. **DSA-068.** Q8 approved `@vue/test-utils`. Add it and write `BulkDeleteDialog.test.ts` (the permanent confirm, Escape blocked while deleting, and the token passed through).
+6. **DSA-066.** Write `docs/signing-options.md` comparing the current kit with Azure Trusted Signing. No code, no paid service (Q2).
+7. **DSA-018.** Q-deps approved 2026-10-23: bump `vite` to the latest 8.3.x (≥ 8.3.3). Check `pnpm why vite` shows one version, `corepack pnpm audit --prod` reports 0, and `corepack pnpm check` and `corepack pnpm build` pass. CI must be green before the PR is marked ready.
+8. Merge `docs/review/CLAUDE.proposed.md` into `CLAUDE.md` (approved). Drop anything no longer true and add the layout changes from B09, B10 and B12: `report-core/src/assets/`, `junk/`, `kinds/`, `cleanup_core::pathsafe`, `report_writer.rs`, `Logs\app.log`. Delete the proposed file afterwards.
+9. **Release prep.** Last commit: bump the version from `1.1.1` to `1.2.0` in `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` (and `Cargo.lock`). Subject: `chore: bump version to 1.2.0`. Do not tag. The owner releases after the manual checklists, with `scripts\Set-ReleaseTag.ps1 -Version v1.2.0`.
+
+**Acceptance:** `corepack pnpm check` and `corepack pnpm build` pass, and `pnpm audit --prod` reports 0. The docs render on GitHub. The version matches in all three files.
