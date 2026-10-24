@@ -77,7 +77,12 @@ fn keep_both_target(
             Ok(_) => {}
         }
     }
-    Ok(destination.with_file_name(format!("{stem} (kept){extension}")))
+    let fallback = destination.with_file_name(format!("{stem} (kept){extension}"));
+    // Never let the final rename silently replace a file that is already there.
+    match fs::symlink_metadata(&fallback) {
+        Err(_) => Ok(fallback),
+        Ok(_) => Err(()),
+    }
 }
 
 #[derive(Debug, Clone)]
