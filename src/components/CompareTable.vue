@@ -340,6 +340,16 @@ const ariaSort = (key: SortKey): 'ascending' | 'descending' | 'none' =>
                 />
               </span>
               <span
+                v-if="visible.row.lossyName"
+                class="shrink-0 text-warning"
+                title="This name is not valid Unicode, so it is never matched with a name on the other side."
+              >
+                <TriangleAlert
+                  class="size-3.5"
+                  :stroke-width="1.75"
+                />
+              </span>
+              <span
                 v-if="visible.row.error"
                 class="shrink-0 text-warning"
                 :title="`Not fully readable: ${visible.row.error}`"

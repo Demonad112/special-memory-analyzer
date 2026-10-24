@@ -23,6 +23,7 @@ function row(id: number, overrides: Partial<DiffRow> = {}): DiffRow {
     extra: 0,
     different: 0,
     cloud: false,
+    lossyName: false,
     error: null,
     hasChildren: false,
     ...overrides,

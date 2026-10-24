@@ -55,6 +55,9 @@ pub struct DiffNode {
     pub cloud: bool,
     /// Either side could not be read completely here.
     pub error: Option<String>,
+    /// The name is not valid Unicode on either side (see [`Node::lossy_name`]). Such names are
+    /// never paired, because two different ones read the same once their characters are replaced.
+    pub lossy_name: bool,
     /// The destination's spelling of the name when it differs from the source's (case only).
     right_name: Option<String>,
     parent: NodeId,
@@ -78,6 +81,7 @@ pub struct DiffRow {
     pub different: u64,
     pub cloud: bool,
     pub error: Option<String>,
+    pub lossy_name: bool,
     pub has_children: bool,
 }
 
@@ -151,6 +155,7 @@ impl DiffTree {
             different: node.different,
             cloud: node.cloud,
             error: node.error.clone(),
+            lossy_name: node.lossy_name,
             has_children: node.child_count > 0,
         })
     }
@@ -244,48 +249,97 @@ impl DiffTree {
 /// Compares `left` (source) with `right` (destination) by relative path and file size. Names are
 /// matched exactly first, then case-insensitively, as Windows treats them.
 pub fn compare(left: &Tree, right: &Tree) -> DiffTree {
-    let root = diff(String::new(), Some((left, 0)), Some((right, 0)));
+    let nodes = diff(Some((left, 0)), Some((right, 0)));
+    let root = &nodes[0];
     let summary = DiffSummary {
         left: DiffSide::of(left.root()),
         right: DiffSide::of(right.root()),
-        missing: root.node.missing,
-        missing_bytes: root.node.missing_bytes,
-        extra: root.node.extra,
-        different: root.node.different,
+        missing: root.missing,
+        missing_bytes: root.missing_bytes,
+        extra: root.extra,
+        different: root.different,
         left_errors: left.root().errors,
         right_errors: right.root().errors,
         left_cloud: left.root().cloud_files,
         right_cloud: right.root().cloud_files,
     };
-    DiffTree {
-        nodes: flatten(root),
-        summary,
-    }
-}
-
-struct Owned {
-    node: DiffNode,
-    children: Vec<Owned>,
+    DiffTree { nodes, summary }
 }
 
 type Pick<'a> = Option<(&'a Tree, NodeId)>;
 
-fn diff(name: String, left: Pick<'_>, right: Pick<'_>) -> Owned {
+/// Builds the flat node list breadth-first, so every node's children are next to each other, then
+/// fills in the totals from the last node backwards (a child always comes after its parent).
+/// Nothing recurses, so a very deep folder cannot overflow the stack.
+fn diff<'a>(root_left: Pick<'a>, root_right: Pick<'a>) -> Vec<DiffNode> {
+    let mut nodes = vec![new_node(String::new(), root_left, root_right)];
+    // Folders whose totals are the sum of their children's (both sides there, same kind).
+    let mut sums = vec![sums_children(root_left, root_right)];
+    let mut queue = VecDeque::from([(0usize, root_left, root_right)]);
+    while let Some((at, left, right)) = queue.pop_front() {
+        let mut pairs = pair_children(left, right);
+        let size = |side: Pick<'_>| side.map_or(0, |(tree, id)| tree.node(id).size);
+        let name = |left: Pick<'a>, right: Pick<'a>| -> &'a str {
+            left.or(right)
+                .map(|(tree, id)| tree.node(id).name.as_str())
+                .unwrap_or_default()
+        };
+        pairs.sort_by(|a, b| {
+            size(b.0)
+                .max(size(b.1))
+                .cmp(&size(a.0).max(size(a.1)))
+                .then_with(|| name(a.0, a.1).cmp(name(b.0, b.1)))
+        });
+        nodes[at].first_child = nodes.len() as NodeId;
+        nodes[at].child_count = pairs.len() as u32;
+        for pair in pairs {
+            let mut child = new_node(name(pair.0, pair.1).to_owned(), pair.0, pair.1);
+            child.parent = at as NodeId;
+            nodes.push(child);
+            sums.push(sums_children(pair.0, pair.1));
+            queue.push_back((nodes.len() - 1, pair.0, pair.1));
+        }
+    }
+
+    for at in (0..nodes.len()).rev().filter(|&at| sums[at]) {
+        let children = nodes[at].first_child as usize
+            ..(nodes[at].first_child + nodes[at].child_count) as usize;
+        let (mut missing, mut missing_bytes, mut extra, mut different) = (0, 0, 0, 0);
+        let mut any_change = false;
+        for child in &nodes[children] {
+            missing += child.missing;
+            missing_bytes += child.missing_bytes;
+            extra += child.extra;
+            different += child.different;
+            any_change |= child.status != DiffStatus::Same;
+        }
+        let node = &mut nodes[at];
+        (node.missing, node.missing_bytes, node.extra, node.different) =
+            (missing, missing_bytes, extra, different);
+        if any_change {
+            node.status = DiffStatus::Different;
+        }
+    }
+    nodes
+}
+
+/// True for a pair whose totals come from what is below it: present on both sides and not a
+/// file, not a file-versus-folder mismatch.
+fn sums_children(left: Pick<'_>, right: Pick<'_>) -> bool {
+    match (left, right) {
+        (Some((lt, l)), Some((rt, r))) => {
+            let (l, r) = (lt.node(l), rt.node(r));
+            l.kind == r.kind && l.kind != Kind::File
+        }
+        _ => false,
+    }
+}
+
+/// One pair of tree nodes as a diff node, without anything that depends on its children.
+fn new_node(name: String, left: Pick<'_>, right: Pick<'_>) -> DiffNode {
     let left_node = left.map(|(tree, id)| tree.node(id));
     let right_node = right.map(|(tree, id)| tree.node(id));
     let kind = left_node.or(right_node).map_or(Kind::Dir, |node| node.kind);
-
-    let children: Vec<Owned> = pair_children(left, right)
-        .into_iter()
-        .map(|(child_left, child_right)| {
-            let name = child_left
-                .or(child_right)
-                .map(|(tree, id)| tree.node(id).name.clone())
-                .unwrap_or_default();
-            diff(name, child_left, child_right)
-        })
-        .collect();
-
     let mut node = DiffNode {
         name,
         kind,
@@ -301,6 +355,8 @@ fn diff(name: String, left: Pick<'_>, right: Pick<'_>) -> Owned {
         error: left_node
             .and_then(|node| node.error.clone())
             .or_else(|| right_node.and_then(|node| node.error.clone())),
+        lossy_name: left_node.is_some_and(|node| node.lossy_name)
+            || right_node.is_some_and(|node| node.lossy_name),
         right_name: match (left_node, right_node) {
             (Some(l), Some(r)) if l.name != r.name => Some(r.name.clone()),
             _ => None,
@@ -326,40 +382,14 @@ fn diff(name: String, left: Pick<'_>, right: Pick<'_>) -> Owned {
             node.missing_bytes = l.size;
             node.extra = r.files;
         }
-        (Some(l), Some(r)) if l.kind == Kind::File => {
-            if l.size != r.size {
-                node.status = DiffStatus::Different;
-                node.different = 1;
-            }
+        (Some(l), Some(r)) if l.kind == Kind::File && l.size != r.size => {
+            node.status = DiffStatus::Different;
+            node.different = 1;
         }
-        _ => {
-            for child in &children {
-                node.missing += child.node.missing;
-                node.missing_bytes += child.node.missing_bytes;
-                node.extra += child.node.extra;
-                node.different += child.node.different;
-            }
-            if children
-                .iter()
-                .any(|child| child.node.status != DiffStatus::Same)
-            {
-                node.status = DiffStatus::Different;
-            }
-        }
+        // Both folders (or links): the totals are filled in from the children afterwards.
+        _ => {}
     }
-
-    let mut children = children;
-    children.sort_by(|a, b| {
-        largest(&b.node)
-            .cmp(&largest(&a.node))
-            .then_with(|| a.node.name.cmp(&b.node.name))
-    });
-    Owned { node, children }
-}
-
-fn largest(node: &DiffNode) -> u64 {
-    let size = |side: Option<DiffSide>| side.map_or(0, |side| side.size);
-    size(node.left).max(size(node.right))
+    node
 }
 
 /// Children of a side, empty unless that side is a folder.
@@ -390,7 +420,11 @@ fn pair_children<'a>(left: Pick<'a>, right: Pick<'a>) -> Vec<(Pick<'a>, Pick<'a>
     let mut exact: HashMap<&str, usize> = HashMap::new();
     let mut folded: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, &id) in right_ids.iter().enumerate() {
-        let name = right_tree.node(id).name.as_str();
+        let node = right_tree.node(id);
+        if node.lossy_name {
+            continue;
+        }
+        let name = node.name.as_str();
         exact.insert(name, index);
         folded.entry(name.to_lowercase()).or_default().push(index);
     }
@@ -399,8 +433,9 @@ fn pair_children<'a>(left: Pick<'a>, right: Pick<'a>) -> Vec<(Pick<'a>, Pick<'a>
     let mut pairs = Vec::with_capacity(left_ids.len().max(right_ids.len()));
     let mut unmatched = Vec::new();
     for &id in &left_ids {
-        let name = left_tree.node(id).name.as_str();
-        match exact.get(name) {
+        let node = left_tree.node(id);
+        let name = node.name.as_str();
+        match exact.get(name).filter(|_| !node.lossy_name) {
             Some(&index) if !used[index] => {
                 used[index] = true;
                 pairs.push((Some((left_tree, id)), Some((right_tree, right_ids[index]))));
@@ -409,9 +444,11 @@ fn pair_children<'a>(left: Pick<'a>, right: Pick<'a>) -> Vec<(Pick<'a>, Pick<'a>
         }
     }
     for id in unmatched {
-        let name = left_tree.node(id).name.to_lowercase();
+        let node = left_tree.node(id);
+        let name = node.name.to_lowercase();
         let index = folded
             .get(&name)
+            .filter(|_| !node.lossy_name)
             .and_then(|candidates| candidates.iter().copied().find(|&index| !used[index]));
         let right_side = index.map(|index| {
             used[index] = true;
@@ -425,21 +462,6 @@ fn pair_children<'a>(left: Pick<'a>, right: Pick<'a>) -> Vec<(Pick<'a>, Pick<'a>
         }
     }
     pairs
-}
-
-fn flatten(root: Owned) -> Vec<DiffNode> {
-    let mut nodes = vec![root.node];
-    let mut queue = VecDeque::from([(0usize, root.children)]);
-    while let Some((id, children)) = queue.pop_front() {
-        nodes[id].first_child = nodes.len() as NodeId;
-        nodes[id].child_count = children.len() as u32;
-        for mut child in children {
-            child.node.parent = id as NodeId;
-            nodes.push(child.node);
-            queue.push_back((nodes.len() - 1, child.children));
-        }
-    }
-    nodes
 }
 
 #[cfg(test)]
@@ -655,5 +677,63 @@ mod tests {
         let diff = compare_dirs(left.path(), left.path());
         assert!(diff.children(999).is_none());
         assert_eq!(diff.children(0).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn names_that_are_not_unicode_are_never_paired() {
+        // Both names read "\u{FFFD}a.bin" as text but are different files.
+        #[cfg(windows)]
+        let (odd_left, odd_right) = {
+            use std::os::windows::ffi::OsStringExt;
+            (
+                std::ffi::OsString::from_wide(&[0xD800, u16::from(b'a')]),
+                std::ffi::OsString::from_wide(&[0xD801, u16::from(b'a')]),
+            )
+        };
+        #[cfg(unix)]
+        let (odd_left, odd_right) = {
+            use std::os::unix::ffi::OsStringExt;
+            (
+                std::ffi::OsString::from_vec(vec![0xFF, b'a']),
+                std::ffi::OsString::from_vec(vec![0xFE, b'a']),
+            )
+        };
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        if fs::write(left.path().join(&odd_left), b"abc").is_err()
+            || fs::write(right.path().join(&odd_right), b"abc").is_err()
+        {
+            return; // this file system cannot hold such names
+        }
+        write(&left.path().join("same.bin"), 10);
+        write(&right.path().join("same.bin"), 10);
+
+        let diff = compare_dirs(left.path(), right.path());
+        let rows = diff.children(0).unwrap();
+
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        let lossy: Vec<_> = rows.iter().filter(|row| row.lossy_name).collect();
+        assert_eq!(lossy.len(), 2);
+        let statuses: Vec<_> = lossy.iter().map(|row| row.status).collect();
+        assert!(statuses.contains(&DiffStatus::OnlyLeft), "{statuses:?}");
+        assert!(statuses.contains(&DiffStatus::OnlyRight), "{statuses:?}");
+        assert!(!row(&rows, "same.bin").lossy_name);
+        assert_eq!(row(&rows, "same.bin").status, DiffStatus::Same);
+    }
+
+    #[test]
+    fn comparing_trees_far_deeper_than_any_path_does_not_recurse() {
+        let left = crate::scan::test_support::deep_chain(200_000);
+        let right = crate::scan::test_support::deep_chain(200_000);
+        let same = compare(&left, &right);
+        assert_eq!(same.summary().missing, 0);
+        assert_eq!(same.len(), 200_002);
+
+        // A shorter chain on the right: the bottom file is missing there.
+        let shorter = crate::scan::test_support::deep_chain(199_999);
+        let diff = compare(&left, &shorter);
+        assert_eq!(diff.summary().missing, 1);
+        assert_eq!(diff.summary().missing_bytes, 7);
+        assert_eq!(diff.node(0).unwrap().status, DiffStatus::Different);
     }
 }
