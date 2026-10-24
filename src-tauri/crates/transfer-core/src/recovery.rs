@@ -2,6 +2,7 @@
 //! destination) with their folder structure, plus a `NOT-COPIED.csv` listing them.
 
 use crate::copy::{copy_file, ConflictPolicy, CopyOptions, CopyOutcome};
+use crate::csv::csv_cell;
 use crate::prepare::{destination_path, safe_relative};
 use crate::reason::{FailureReason, Side};
 use crate::run::Selection;
@@ -155,13 +156,7 @@ fn volume(path: &Path) -> Option<String> {
 }
 
 fn list_csv(source: &Path, items: &[ItemResult], recovered: &[bool]) -> String {
-    let quote = |value: &str| {
-        if value.contains([',', '"', '\n', '\r']) {
-            format!("\"{}\"", value.replace('"', "\"\""))
-        } else {
-            value.to_owned()
-        }
-    };
+    let quote = csv_cell;
     // BOM so Excel reads non-ASCII names correctly.
     let mut csv = String::from("\u{feff}path,reason,os_message,size,source,in_recovery_folder\r\n");
     for (item, recovered) in items.iter().zip(recovered) {
@@ -190,6 +185,24 @@ mod tests {
     use crate::run::run_copy;
     use crate::test_support::TempDir;
     use crate::{ConflictPolicy, NullSink, TransferMode, TransferSettings, VerifyLevel};
+
+    #[test]
+    fn the_list_defuses_formula_names() {
+        let item = ItemResult::not_copied(
+            "=HYPERLINK(\"http://x\").txt",
+            ItemKind::File,
+            3,
+            FailureReason::FileLocked,
+            None,
+            "in use",
+        );
+        let csv = list_csv(Path::new("C:\\src"), &[item], &[false]);
+        let row = csv.lines().nth(1).unwrap();
+        assert!(
+            row.starts_with("\"'=HYPERLINK(\"\"http://x\"\").txt\","),
+            "{row}"
+        );
+    }
 
     #[test]
     fn recovery_folder_sits_beside_the_destination() {
