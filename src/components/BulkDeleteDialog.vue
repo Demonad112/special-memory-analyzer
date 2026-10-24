@@ -12,6 +12,7 @@ import {
   restartAsAdmin,
   rowsByNode,
   summarize,
+  type DeleteCommand,
   type DeletePreview,
   type ItemResult,
   type JunkItem,
@@ -36,6 +37,8 @@ const preview = ref<DeletePreview | null>(null)
 const notes = ref(new Map<number, JunkItem>())
 const results = ref<ItemResult[]>([])
 const error = ref('')
+/** Duplicates go through their own command, which re-checks every group in Rust. */
+const command = ref<DeleteCommand>('cleanup_delete_many')
 /** Which button opened the second confirmation of a big run. */
 const brakePermanent = ref(false)
 
@@ -61,9 +64,15 @@ const summary = computed(() => summarize(results.value))
 
 /**
  * Opens the dialog with a dry run of deleting `ids`; nothing is removed until a button is used.
- * `from` says why each id is listed when it came from the suggested cleanups.
+ * `from` says why each id is listed when it came from the suggested cleanups. `via` is the delete
+ * command; duplicates use their own.
  */
-async function show(ids: number[], from: ReadonlyMap<number, JunkItem> = new Map()): Promise<void> {
+async function show(
+  ids: number[],
+  from: ReadonlyMap<number, JunkItem> = new Map(),
+  via: DeleteCommand = 'cleanup_delete_many',
+): Promise<void> {
+  command.value = via
   phase.value = 'loading'
   preview.value = null
   notes.value = new Map(from)
@@ -100,7 +109,7 @@ async function go(permanent: boolean, token?: string): Promise<void> {
   phase.value = 'running'
   error.value = ''
   try {
-    results.value = await removeMany(goIds.value, permanent, token)
+    results.value = await removeMany(goIds.value, permanent, token, command.value)
     phase.value = 'results'
     emit('finished')
   } catch (err) {
