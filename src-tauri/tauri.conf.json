@@ -35,7 +35,7 @@
     "active": true,
     "targets": ["nsis"],
     "publisher": "Demonad112",
-    "homepage": "https://github.com/obsidianintelligenceyyc/special-memory-analyzer",
+    "homepage": "https://github.com/Demonad112/special-memory-analyzer",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
     "license": "Apache-2.0",
     "copyright": "Copyright (c) 2026 Demonad112",
