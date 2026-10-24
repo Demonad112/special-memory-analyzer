@@ -10,7 +10,12 @@ const fixture = readFileSync(
   'utf8',
 )
 
-function load(): HTMLElement {
+interface Island {
+  x: { nodes: { d: number; f: number; k: number; n: string; p: number }[] }
+}
+
+/** Renders the fixture page; `edit` changes the report data first (a hand-edited report). */
+function load(edit?: (island: Island) => void): HTMLElement {
   const page = new DOMParser().parseFromString(fixture, 'text/html')
   const script = [...page.querySelectorAll('script')].find((s) =>
     s.textContent.includes("getElementById('x')"),
@@ -19,6 +24,15 @@ function load(): HTMLElement {
     throw new Error('explorer script not found in the fixture')
   }
   document.body.innerHTML = page.body.innerHTML
+  if (edit) {
+    const island = document.getElementById('d')
+    if (!island) {
+      throw new Error('data island not found in the fixture')
+    }
+    const data = JSON.parse(island.textContent) as Island
+    edit(data)
+    island.textContent = JSON.stringify(data)
+  }
   const host = document.getElementById('x')
   if (!host) {
     throw new Error('explorer container not found in the fixture')
@@ -135,5 +149,41 @@ describe('disk usage report explorer', () => {
       expect(el.getAttribute('type')).toBe('button')
     }
     expect(host.querySelector('[onclick]')).toBeNull()
+  })
+})
+
+describe('disk usage report explorer with a hand-edited, cyclic report', () => {
+  // Two folders that are each other's parent, and one that is its own parent.
+  const cyclic = ({ x }: Island): void => {
+    const [a, b, c] = [x.nodes.length, x.nodes.length + 1, x.nodes.length + 2]
+    x.nodes.push(
+      { d: 5, f: 1, k: 0, n: 'loop-a', p: b },
+      { d: 5, f: 1, k: 0, n: 'loop-b', p: a },
+      { d: 5, f: 1, k: 0, n: 'self', p: c },
+    )
+  }
+
+  /** Selects a node by index the way a click on a folder button does. */
+  function select(host: HTMLElement, id: number): void {
+    const go = document.createElement('button')
+    go.setAttribute('type', 'button')
+    go.setAttribute('data-a', 'go')
+    go.setAttribute('data-v', String(id))
+    host.appendChild(go)
+    go.click()
+  }
+
+  it('still draws the report, leaving the looped folders out of the tree', () => {
+    const host = load(cyclic)
+    const names = [...host.querySelectorAll('.xtree .xt > li .nm')].map((n) => n.textContent)
+    expect(names).toEqual(['Users', 'Windows', 'pagefile.sys', '(2 smaller items)'])
+  })
+
+  it.each([11, 12, 13])('stops walking the parents of looped folder %i', (id) => {
+    const host = load(cyclic)
+    select(host, id)
+    // The breadcrumb ends after one visit of each node instead of looping for ever.
+    expect(host.querySelector('.xc')?.querySelectorAll('.cr').length).toBeLessThanOrEqual(3)
+    expect(host.querySelector('.xfiles')).not.toBeNull()
   })
 })

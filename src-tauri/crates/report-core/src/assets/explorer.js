@@ -16,12 +16,12 @@ function fb(b){if(b<1024)return b+(b===1?' byte':' bytes');var u=['KB','MB','GB'
 function fc(n){return n.toLocaleString('en-US')}
 function share(a,b){if(!b)return'';var p=a*100/b;return p<0.1&&a>0?'<0.1%':p.toFixed(1)+'%'}
 function pct(a,b){return b?Math.min(100,a*100/b):0}
-function pathOf(i){var p=[];while(i>0){p.push(N[i].n);i=N[i].p}return p.reverse()}
+function pathOf(i){var p=[],seen={};while(i>0&&!seen[i]){seen[i]=1;p.push(N[i].n);i=N[i].p}return p.reverse()}
 function rel(i){return pathOf(i).join(SEP)}
 function full(r){return r?D.root.replace(/\\+$/,'')+SEP+r:D.root}
 function extName(e){return e===''?'No extension':'.'+e}
-function crumbs(){var nav=h('nav',{'class':'xc','aria-label':'Selected folder'}),chain=[],i=sel;
-for(;;){chain.push(i);if(i===0)break;i=N[i].p}
+function crumbs(){var nav=h('nav',{'class':'xc','aria-label':'Selected folder'}),chain=[],seen={},i=sel;
+while(!seen[i]){seen[i]=1;chain.push(i);if(i===0)break;i=N[i].p}
 chain.reverse().forEach(function(i,j){
 if(j>0)nav.appendChild(h('span',{'class':'sep','aria-hidden':'true'},'\u203a'));
 var b=h('button',{type:'button','class':'cr','data-a':'go','data-v':i,'data-k':'c'+i},i===0?D.root:N[i].n);
