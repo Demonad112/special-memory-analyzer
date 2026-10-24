@@ -1,7 +1,8 @@
-//! Reports page commands: list, delete, export (HTML or CSV) and open in the browser.
+//! Reports page commands: list, delete, export (HTML or CSV) and open in the browser, plus the
+//! company logo the exports carry (Settings).
 
 use cleanup_core::Protected;
-use report_core::{Entry, ReportKind};
+use report_core::{branding, Branding, Entry, ReportKind};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -70,6 +71,31 @@ fn check_export_path(path: &str, format: Format, protected: &Protected) -> Resul
     Ok(target)
 }
 
+/// Checks the path the webview sent for `branding_set_logo` (from an open dialog) and gives it
+/// back canonical. The path itself must not be a link: `canonical_root` would follow one.
+fn check_logo_path(path: &str) -> Result<PathBuf, String> {
+    let refused = |why: &str| Err(format!("Could not use {path}: {why}"));
+    if !is_absolute(path) {
+        return refused("choose a full path.");
+    }
+    if path.replace('/', "\\").split('\\').any(|part| part == "..") {
+        return refused("the path may not contain \"..\".");
+    }
+    let raw = Path::new(path);
+    if fs::symlink_metadata(raw).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return refused("that is a link, not a file. Pick the image itself.");
+    }
+    scan_core::canonical_root(raw)
+}
+
+/// The company name and the saved logo, for an export.
+fn branding_for(brand: String) -> Branding {
+    Branding {
+        name: brand,
+        logo: branding::load(&report_core::reports_root()),
+    }
+}
+
 fn roots() -> (PathBuf, PathBuf) {
     (report_core::reports_root(), transfer_core::records_root())
 }
@@ -110,7 +136,7 @@ pub async fn reports_prune(days: u32) -> Result<u64, String> {
 }
 
 /// Writes the report to `path` (chosen in a save dialog and checked again here), headed with the
-/// company name.
+/// company name and logo. `job_details` puts the job rows above a CSV's table.
 #[tauri::command]
 pub async fn report_export(
     kind: ReportKind,
@@ -118,6 +144,7 @@ pub async fn report_export(
     format: Format,
     path: String,
     brand: String,
+    job_details: bool,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let protected = Protected::for_this_pc().with_extra_inside([
@@ -129,8 +156,8 @@ pub async fn report_export(
         let (reports, records) = roots();
         let document = report_core::document(&reports, &records, kind, &id)?;
         let text = match format {
-            Format::Html => document.html(&brand, &generated()),
-            Format::Csv => document.csv(),
+            Format::Html => document.html_branded(&branding_for(brand), &generated()),
+            Format::Csv => document.csv_with(job_details),
         };
         fs::write(&target, text).map_err(|err| format!("Could not save {path}: {err}"))
     })
@@ -147,13 +174,44 @@ pub async fn report_open(kind: ReportKind, id: String, brand: String) -> Result<
         let folder = std::env::temp_dir().join("Deep Server Analyzer reports");
         fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
         let page = folder.join(format!("{id}.html"));
-        fs::write(&page, document.html(&brand, &generated())).map_err(|err| err.to_string())?;
+        let html = document.html_branded(&branding_for(brand), &generated());
+        fs::write(&page, html).map_err(|err| err.to_string())?;
         Ok::<PathBuf, String>(page)
     })
     .await
     .map_err(|err| err.to_string())??;
     tauri_plugin_opener::open_path(&page, None::<&str>)
         .map_err(|err| format!("Could not open the report: {err}"))
+}
+
+/// The saved logo as a `data:` URI for the Settings preview, or `None`.
+#[tauri::command]
+pub async fn branding_logo() -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        branding::load(&report_core::reports_root()).map(|logo| logo.data_uri())
+    })
+    .await
+    .map_err(|err| err.to_string())
+}
+
+/// Checks the PNG or JPEG the user picked (signature, 256 KB) and keeps a copy in
+/// `Reports\branding`; exports read that copy. Returns it as a `data:` URI for the preview.
+#[tauri::command]
+pub async fn branding_set_logo(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = check_logo_path(&path)?;
+        branding::set_from(&report_core::reports_root(), &source).map(|logo| logo.data_uri())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+/// Removes the saved logo; reports go back to the company name alone.
+#[tauri::command]
+pub async fn branding_clear_logo() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| branding::clear(&report_core::reports_root()))
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 #[cfg(test)]
@@ -202,6 +260,38 @@ mod tests {
         assert!(check(r"C:\Program Files\App\x.html", Format::Html).is_err());
         assert!(check(r"C:\Data\Deep Server Analyzer\Reports\x.html", Format::Html).is_err());
         assert!(check(r"C:\$Recycle.Bin\x.html", Format::Html).is_err());
+    }
+
+    #[test]
+    fn a_logo_path_must_be_full_and_free_of_parent_hops() {
+        assert!(check_logo_path("logo.png").is_err());
+        assert!(check_logo_path(r"..\logo.png").is_err());
+        assert!(check_logo_path(r"C:\Users\tech\..\..\Windows\logo.png").is_err());
+        let gone = std::env::temp_dir().join(format!("dsa-logo-gone-{}.png", std::process::id()));
+        let path = gone.to_string_lossy().into_owned();
+        assert!(
+            check_logo_path(&path).is_err(),
+            "a missing file does not resolve"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_logo_path_that_is_a_link_is_refused_before_it_is_resolved() {
+        let temp = std::env::temp_dir().join(format!("dsa-logo-{}", std::process::id()));
+        fs::create_dir_all(&temp).unwrap();
+        let real = temp.join("real.png");
+        fs::write(&real, b"\x89PNG\r\n\x1a\n").unwrap();
+        let link = temp.join("link.png");
+        let _ = fs::remove_file(&link);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let err = check_logo_path(&link.to_string_lossy()).unwrap_err();
+        assert!(err.contains("link"), "{err}");
+        assert_eq!(
+            check_logo_path(&real.to_string_lossy()).unwrap(),
+            fs::canonicalize(&real).unwrap()
+        );
+        let _ = fs::remove_dir_all(&temp);
     }
 
     #[test]

@@ -1,8 +1,8 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
-import { save } from '@tauri-apps/plugin-dialog'
+import { open, save } from '@tauri-apps/plugin-dialog'
 import { ref, watch } from 'vue'
 import type { JobInfo } from './job'
-import { brand } from './job'
+import { brand, csvJobDetails } from './job'
 
 export type ReportKind = 'compare' | 'record' | 'diskUsage' | 'cleanup'
 export type ExportFormat = 'html' | 'csv'
@@ -122,6 +122,39 @@ export async function exportReport(
     format,
     path,
     brand: brand.value,
+    jobDetails: csvJobDetails.value,
   })
   return path
+}
+
+/** The saved company logo as a `data:` URI, or `null` when there is none. */
+export async function loadLogo(): Promise<string | null> {
+  if (!isTauri()) {
+    return null
+  }
+  return invoke<string | null>('branding_logo')
+}
+
+/**
+ * Asks for a PNG or JPEG; Rust checks it (at most 256 KB, no SVG) and keeps its own copy.
+ * Resolves to the new logo as a `data:` URI, or `null` when the dialog was cancelled.
+ */
+export async function pickLogo(): Promise<string | null> {
+  if (!isTauri()) {
+    return null
+  }
+  const path = await open({
+    title: 'Choose the company logo',
+    multiple: false,
+    directory: false,
+    filters: [{ name: 'PNG or JPEG image', extensions: ['png', 'jpg', 'jpeg'] }],
+  })
+  if (typeof path !== 'string') {
+    return null
+  }
+  return invoke<string>('branding_set_logo', { path })
+}
+
+export function clearLogo(): Promise<void> {
+  return invoke('branding_clear_logo')
 }

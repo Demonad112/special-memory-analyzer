@@ -5,12 +5,15 @@ const dialog = vi.hoisted(() => ({ save: vi.fn(), open: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => core)
 vi.mock('@tauri-apps/plugin-dialog', () => dialog)
 
-import { brand } from './job'
+import { brand, csvJobDetails } from './job'
 import {
+  clearLogo,
   deleteReport,
   exportFileName,
   exportReport,
+  loadLogo,
   openReport,
+  pickLogo,
   pruneReports,
   retentionDays,
   type ReportEntry,
@@ -30,6 +33,7 @@ const entry: ReportEntry = {
 beforeEach(() => {
   vi.clearAllMocks()
   brand.value = 'Acme IT'
+  csvJobDetails.value = true
 })
 
 describe('reports', () => {
@@ -49,7 +53,44 @@ describe('reports', () => {
       format: 'html',
       path: 'C:\\out\\r.html',
       brand: 'Acme IT',
+      jobDetails: true,
     })
+  })
+
+  it('sends the CSV job details setting', async () => {
+    csvJobDetails.value = false
+    dialog.save.mockResolvedValueOnce('C:\\out\\r.csv')
+    await exportReport(entry, 'csv')
+    expect(core.invoke).toHaveBeenCalledWith(
+      'report_export',
+      expect.objectContaining({ format: 'csv', jobDetails: false }),
+    )
+  })
+
+  it('hands the picked logo path to Rust and returns its preview', async () => {
+    dialog.open.mockResolvedValueOnce('C:\\Pictures\\acme.png')
+    core.invoke.mockResolvedValueOnce('data:image/png;base64,iVBO')
+    await expect(pickLogo()).resolves.toBe('data:image/png;base64,iVBO')
+    expect(dialog.open).toHaveBeenCalledWith(
+      expect.objectContaining({
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'PNG or JPEG image', extensions: ['png', 'jpg', 'jpeg'] }],
+      }),
+    )
+    expect(core.invoke).toHaveBeenCalledWith('branding_set_logo', {
+      path: 'C:\\Pictures\\acme.png',
+    })
+
+    dialog.open.mockResolvedValueOnce(null)
+    await expect(pickLogo()).resolves.toBeNull()
+    expect(core.invoke).toHaveBeenCalledTimes(1)
+
+    core.invoke.mockResolvedValueOnce(null)
+    await expect(loadLogo()).resolves.toBeNull()
+    expect(core.invoke).toHaveBeenLastCalledWith('branding_logo')
+    await clearLogo()
+    expect(core.invoke).toHaveBeenLastCalledWith('branding_clear_logo')
   })
 
   it('does nothing when the save dialog is cancelled', async () => {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 import { nextTick } from 'vue'
-import { brand, currentJob, job, jobLabel, loadJob } from './job'
+import { brand, csvJobDetails, currentJob, job, jobLabel, loadJob } from './job'
 
 beforeEach(() => {
   localStorage.clear()
@@ -38,5 +38,12 @@ describe('job details', () => {
     brand.value = 'Acme IT'
     await nextTick()
     expect(localStorage.getItem('analyzer-brand')).toBe('Acme IT')
+  })
+
+  it('includes job details in CSV exports unless turned off', async () => {
+    expect(csvJobDetails.value).toBe(true)
+    csvJobDetails.value = false
+    await nextTick()
+    expect(localStorage.getItem('analyzer-csv-job-details')).toBe('false')
   })
 })
