@@ -2,6 +2,7 @@
 import {
   Archive,
   Building2,
+  TrendingUp,
   FileSpreadsheet,
   ImageIcon,
   Monitor,
@@ -10,9 +11,13 @@ import {
   Sun,
   Timer,
 } from '@lucide/vue'
+import { isTauri } from '@tauri-apps/api/core'
 import { onMounted, ref } from 'vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { appInfo } from '@/lib/appInfo'
+import { deleteHistory, keepHistory, loadHistoryRoots, type RootHistory } from '@/lib/cleanup'
+import { errorMessage } from '@/lib/errors'
+import { formatDate, plural } from '@/lib/format'
 import { idleChoices, idleMinutes, setIdleMinutes } from '@/lib/idleTimeout'
 import { brand, csvJobDetails } from '@/lib/job'
 import { clearLogo, loadLogo, pickLogo, retentionChoices, retentionDays } from '@/lib/reports'
@@ -58,6 +63,40 @@ function removeLogo(): Promise<void> {
 }
 
 onMounted(() => logoAction(loadLogo))
+
+const historyRoots = ref<RootHistory[]>([])
+const historyError = ref('')
+/** Only the latest load or delete writes the list. */
+let historySeq = 0
+
+async function refreshHistory(): Promise<void> {
+  if (!isTauri()) {
+    return
+  }
+  const seq = ++historySeq
+  try {
+    const roots = await loadHistoryRoots()
+    if (seq === historySeq) {
+      historyRoots.value = roots
+    }
+  } catch (err) {
+    if (seq === historySeq) {
+      historyError.value = errorMessage(err)
+    }
+  }
+}
+
+async function clearHistory(key?: string): Promise<void> {
+  historyError.value = ''
+  try {
+    await deleteHistory(key)
+  } catch (err) {
+    historyError.value = errorMessage(err)
+  }
+  await refreshHistory()
+}
+
+onMounted(refreshHistory)
 
 function idleLabel(minutes: number): string {
   if (minutes === 0) return 'Off'
@@ -215,6 +254,76 @@ const themes: { value: ThemeChoice; label: string; icon: typeof Sun }[] = [
         </option>
       </select>
     </label>
+    <section class="mt-3 rounded-lg border border-stroke bg-card px-5 py-4">
+      <label class="flex items-center gap-4">
+        <TrendingUp
+          class="size-5 shrink-0"
+          :stroke-width="1.5"
+        />
+        <span class="flex-1">
+          <span class="block">Keep scan history</span>
+          <span class="block text-xs text-muted">
+            Every completed Disk Cleanup scan saves a small snapshot (folder sizes, no file names)
+            so Disk Cleanup can show what grew and when the drive will be full. Up to 60 per folder,
+            nothing older than 2 years.
+          </span>
+        </span>
+        <input
+          v-model="keepHistory"
+          type="checkbox"
+          class="size-4 accent-accent"
+        />
+      </label>
+      <ul
+        v-if="historyRoots.length > 0"
+        class="mt-3 text-[13px]"
+      >
+        <li
+          v-for="entry in historyRoots"
+          :key="entry.key"
+          class="flex items-center gap-3 border-t border-stroke py-1.5"
+        >
+          <span
+            class="min-w-0 flex-1 truncate"
+            :title="entry.root"
+          >
+            {{ entry.root }}
+          </span>
+          <span class="shrink-0 text-xs text-muted">
+            {{ plural(entry.count, 'scan') }}, {{ formatDate(entry.firstMs) }} to
+            {{ formatDate(entry.lastMs) }}
+          </span>
+          <button
+            type="button"
+            class="h-7 shrink-0 rounded-md border border-stroke bg-card px-3 hover:bg-card-hover"
+            @click="clearHistory(entry.key)"
+          >
+            Delete
+          </button>
+        </li>
+      </ul>
+      <p
+        v-else
+        class="mt-2 text-xs text-muted"
+      >
+        No scan history is saved.
+      </p>
+      <button
+        v-if="historyRoots.length > 1"
+        type="button"
+        class="mt-2 h-8 rounded-md border border-stroke bg-card px-4 text-[13px] hover:bg-card-hover"
+        @click="clearHistory()"
+      >
+        Delete all history
+      </button>
+      <p
+        v-if="historyError"
+        class="mt-2 text-[13px] text-danger"
+        role="alert"
+      >
+        {{ historyError }}
+      </p>
+    </section>
     <label class="mt-3 flex items-center gap-4 rounded-lg border border-stroke bg-card px-5 py-4">
       <Timer
         class="size-5 shrink-0"

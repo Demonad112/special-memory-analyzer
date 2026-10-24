@@ -1,5 +1,5 @@
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core'
-import { reactive, ref } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import { trackJob } from './busy'
 import { type EntryKind, type ScanProgress } from './compare'
 import { errorMessage } from './errors'
@@ -160,6 +160,27 @@ export async function refreshDrives(): Promise<void> {
   }
 }
 
+const HISTORY_KEY = 'analyzer-keep-scan-history'
+
+function readKeepHistory(): boolean {
+  try {
+    return localStorage.getItem(HISTORY_KEY) !== 'off'
+  } catch {
+    return true
+  }
+}
+
+/** Settings > Keep scan history: every completed scan saves a snapshot. On by default. */
+export const keepHistory = ref(readKeepHistory())
+
+watch(keepHistory, (on) => {
+  try {
+    localStorage.setItem(HISTORY_KEY, on ? 'on' : 'off')
+  } catch {
+    // Not remembered.
+  }
+})
+
 /** Scans a drive or folder; progress arrives about every 100 ms. */
 export function runScan(path: string): Promise<void> {
   return trackJob(() => scanFolder(path))
@@ -191,6 +212,7 @@ async function scanFolder(path: string): Promise<void> {
     const result = await invoke<ScanResult>('cleanup_scan', {
       path,
       job: currentJob(),
+      history: keepHistory.value,
       onProgress,
     })
     Object.assign(cleanupJob, {
@@ -884,6 +906,105 @@ export function ownerProgressLine(progress: OwnerProgress | null): string {
     return 'Reading owners…'
   }
   return `Reading owners: ${String(progress.done)} of ${String(progress.total)} files…`
+}
+
+export interface SnapshotInfo {
+  takenMs: number
+  size: number
+  driveUsed: number | null
+  driveTotal: number | null
+  /** Saved by the scan on screen. */
+  current: boolean
+}
+
+export type Forecast =
+  | { kind: 'notEnoughHistory' }
+  | { kind: 'notGrowing' }
+  | { kind: 'hidden' }
+  | { kind: 'full'; days: number; perDay: number; windowDays: number; points: number }
+
+export interface History {
+  root: string
+  /** Newest first. */
+  snapshots: SnapshotInfo[]
+  forecast: Forecast
+  nowMs: number
+}
+
+export type GrowthChange = 'grown' | 'shrunk' | 'new' | 'removed'
+
+export interface GrowthRow {
+  path: string
+  change: GrowthChange
+  before: number
+  after: number
+  delta: number
+  /** Of the earlier size; null for a new folder. */
+  percent: number | null
+}
+
+export interface Growth {
+  fromMs: number
+  toMs: number
+  before: number
+  after: number
+  delta: number
+  rows: GrowthRow[]
+  /** Changed folders beyond the rows listed. */
+  hidden: number
+}
+
+export interface RootHistory {
+  key: string
+  root: string
+  count: number
+  firstMs: number
+  lastMs: number
+}
+
+export function loadHistory(): Promise<History> {
+  return invoke<History>('cleanup_history')
+}
+
+/** What grew since the snapshot taken at `fromMs` (the previous scan when omitted). */
+export function loadGrowth(fromMs?: number): Promise<Growth> {
+  return invoke<Growth>('cleanup_growth', { fromMs: fromMs ?? null })
+}
+
+export function loadHistoryRoots(): Promise<RootHistory[]> {
+  return invoke<RootHistory[]>('history_roots')
+}
+
+/** Deletes the history of one folder, or of every folder without a key. */
+export function deleteHistory(key?: string): Promise<number> {
+  return invoke<number>('history_delete', { key: key ?? null })
+}
+
+/** The forecast line, or null when nothing should be said (more than 5 years away). */
+export function forecastLine(forecast: Forecast): string | null {
+  switch (forecast.kind) {
+    case 'notEnoughHistory':
+      return 'Not enough history yet: a forecast needs 3 scans over at least 2 weeks.'
+    case 'notGrowing':
+      return 'Not growing: this drive has not been filling up over the last 90 days.'
+    case 'hidden':
+      return null
+    case 'full':
+      return forecast.days === 0
+        ? `At the last ${String(forecast.windowDays)} days' rate, this drive is full about now.`
+        : `At the last ${String(forecast.windowDays)} days' rate, this drive is full in about ${String(forecast.days)} ${forecast.days === 1 ? 'day' : 'days'}.`
+  }
+}
+
+const GROWTH_LABELS: Record<GrowthChange, string> = {
+  grown: 'Grew',
+  shrunk: 'Shrank',
+  new: 'New',
+  removed: 'Gone',
+}
+
+export function growthLabel(change: GrowthChange): string {
+  return GROWTH_LABELS[change]
 }
 
 /** The ages the stale report offers, in years; 3 is the default. */

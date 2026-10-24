@@ -11,6 +11,7 @@ pub mod explorer;
 mod header;
 mod kinds;
 mod recovery;
+pub mod snapshots;
 
 pub use doc::{Branding, Document, Table, Tile, Tone, JOB_LABELS};
 pub use explorer::Explorer;

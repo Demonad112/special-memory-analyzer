@@ -21,6 +21,7 @@ import ContextMenu, { type MenuItem } from '@/components/ContextMenu.vue'
 import DeleteConfirm from '@/components/DeleteConfirm.vue'
 import DriveTiles from '@/components/DriveTiles.vue'
 import DuplicatesPanel from '@/components/DuplicatesPanel.vue'
+import GrowthPanel from '@/components/GrowthPanel.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import JobFields from '@/components/JobFields.vue'
 import JunkPanel from '@/components/JunkPanel.vue'
@@ -766,6 +767,8 @@ onBeforeUnmount(() => {
         ref="ownersEl"
         class="mt-6"
       />
+
+      <GrowthPanel class="mt-6" />
     </div>
 
     <!-- Start: pick a drive or folder -->
