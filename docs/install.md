@@ -68,5 +68,8 @@ To try the pipeline before a final release, tag a test build with the same versi
 `release.yml` publishes any tag containing `-` as a pre-release (`--prerelease --latest=false`), so
 a test build never becomes the "Latest" release. A plain `vX.Y.Z` tag is a normal latest release.
 
+Run the manual checks in [release-checklist.md](release-checklist.md) on the test build before the
+final tag.
+
 Known leftover: `v1.1.1-test.1` was created before this and is marked as the latest release. It has
 not been edited. To fix it by hand: `gh release edit v1.1.1-test.1 --prerelease`.
