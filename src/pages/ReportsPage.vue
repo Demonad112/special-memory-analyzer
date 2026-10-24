@@ -7,6 +7,7 @@ import {
   FileText,
   FolderSync,
   HardDrive,
+  ListChecks,
   LoaderCircle,
   Search,
   Trash2,
@@ -43,6 +44,7 @@ const icons: Record<ReportKind, Component> = {
   record: FolderSync,
   diskUsage: HardDrive,
   cleanup: Brush,
+  readiness: ListChecks,
 }
 
 const filters: { value: ReportKind | 'all'; label: string }[] = [
@@ -51,6 +53,7 @@ const filters: { value: ReportKind | 'all'; label: string }[] = [
   { value: 'record', label: 'Record' },
   { value: 'diskUsage', label: 'Disk usage' },
   { value: 'cleanup', label: 'Cleanup' },
+  { value: 'readiness', label: 'Readiness' },
 ]
 
 const shown = computed(() => {

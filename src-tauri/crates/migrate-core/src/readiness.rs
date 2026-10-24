@@ -416,6 +416,11 @@ impl Readiness {
         &self.tree
     }
 
+    /// The problems of one item (all kinds).
+    pub fn own(&self, id: NodeId) -> &[RowProblem] {
+        self.findings.get(&id).map_or(&[], Vec::as_slice)
+    }
+
     fn count(&self, id: NodeId, kind: Option<ProblemKind>) -> u64 {
         self.below.get(&id).map_or(0, |counts| match kind {
             Some(kind) => counts[kind.index()],

@@ -726,6 +726,7 @@ name = "deep-server-analyzer"
 version = "1.2.0"
 dependencies = [
  "cleanup-core",
+ "migrate-core",
  "report-core",
  "scan-core",
  "serde",

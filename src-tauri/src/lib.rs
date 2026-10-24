@@ -1,5 +1,6 @@
 mod cleanup;
 mod compare;
+mod readiness;
 mod record;
 mod report_writer;
 mod reports;
@@ -52,6 +53,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(cleanup::CleanupState::default())
         .manage(compare::CompareState::default())
+        .manage(readiness::ReadinessState::default())
         .manage(record::RecordState::default())
         .setup(|app| {
             if supports_mica() {
@@ -94,6 +96,11 @@ pub fn run() {
             compare::compare_path,
             compare::compare_reveal,
             compare::compare_missing,
+            readiness::readiness_start,
+            readiness::readiness_cancel,
+            readiness::readiness_children,
+            readiness::readiness_root,
+            readiness::readiness_reveal,
             record::record_start,
             record::record_retry,
             record::record_copy_missing,
