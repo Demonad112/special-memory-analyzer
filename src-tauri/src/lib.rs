@@ -81,6 +81,8 @@ pub fn run() {
             cleanup::cleanup_dupes_summary,
             cleanup::cleanup_dupes_all_but_oldest,
             cleanup::cleanup_delete_duplicates,
+            cleanup::cleanup_stale,
+            cleanup::cleanup_stale_files,
             cleanup::app_elevated,
             cleanup::cleanup_quick_list,
             cleanup::cleanup_quick_clean,

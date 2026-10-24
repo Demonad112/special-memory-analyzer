@@ -792,3 +792,68 @@ export function tickedDisk(groups: DupeGroup[], ticked: ReadonlySet<number>): nu
     .filter((member) => ticked.has(member.id))
     .reduce((sum, member) => sum + member.disk, 0)
 }
+
+/** The ages the stale report offers, in years; 3 is the default. */
+export const STALE_YEARS = [1, 2, 3, 5, 7, 10]
+export const DEFAULT_STALE_YEARS = 3
+
+/** Whether Windows keeps last-access times on NTFS on this PC. */
+export type LastAccess = 'kept' | 'off' | 'unknown'
+
+export interface StaleGroup {
+  /** The first-level folder's id; 0 for the files directly in the scanned folder. */
+  id: number
+  name: string
+  isFolder: boolean
+  staleFiles: number
+  staleBytes: number
+  folderBytes: number
+  newestMs: number | null
+}
+
+export interface StaleReport {
+  years: number
+  notOpened: boolean
+  nowMs: number
+  groups: StaleGroup[]
+  staleFiles: number
+  staleBytes: number
+  unknownFiles: number
+  unknownBytes: number
+  cloudFiles: number
+  totalBytes: number
+  lastAccess: LastAccess
+}
+
+export interface StaleFile {
+  id: number
+  /** Below the scanned folder. */
+  path: string
+  size: number
+  modifiedMs: number | null
+  accessedMs: number | null
+}
+
+export function loadStale(years: number, notOpened: boolean): Promise<StaleReport> {
+  return invoke<StaleReport>('cleanup_stale', { years, notOpened })
+}
+
+export function loadStaleFiles(
+  group: number,
+  years: number,
+  notOpened: boolean,
+): Promise<StaleFile[]> {
+  return invoke<StaleFile[]>('cleanup_stale_files', { group, years, notOpened })
+}
+
+/** The note under "Also not opened": access times are only as good as Windows keeps them. */
+export function lastAccessNote(lastAccess: LastAccess): string {
+  switch (lastAccess) {
+    case 'off':
+      return 'Windows is not keeping last-access times on this PC (NtfsDisableLastAccessUpdate), so "not opened" is unreliable here.'
+    case 'unknown':
+      return 'Could not check whether Windows keeps last-access times; treat "not opened" as a hint.'
+    case 'kept':
+      return 'Windows keeps last-access times on this PC, but programs such as backup or antivirus can update them.'
+  }
+}

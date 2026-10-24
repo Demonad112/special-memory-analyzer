@@ -8,6 +8,7 @@ use cleanup_core::junk::{self, JunkGroup};
 use cleanup_core::log::{self, LogEntry};
 use cleanup_core::quick::{self, Places, QuickId, QuickWin};
 use cleanup_core::restore::{self, LastRun, RestoreResult};
+use cleanup_core::stale::{self, StaleFile, StaleReport};
 use cleanup_core::{Drive, Overview, Protected, Row};
 use report_core::{
     Body, CleanReport, CleanedItem, FileItem, FolderItem, JobInfo, Removed, TypeItem, UsageReport,
@@ -625,6 +626,63 @@ pub fn cleanup_dupes_all_but_oldest(state: State<'_, CleanupState>) -> Result<Ve
 }
 
 const NO_DUPES: &str = "That duplicate search is no longer available. Find duplicates again.";
+
+fn stale_options(years: u32, not_opened: bool) -> Result<stale::Options, String> {
+    if !stale::YEAR_CHOICES.contains(&years) {
+        return Err("Pick one of the offered ages.".into());
+    }
+    Ok(stale::Options { years, not_opened })
+}
+
+/// How much of the scan has not been modified in `years` years, per first-level folder. Reads
+/// only the scan; no file is opened.
+#[tauri::command]
+pub async fn cleanup_stale(
+    app: AppHandle,
+    years: u32,
+    not_opened: bool,
+) -> Result<StaleReport, String> {
+    let options = stale_options(years, not_opened)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let last_access = stale::last_access_updates();
+        let state = app.state::<CleanupState>();
+        with_tree(&state, |tree| {
+            Ok(stale::analyze(
+                tree,
+                transfer_core::now_ms(),
+                options,
+                last_access,
+            ))
+        })
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+/// The largest stale files of one group of the stale report.
+#[tauri::command]
+pub async fn cleanup_stale_files(
+    app: AppHandle,
+    group: NodeId,
+    years: u32,
+    not_opened: bool,
+) -> Result<Vec<StaleFile>, String> {
+    let options = stale_options(years, not_opened)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<CleanupState>();
+        with_tree(&state, |tree| {
+            Ok(stale::stale_files(
+                tree,
+                group,
+                transfer_core::now_ms(),
+                options,
+                stale::FILES_LIMIT,
+            ))
+        })
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
 
 /// A dry run: what deleting `ids` would do to each item. Touches nothing.
 #[tauri::command]

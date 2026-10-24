@@ -4,6 +4,7 @@ import { createApp, type Component } from 'vue'
 import DuplicatesPanel from '@/components/DuplicatesPanel.vue'
 import JunkPanel from '@/components/JunkPanel.vue'
 import QuickWins from '@/components/QuickWins.vue'
+import StalePanel from '@/components/StalePanel.vue'
 
 const core = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -56,6 +57,9 @@ import {
   summarize,
   toggleTier,
   dupeProgressLine,
+  lastAccessNote,
+  loadStale,
+  type StaleReport,
   findDuplicates,
   groupsWithoutCopy,
   tickedDisk,
@@ -763,5 +767,86 @@ describe('duplicates', () => {
     await settle()
     expect(host.textContent).toContain('Keep at least one copy of each.')
     expect(button('Review').disabled).toBe(true)
+  })
+})
+
+describe('stale data', () => {
+  const report: StaleReport = {
+    years: 3,
+    notOpened: false,
+    nowMs: 1_792_800_000_000,
+    groups: [
+      {
+        id: 4,
+        name: 'Finance',
+        isFolder: true,
+        staleFiles: 2,
+        staleBytes: 600,
+        folderBytes: 1000,
+        newestMs: 1_600_000_000_000,
+      },
+    ],
+    staleFiles: 2,
+    staleBytes: 600,
+    unknownFiles: 1,
+    unknownBytes: 10,
+    cloudFiles: 0,
+    totalBytes: 2000,
+    lastAccess: 'off',
+  }
+
+  afterEach(() => {
+    core.invoke.mockReset()
+    document.body.innerHTML = ''
+  })
+
+  it('asks Rust with the threshold and the access filter', async () => {
+    core.invoke.mockResolvedValueOnce(report)
+    await loadStale(5, true)
+    expect(core.invoke).toHaveBeenLastCalledWith('cleanup_stale', { years: 5, notOpened: true })
+  })
+
+  it('warns when Windows is not keeping access times', () => {
+    expect(lastAccessNote('off')).toContain('NtfsDisableLastAccessUpdate')
+    expect(lastAccessNote('unknown')).toContain('hint')
+    expect(lastAccessNote('kept')).toContain('keeps')
+  })
+
+  it("defaults to 3 years by modified time and lists a folder's files only when opened", async () => {
+    core.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'cleanup_stale':
+          return Promise.resolve(report)
+        case 'cleanup_stale_files':
+          return Promise.resolve([
+            { id: 9, path: 'Finance\\a.xlsx', size: 400, modifiedMs: 1, accessedMs: null },
+          ])
+        default:
+          return Promise.reject(new Error(command))
+      }
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    createApp(StalePanel).mount(host)
+    const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+    await settle()
+
+    expect(core.invoke).toHaveBeenCalledWith('cleanup_stale', { years: 3, notOpened: false })
+    expect(host.textContent).toContain('600 bytes in 2 files (30% of the scan)')
+    expect(host.textContent).toContain('Not counted: 1 file (10 bytes) with the date unknown')
+    expect(host.querySelectorAll('input[type="checkbox"]')).toHaveLength(1)
+    expect(host.querySelector('input[type="checkbox"]:checked')).toBeNull()
+
+    const row = [...host.querySelectorAll('button')].find((b) => b.textContent?.includes('Finance'))
+    row?.click()
+    await settle()
+    expect(core.invoke).toHaveBeenCalledWith('cleanup_stale_files', {
+      group: 4,
+      years: 3,
+      notOpened: false,
+    })
+    const boxes = host.querySelectorAll('input[type="checkbox"]')
+    expect(boxes).toHaveLength(2)
+    expect(host.querySelectorAll('input[type="checkbox"]:checked')).toHaveLength(0)
   })
 })

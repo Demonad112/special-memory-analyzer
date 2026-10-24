@@ -27,6 +27,7 @@ import JunkPanel from '@/components/JunkPanel.vue'
 import PathField from '@/components/PathField.vue'
 import QuickWins from '@/components/QuickWins.vue'
 import RestoreLast from '@/components/RestoreLast.vue'
+import StalePanel from '@/components/StalePanel.vue'
 import TypeGroups from '@/components/TypeGroups.vue'
 import {
   appAdmin,
@@ -189,6 +190,7 @@ const bulkEl = ref<InstanceType<typeof BulkDeleteDialog> | null>(null)
 const restoreEl = ref<InstanceType<typeof RestoreLast> | null>(null)
 const junkEl = ref<InstanceType<typeof JunkPanel> | null>(null)
 const dupesEl = ref<InstanceType<typeof DuplicatesPanel> | null>(null)
+const staleEl = ref<InstanceType<typeof StalePanel> | null>(null)
 watch(
   () => [job.overview, job.trail.length],
   () => {
@@ -227,6 +229,7 @@ function onBulkFinished(): void {
   void refreshDrives()
   void junkEl.value?.reload()
   void dupesEl.value?.reload()
+  void staleEl.value?.reload()
   void restoreEl.value?.reload()
 }
 
@@ -728,6 +731,12 @@ onBeforeUnmount(() => {
         ref="dupesEl"
         class="mt-6"
         @review="reviewDuplicates"
+      />
+
+      <StalePanel
+        ref="staleEl"
+        class="mt-6"
+        @review="reviewIds"
       />
     </div>
 
