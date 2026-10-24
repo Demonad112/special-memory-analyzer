@@ -74,3 +74,8 @@ export function formatDate(when: Date | number): string {
 export function formatTime(when: Date | number): string {
   return new Date(when).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
 }
+
+/** `size` as a share of `total`: "42%", one decimal under 10% ("3.5%"), "0%" for an empty total. */
+export function percentShare(size: number, total: number): string {
+  return total > 0 ? `${((size / total) * 100).toFixed(size / total >= 0.1 ? 0 : 1)}%` : '0%'
+}

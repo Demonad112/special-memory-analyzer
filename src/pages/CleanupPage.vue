@@ -3,9 +3,7 @@ import {
   ArrowUp,
   ChevronRight,
   Copy,
-  File,
   FileText,
-  Folder,
   FolderOpen,
   Info,
   Link2,
@@ -18,7 +16,9 @@ import {
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import BulkDeleteDialog from '@/components/BulkDeleteDialog.vue'
+import CleanupBrowser from '@/components/CleanupBrowser.vue'
 import ContextMenu, { type MenuItem } from '@/components/ContextMenu.vue'
+import DeleteConfirm from '@/components/DeleteConfirm.vue'
 import DriveTiles from '@/components/DriveTiles.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import JobFields from '@/components/JobFields.vue'
@@ -26,7 +26,7 @@ import JunkPanel from '@/components/JunkPanel.vue'
 import PathField from '@/components/PathField.vue'
 import QuickWins from '@/components/QuickWins.vue'
 import RestoreLast from '@/components/RestoreLast.vue'
-import TreemapView from '@/components/TreemapView.vue'
+import TypeGroups from '@/components/TypeGroups.vue'
 import {
   appAdmin,
   canDelete,
@@ -41,7 +41,6 @@ import {
   openFolder,
   openTrail,
   refreshDrives,
-  removeItem,
   restartAsAdmin,
   revealItem,
   rowsByNode,
@@ -51,8 +50,10 @@ import {
   setSizeMode,
   shownBytes,
   sizeMode,
+  HARD_LINK_TITLE,
   type CleanupRow,
   type JunkItem,
+  type PickedItem,
 } from '@/lib/cleanup'
 import { copyText } from '@/lib/clipboard'
 import { cleanPath, pickFolder } from '@/lib/compare'
@@ -60,21 +61,12 @@ import { errorMessage } from '@/lib/errors'
 import { useElapsed } from '@/lib/useElapsed'
 import { useToast } from '@/lib/useToast'
 import { openReport } from '@/lib/reports'
-import { categoryLabels, categoryOfExtension, type Category } from '@/lib/fileTypes'
 import { formatBytes, formatDate, formatDuration, formatTime, plural } from '@/lib/format'
 
 const job = cleanupJob
 const folderInput = ref('')
 
-/** The item the actions apply to, from the list, the treemap or "Largest files". */
-interface Picked {
-  id: number
-  name: string
-  size: number
-  isFolder: boolean
-  files: number
-}
-const picked = ref<Picked | null>(null)
+const picked = ref<PickedItem | null>(null)
 watch(
   () => job.overview,
   () => {
@@ -84,8 +76,6 @@ watch(
 
 /** Rows as shown: `size` follows the Size on disk / Size toggle. */
 const viewRows = computed(() => rowsFor(job.rows, sizeMode.value))
-const hardLinkTitle =
-  'Another name for this file is in the scan. Only one name carries the size on disk.'
 
 function pick(row: CleanupRow): void {
   // Deleting frees disk space, so the picked item always carries the size on disk.
@@ -181,43 +171,15 @@ async function copyPath(id: number): Promise<void> {
   }
 }
 
-// Recycle / delete, after a confirm dialog with the size.
-const confirmEl = ref<HTMLDialogElement | null>(null)
-const pending = ref<{ item: Picked; permanent: boolean } | null>(null)
-const deleting = ref(false)
+const deleteEl = ref<InstanceType<typeof DeleteConfirm> | null>(null)
 
-function askDelete(item: Picked | null, permanent: boolean): void {
-  if (!item || deleting.value) {
-    return
-  }
-  if (!canDelete(1, permanent, appAdmin.elevated)) {
-    showToast('Deleting permanently needs administrator. Use Restart as administrator first.')
-    return
-  }
-  pending.value = { item, permanent }
-  confirmEl.value?.showModal()
+function askDelete(item: PickedItem | null, permanent: boolean): void {
+  deleteEl.value?.show(item, permanent)
 }
 
-async function confirmDelete(): Promise<void> {
-  const request = pending.value
-  if (!request) {
-    return
-  }
-  deleting.value = true
-  try {
-    await removeItem(request.item.id, request.permanent)
-    showToast(
-      `${request.permanent ? 'Deleted' : 'Moved to the Recycle Bin:'} ${request.item.name} (${formatBytes(request.item.size)})`,
-    )
-    picked.value = null
-    void refreshDrives()
-  } catch (err) {
-    showToast(errorMessage(err))
-  } finally {
-    deleting.value = false
-    confirmEl.value?.close()
-    pending.value = null
-  }
+function onRemoved(): void {
+  picked.value = null
+  void refreshDrives()
 }
 
 // Several items at once: tick rows, then review the dry run in the bulk dialog.
@@ -268,7 +230,7 @@ async function restartAdmin(): Promise<void> {
   }
 }
 
-const menu = ref<{ item: Picked; x: number; y: number } | null>(null)
+const menu = ref<{ item: PickedItem; x: number; y: number } | null>(null)
 /** Opens a row's menu below the focused button, for the Menu key and Shift+F10. */
 function openFileMenuAtFocus(file: FileRow, event: KeyboardEvent): void {
   const box = (event.currentTarget as HTMLElement).getBoundingClientRect()
@@ -321,27 +283,7 @@ function onTabKeydown(event: KeyboardEvent): void {
   tab.value = option.value
   void nextTick(() => document.getElementById(`cleanup-tab-${option.value}`)?.focus())
 }
-interface TypeGroup {
-  category: Category
-  size: number
-  files: number
-}
-const typeGroups = computed<TypeGroup[]>(() => {
-  const groups = new Map<Category, TypeGroup>()
-  for (const type of job.overview?.fileTypes ?? []) {
-    const category = categoryOfExtension(type.extension)
-    const group = groups.get(category) ?? { category, size: 0, files: 0 }
-    group.size += shownBytes(type, sizeMode.value)
-    group.files += type.files
-    groups.set(category, group)
-  }
-  return [...groups.values()].sort((a, b) => b.size - a.size)
-})
 const rootSize = computed(() => (job.overview ? shownBytes(job.overview.root, sizeMode.value) : 0))
-
-function share(size: number, total: number): string {
-  return total > 0 ? `${((size / total) * 100).toFixed(size / total >= 0.1 ? 0 : 1)}%` : '0%'
-}
 
 function modified(ms: number | null): string {
   return ms === null ? '' : formatDate(ms)
@@ -360,7 +302,7 @@ function cancel(): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  const covered = Boolean(menu.value) || Boolean(confirmEl.value?.open) || hasOpenDialog()
+  const covered = Boolean(menu.value) || Boolean(deleteEl.value?.isOpen()) || hasOpenDialog()
   if (escapeCancelsScan(event.key, job.running, covered)) {
     cancel()
     return
@@ -649,76 +591,17 @@ onBeforeUnmount(() => {
         </template>
       </div>
 
-      <div class="split mt-2 grid gap-3">
-        <TreemapView
-          class="h-80"
-          :rows="viewRows"
-          :selected="picked?.id ?? null"
-          @select="pick"
-          @open="open"
-          @menu="openMenu"
-        />
-        <ul
-          class="h-80 overflow-y-auto rounded-lg border border-stroke bg-card"
-          aria-label="Contents, largest first"
-        >
-          <li
-            v-for="row in viewRows"
-            :key="row.id"
-            class="flex items-center"
-          >
-            <input
-              type="checkbox"
-              class="ml-3 shrink-0"
-              :checked="checked.has(row.id)"
-              :aria-label="`Select ${row.name}`"
-              @change="toggleChecked(row.id)"
-            />
-            <button
-              type="button"
-              class="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-subtle"
-              :class="{ 'bg-accent/12 hover:bg-accent/16': picked?.id === row.id }"
-              :title="row.error ? `${row.name}: ${row.error}` : row.name"
-              @click="pick(row)"
-              @dblclick="open(row)"
-              @keydown.enter.prevent="open(row)"
-              @keydown.context-menu.prevent="openMenuAtFocus(row, $event)"
-              @keydown.shift.f10.prevent="openMenuAtFocus(row, $event)"
-              @contextmenu.prevent="openMenu(row, $event.clientX, $event.clientY)"
-            >
-              <component
-                :is="row.kind === 'dir' ? Folder : File"
-                class="size-4 shrink-0"
-                :style="{ color: row.kind === 'dir' ? 'var(--app-type-folder)' : undefined }"
-                :stroke-width="1.75"
-              />
-              <span class="min-w-0 flex-1 truncate">{{ row.name }}</span>
-              <Link2
-                v-if="row.hardLinked"
-                class="size-3.5 shrink-0 text-muted"
-                :title="hardLinkTitle"
-                aria-label="Hard link"
-              />
-              <TriangleAlert
-                v-if="row.errors > 0"
-                class="size-3.5 shrink-0 text-warning"
-                :title="`${plural(row.errors, 'item')} inside could not be read`"
-                :aria-label="`${plural(row.errors, 'item')} inside could not be read`"
-              />
-              <span class="w-11 shrink-0 text-right text-xs text-muted tabular-nums">
-                {{ share(row.size, shownSize) }}
-              </span>
-              <span class="w-20 shrink-0 text-right tabular-nums">{{ formatBytes(row.size) }}</span>
-            </button>
-          </li>
-          <li
-            v-if="job.rows.length === 0"
-            class="px-3 py-6 text-center text-[13px] text-muted"
-          >
-            This folder is empty.
-          </li>
-        </ul>
-      </div>
+      <CleanupBrowser
+        :rows="viewRows"
+        :picked-id="picked?.id ?? null"
+        :checked="checked"
+        :shown-size="shownSize"
+        @pick="pick"
+        @open="open"
+        @menu="openMenu"
+        @menu-at-focus="openMenuAtFocus"
+        @toggle="toggleChecked"
+      />
       <p class="mt-2 text-xs text-faint">
         Click to pick, double-click to open a folder or show a file in Explorer, right-click for
         more. Delete recycles the picked item; Backspace goes up.
@@ -807,7 +690,7 @@ onBeforeUnmount(() => {
             <Link2
               v-if="file.hardLinked"
               class="size-3.5 shrink-0 text-muted"
-              :title="hardLinkTitle"
+              :title="HARD_LINK_TITLE"
               aria-label="Hard link"
             />
             <span class="w-28 shrink-0 text-right text-xs text-muted tabular-nums">
@@ -820,66 +703,12 @@ onBeforeUnmount(() => {
         </li>
       </ul>
 
-      <div
+      <TypeGroups
         v-else
-        id="cleanup-panel-types"
-        class="mt-2 grid gap-3 lg:grid-cols-2"
-      >
-        <ul
-          class="rounded-lg border border-stroke bg-card p-3"
-          aria-label="Space by type"
-        >
-          <li
-            v-for="group in typeGroups"
-            :key="group.category"
-            class="py-1.5 text-[13px]"
-          >
-            <div class="flex items-center gap-2">
-              <span
-                class="size-3 shrink-0 rounded-sm"
-                :style="{ background: `var(--app-type-${group.category})` }"
-              />
-              <span class="min-w-0 flex-1 truncate">{{ categoryLabels[group.category] }}</span>
-              <span class="text-xs text-muted tabular-nums">{{ plural(group.files, 'file') }}</span>
-              <span class="w-20 text-right tabular-nums">{{ formatBytes(group.size) }}</span>
-            </div>
-            <div class="mt-1 ml-5 h-1 overflow-hidden rounded-full bg-subtle-strong">
-              <div
-                class="h-full rounded-full"
-                :style="{
-                  width: share(group.size, rootSize),
-                  background: `var(--app-type-${group.category})`,
-                }"
-              />
-            </div>
-          </li>
-        </ul>
-        <ul
-          class="max-h-96 overflow-y-auto rounded-lg border border-stroke bg-card"
-          aria-label="Space by extension"
-        >
-          <li
-            v-for="type in job.overview.fileTypes.slice(0, 100)"
-            :key="type.extension"
-            class="flex items-center gap-2 border-b border-stroke px-3 py-1.5 text-[13px] last:border-b-0"
-          >
-            <span
-              class="size-2.5 shrink-0 rounded-sm"
-              :style="{ background: `var(--app-type-${categoryOfExtension(type.extension)})` }"
-            />
-            <span class="min-w-0 flex-1 truncate">
-              {{ type.extension ? `.${type.extension}` : 'No extension' }}
-            </span>
-            <span class="text-xs text-muted tabular-nums">{{ plural(type.files, 'file') }}</span>
-            <span class="w-11 text-right text-xs text-muted tabular-nums">
-              {{ share(shownBytes(type, sizeMode), rootSize) }}
-            </span>
-            <span class="w-20 text-right tabular-nums">
-              {{ formatBytes(shownBytes(type, sizeMode)) }}
-            </span>
-          </li>
-        </ul>
-      </div>
+        :file-types="job.overview.fileTypes"
+        :root-size="rootSize"
+        :size-mode="sizeMode"
+      />
 
       <JunkPanel
         ref="junkEl"
@@ -929,59 +758,11 @@ onBeforeUnmount(() => {
       <QuickWins @cleaned="refreshDrives" />
     </div>
 
-    <dialog
-      ref="confirmEl"
-      class="m-auto w-[min(28rem,90vw)] rounded-lg border border-stroke-strong bg-app p-5 text-fg shadow-xl backdrop:bg-fg/20"
-      @close="pending = null"
-    >
-      <template v-if="pending">
-        <h2 class="font-display text-lg font-semibold">
-          {{ pending.permanent ? 'Delete permanently?' : 'Move to the Recycle Bin?' }}
-        </h2>
-        <p class="mt-2 text-[13px] break-all">
-          <span class="font-semibold">{{ pending.item.name }}</span>
-        </p>
-        <p class="mt-1 text-[13px] text-muted">
-          {{ formatBytes(pending.item.size) }}
-          <template v-if="pending.item.isFolder">
-            · {{ plural(pending.item.files, 'file') }}</template
-          >
-        </p>
-        <p
-          v-if="pending.permanent"
-          class="mt-3 text-[13px] text-danger"
-        >
-          This skips the Recycle Bin and cannot be undone.
-        </p>
-        <div class="mt-5 flex justify-end gap-2">
-          <button
-            type="button"
-            class="h-8 rounded-md border border-stroke bg-card px-4 hover:bg-card-hover"
-            :disabled="deleting"
-            @click="confirmEl?.close()"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            class="flex h-8 items-center gap-1.5 rounded-md px-4 font-semibold disabled:opacity-60"
-            :class="
-              pending.permanent
-                ? 'bg-danger text-on-accent'
-                : 'bg-accent text-on-accent hover:bg-accent-hover'
-            "
-            :disabled="deleting"
-            @click="confirmDelete"
-          >
-            <LoaderCircle
-              v-if="deleting"
-              class="size-4 animate-spin"
-            />
-            {{ pending.permanent ? 'Delete' : 'Recycle' }}
-          </button>
-        </div>
-      </template>
-    </dialog>
+    <DeleteConfirm
+      ref="deleteEl"
+      @notice="showToast"
+      @removed="onRemoved"
+    />
 
     <BulkDeleteDialog
       ref="bulkEl"
