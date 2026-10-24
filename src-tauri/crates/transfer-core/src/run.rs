@@ -3,7 +3,7 @@
 use crate::copy::{copy_file_with_retry, ConflictPolicy, CopyOptions, CopyOutcome};
 use crate::prepare::{destination_path, safe_relative, ManifestEntry};
 use crate::reason::{classify, FailureReason, Side};
-use crate::store::{JsonlWriter, LogStatus, RunStore};
+use crate::store::{JsonlWriter, LogStatus, PathKey, RunStore};
 use crate::walk::{self, Entry};
 use crate::{
     now_ms, CancelToken, ItemKind, ItemResult, ItemStatus, Phase, Result, RunState, RunSummary,
@@ -105,9 +105,8 @@ pub fn retry(
     let mut summary = store.summary()?;
     let matches = selection.matcher();
     let selected: Vec<ItemResult> = store
-        .latest_results()?
+        .latest_results_where(matches)?
         .into_values()
-        .filter(|item| matches(item))
         .filter(|item| {
             // Online-only files stay put: a new record with "Download" on copies them.
             !matches!(
@@ -189,12 +188,12 @@ pub fn recover_interrupted(store: &RunStore) -> Result<bool> {
     if !matches!(summary.state, RunState::Running | RunState::Watching) {
         return Ok(false);
     }
-    let seen = store.latest_results()?;
+    let seen = store.result_keys()?;
     let mut results = store.results_writer()?;
     let mut listed = 0_u64;
     for row in store.manifest::<ManifestEntry>()? {
         let row = row?;
-        if row.kind != ItemKind::File || seen.contains_key(&row.relative_path) {
+        if row.kind != ItemKind::File || seen.contains(&PathKey::of(&row.relative_path)) {
             continue;
         }
         results.write(&ItemResult::not_copied(

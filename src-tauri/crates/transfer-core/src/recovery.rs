@@ -79,11 +79,7 @@ pub fn copy_to_recovery(
     let same_volume = volume(&folder) == volume(&destination);
 
     let matches = selection.matcher();
-    let selected: Vec<ItemResult> = store
-        .latest_results()?
-        .into_values()
-        .filter(|item| matches(item))
-        .collect();
+    let selected: Vec<ItemResult> = store.latest_results_where(matches)?.into_values().collect();
     let options = CopyOptions {
         conflict: ConflictPolicy::Overwrite,
         retry_delays: Vec::new(),

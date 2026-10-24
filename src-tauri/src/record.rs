@@ -146,10 +146,9 @@ pub struct RunDetails {
 fn load(run_id: &str) -> Result<RunDetails, String> {
     let store = RunStore::open(&transfer_core::records_root(), run_id).map_err(to_text)?;
     let not_copied = store
-        .latest_results()
+        .latest_results_where(|item| item.status == ItemStatus::NotCopied)
         .map_err(to_text)?
         .into_values()
-        .filter(|item| item.status == ItemStatus::NotCopied)
         .take(MAX_NOT_COPIED_ROWS)
         .collect();
     Ok(RunDetails {

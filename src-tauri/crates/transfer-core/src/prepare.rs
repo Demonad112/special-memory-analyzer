@@ -3,7 +3,7 @@
 
 use crate::copy::times_match;
 use crate::reason::{classify, FailureReason, Side};
-use crate::store::{totals_from, LogStatus, RunStore};
+use crate::store::{LogStatus, PathKey, RunStore};
 use crate::volume::volume_info;
 use crate::walk::{self, Entry};
 use crate::{
@@ -222,7 +222,7 @@ pub fn prepare_only(
     summary.totals.planned_bytes = report.bytes;
     summary.totals.folders = report.folders;
     summary.totals.excluded = report.excluded;
-    summary.totals = totals_from(&summary.totals, store.latest_results()?.values());
+    summary.totals = store.latest_totals(&summary.totals)?;
     store.save_summary(&summary)?;
     store.save_preflight(&report)?;
     store.audit(
@@ -286,7 +286,8 @@ struct ScanState<'a> {
     settings: &'a TransferSettings,
     destination: &'a Path,
     only: Option<&'a OnlyPaths>,
-    seen: HashSet<String>,
+    /// Fingerprints of the lowercased paths, to spot names that differ only by case.
+    seen: HashSet<PathKey>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -491,7 +492,7 @@ impl ScanState<'_> {
             );
             return Some(FailureReason::InvalidName);
         }
-        if !self.seen.insert(relative_path.to_lowercase()) {
+        if !self.seen.insert(PathKey::of(&relative_path.to_lowercase())) {
             add(FailureReason::NameCollision, Severity::Blocker, None);
             return Some(FailureReason::NameCollision);
         }
