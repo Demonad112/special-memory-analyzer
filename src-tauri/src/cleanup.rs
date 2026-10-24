@@ -3,6 +3,7 @@
 
 use crate::report_writer::ReportWriter;
 use cleanup_core::bulk::{self, ItemResult, Outcome, Preview, PreviewStatus, Target};
+use cleanup_core::dupes::{self, Found, Group, Skipped};
 use cleanup_core::junk::{self, JunkGroup};
 use cleanup_core::log::{self, LogEntry};
 use cleanup_core::quick::{self, Places, QuickId, QuickWin};
@@ -14,6 +15,7 @@ use report_core::{
 use scan_core::{clean_path, scan, CancelToken, NodeId, ScanProgress, ScanState, Tree};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -45,6 +47,12 @@ pub struct CleanupState {
     tree: Mutex<Option<Tree>>,
     /// The scan's saved report; deletes are added to it, a few seconds later (see `ReportWriter`).
     report: ReportWriter,
+    /// The last duplicate search on this scan's tree.
+    dupes: Mutex<Option<Found>>,
+    dupes_cancel: Mutex<Option<CancelToken>>,
+    /// Changes with every scan (under the `dupes` lock), so a search that started on the previous
+    /// tree keeps nothing.
+    scan_seq: AtomicU64,
 }
 
 impl CleanupState {
@@ -91,6 +99,15 @@ pub async fn cleanup_scan(
     let cancel = CancelToken::new();
     if let Some(previous) = lock(&state.cancel)?.replace(cancel.clone()) {
         previous.cancel();
+    }
+    // A duplicate search belongs to the previous tree.
+    if let Some(search) = lock(&state.dupes_cancel)?.take() {
+        search.cancel();
+    }
+    {
+        let mut dupes = lock(&state.dupes)?;
+        state.scan_seq.fetch_add(1, Ordering::SeqCst);
+        dupes.take();
     }
     // Free the previous tree before building the next one, and write the removals the previous
     // scan's report is still waiting for.
@@ -456,6 +473,122 @@ pub async fn cleanup_junk(app: AppHandle) -> Result<Vec<JunkGroup>, String> {
     .await
     .map_err(|err| err.to_string())?
 }
+
+/// Totals of a duplicate search; the groups themselves stay here and are paged.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DupesSummary {
+    min_size: u64,
+    groups: u64,
+    files: u64,
+    reclaimable: u64,
+    skipped: Skipped,
+}
+
+impl DupesSummary {
+    fn of(found: &Found) -> Self {
+        Self {
+            min_size: found.min_size,
+            groups: found.groups.len() as u64,
+            files: found.files(),
+            reclaimable: found.reclaimable(),
+            skipped: found.skipped,
+        }
+    }
+}
+
+/// Finds files with identical content in the current scan, streaming progress. Only one search
+/// runs at a time; a new one cancels the last. It reads files, so like a scan it holds the scan
+/// guard and cannot overlap an elevated record.
+#[tauri::command]
+pub async fn cleanup_dupes_find(
+    app: AppHandle,
+    state: State<'_, CleanupState>,
+    record: State<'_, crate::record::RecordState>,
+    min_size: u64,
+    on_progress: Channel<dupes::Progress>,
+) -> Result<DupesSummary, String> {
+    if !dupes::MIN_SIZE_CHOICES.contains(&min_size) {
+        return Err("Pick one of the offered minimum sizes.".into());
+    }
+    let _scan = record.scan_guard()?;
+    let seq = state.scan_seq.load(Ordering::SeqCst);
+    let cancel = CancelToken::new();
+    if let Some(previous) = lock(&state.dupes_cancel)?.replace(cancel.clone()) {
+        previous.cancel();
+    }
+    lock(&state.dupes)?.take();
+
+    let job_cancel = cancel.clone();
+    let found = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<CleanupState>();
+        // Taken under the tree lock; the reads below hold no lock.
+        let candidates = with_tree(&state, |tree| Ok(dupes::collect(tree, min_size)))?;
+        let counters = dupes::Counters::default();
+        thread::scope(|scope| {
+            let job = scope.spawn(|| dupes::search(candidates, &job_cancel, &counters));
+            while !job.is_finished() {
+                let _ = on_progress.send(counters.progress());
+                thread::sleep(PROGRESS_INTERVAL);
+            }
+            let _ = on_progress.send(counters.progress());
+            job.join()
+        })
+        .map_err(|_| "The duplicate search stopped unexpectedly.".to_string())
+    })
+    .await
+    .map_err(|err| err.to_string())??;
+    let Some(found) = found.filter(|_| !cancel.is_cancelled()) else {
+        return Err(CANCELLED.into());
+    };
+    let mut slot = lock(&state.dupes)?;
+    // A scan that started meanwhile replaced the tree these ids point into.
+    if state.scan_seq.load(Ordering::SeqCst) != seq {
+        return Err(CANCELLED.into());
+    }
+    let summary = DupesSummary::of(&found);
+    *slot = Some(found);
+    Ok(summary)
+}
+
+#[tauri::command]
+pub fn cleanup_dupes_cancel(state: State<'_, CleanupState>) -> Result<(), String> {
+    if let Some(cancel) = lock(&state.dupes_cancel)?.as_ref() {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+/// Groups most worth cleaning first.
+const DUPES_PAGE: usize = 200;
+
+/// A page of the last duplicate search's groups.
+#[tauri::command]
+pub fn cleanup_dupes_groups(
+    state: State<'_, CleanupState>,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<Group>, String> {
+    let dupes = lock(&state.dupes)?;
+    let found = dupes.as_ref().ok_or(NO_DUPES)?;
+    Ok(found
+        .groups
+        .iter()
+        .skip(offset)
+        .take(limit.min(DUPES_PAGE))
+        .cloned()
+        .collect())
+}
+
+/// What "Select all but the oldest in each group" ticks. Nothing is ever ticked unless the user
+/// presses that button.
+#[tauri::command]
+pub fn cleanup_dupes_all_but_oldest(state: State<'_, CleanupState>) -> Result<Vec<NodeId>, String> {
+    let dupes = lock(&state.dupes)?;
+    Ok(dupes::all_but_oldest(dupes.as_ref().ok_or(NO_DUPES)?))
+}
+
+const NO_DUPES: &str = "That duplicate search is no longer available. Find duplicates again.";
 
 /// A dry run: what deleting `ids` would do to each item. Touches nothing.
 #[tauri::command]

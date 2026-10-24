@@ -3,6 +3,7 @@
 
 pub mod bulk;
 pub mod catalog;
+pub mod dupes;
 pub mod junk;
 pub mod log;
 mod os;
