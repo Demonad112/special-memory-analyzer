@@ -102,9 +102,11 @@
           <a href="#install">Install</a>
           <a href="#usb-kit">Install on a server (USB kit)</a>
           <strong style="margin-top: 10px">Tools</strong>
+          <a href="#readiness">Check before a migration</a>
           <a href="#compare">Compare two folders</a>
           <a href="#record">Record a copy</a>
           <a href="#retry">Retry missed files</a>
+          <a href="#delta">Copy only what changed</a>
           <a href="#cleanup">Clean up a disk</a>
           <a href="#restore">Restore a cleanup</a>
           <strong style="margin-top: 10px">Output &amp; setup</strong>
@@ -238,6 +240,45 @@
           </p>
         </section>
 
+        <section id="readiness">
+          <h2>Check a folder before a migration</h2>
+          <p class="time">Home or Compare → Migration readiness</p>
+          <ol class="steps">
+            <li>
+              <p>
+                Choose the <strong>source</strong> folder, an optional planned
+                <strong>destination</strong> folder and the target: <strong>File server (NTFS)</strong>
+                or <strong>OneDrive / SharePoint</strong>. With a destination, path lengths are
+                measured as they will be there.
+              </p>
+            </li>
+            <li>
+              <p>
+                Leave <strong>Permissions</strong> and <strong>In use</strong> on, or turn them off
+                for speed. <strong>Check every file</strong> also reads file permissions and is
+                slower.
+              </p>
+            </li>
+            <li>
+              <p>
+                Start. The result lists bad names and too-long paths with a fix hint, folders with
+                broken inheritance, unknown accounts or wide write access, and files that are open
+                with a lock (a moment in time: close the program and check again).
+              </p>
+            </li>
+            <li>
+              <p>
+                <strong>Export permissions (CSV)</strong> gives one row per access entry for Excel.
+                The report is saved and exports to HTML or CSV from Reports.
+              </p>
+            </li>
+          </ol>
+          <div class="note">
+            Readiness only reads. It never changes a name or a permission, and online-only OneDrive
+            files are checked by name only.
+          </div>
+        </section>
+
         <section id="compare">
           <h2>Compare two folders</h2>
           <p class="time">Left nav → Compare &amp; Record</p>
@@ -258,6 +299,11 @@
                 <li>
                   <strong>Ignore system and temp files</strong> skips <code>Thumbs.db</code>,
                   <code>desktop.ini</code>, <code>~$</code> Office lock files and <code>.tmp</code>.
+                </li>
+                <li>
+                  <strong>Compare permissions</strong> also compares owner, inheritance and entries.
+                  <em>Same name, different account</em> (amber) means the account name matches but
+                  its ID differs, as when a local account is recreated on a new server.
                 </li>
               </ul>
             </li>
@@ -366,6 +412,32 @@
           </ol>
         </section>
 
+        <section id="delta">
+          <h2>Copy only what changed</h2>
+          <p class="time">Reports → a finished Record run → Copy changes since this run</p>
+          <ol class="steps">
+            <li>
+              <p>
+                On a Completed or Cancelled run, choose <strong>Copy changes since this run</strong>.
+                It starts a new run with the same source, destination and settings.
+              </p>
+            </li>
+            <li>
+              <p>
+                New and changed files are copied and files the last run missed are tried again. A
+                file edited at the destination since then is left alone and listed as
+                <em>Changed at the destination since the last run</em>.
+              </p>
+            </li>
+            <li>
+              <p>
+                Nothing is deleted at the destination. Files found only there are counted and left
+                in place.
+              </p>
+            </li>
+          </ol>
+        </section>
+
         <section id="cleanup">
           <h2>Clean up a disk</h2>
           <p class="time">Left nav → Disk Cleanup</p>
@@ -407,6 +479,26 @@
                 <em>This is a big cleanup</em>. Read it before confirming.
               </p>
             </li>
+            <li>
+              <p>
+                After a scan, <strong>Find duplicates</strong> groups identical files (nothing is
+                selected for you and one copy always stays), <strong>Stale data</strong> shows files
+                not changed in 1 to 10 years, and <strong>By owner</strong> shows who uses the space.
+              </p>
+            </li>
+            <li>
+              <p>
+                <strong>What grew</strong> compares with an earlier scan of the same folder, and
+                after 3 scans over 14 days a forecast estimates when the drive fills up.
+              </p>
+            </li>
+            <li>
+              <p>
+                You can scan <code>\\server\share</code> and admin shares such as
+                <code>\\server\C$</code>. On a network share or mapped network drive the delete
+                buttons are hidden: scanning and reports work, deleting does not.
+              </p>
+            </li>
           </ol>
           <div class="note danger">
             The app never deletes its own data folder, and a built-in never-delete list protects
@@ -437,8 +529,16 @@
             <li>
               <p>
                 Filter by <strong>All</strong>, <strong>Compare</strong>, <strong>Record</strong>,
-                <strong>Disk usage</strong> or <strong>Cleanup</strong>, or search by client, ticket
+                <strong>Disk usage</strong>, <strong>Cleanup</strong>, <strong>Readiness</strong> or
+                <strong>Runbook</strong>, or search by client, ticket
                 or folder.
+              </p>
+            </li>
+            <li>
+              <p>
+                <strong>New runbook</strong> combines one readiness report, Record runs and compare
+                reports into one document: before, copy, after. A part deleted later shows as
+                <em>Report no longer available</em>.
               </p>
             </li>
             <li>
@@ -481,6 +581,18 @@
               <tr>
                 <td>Include job details in CSV</td>
                 <td>Adds job information to CSV exports.</td>
+              </tr>
+              <tr>
+                <td>Servers</td>
+                <td>
+                  Saved server profiles (name, server, optional user, notes) and
+                  <strong>List shares</strong>. The app never saves a password: it uses your Windows
+                  sign-in, or a sign-in for one session.
+                </td>
+              </tr>
+              <tr>
+                <td>Keep scan history</td>
+                <td>On by default. Powers What grew and the forecast; <strong>Delete history</strong> clears it.</td>
               </tr>
               <tr>
                 <td>Keep saved reports</td>
