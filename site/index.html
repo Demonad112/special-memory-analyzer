@@ -193,7 +193,8 @@
               <h3>Compare</h3>
               <p>
                 Pick a source and a destination and compare them by size. See what is only on one
-                side, what differs and what matches. Optionally compare contents by hash.
+                side, what differs and what matches. Optionally compare contents by hash, owners and
+                permissions.
               </p>
               <span class="chip">Compare &amp; Record</span>
             </div>
@@ -232,8 +233,8 @@
               </div>
               <h3>Disk Cleanup</h3>
               <p>
-                A disk space analyzer with a treemap, biggest folders and files, file types and
-                quick cleanups. Deletes go to the Recycle Bin and are logged.
+                A disk space analyzer with a treemap, biggest folders and files, file types,
+                duplicates and quick cleanups. Deletes go to the Recycle Bin and are logged.
               </p>
               <span class="chip">Disk Cleanup</span>
             </div>
@@ -517,6 +518,48 @@
                 a <code>Data</code> folder.
               </p>
             </div>
+            <div class="card">
+              <h3>Migration readiness</h3>
+              <p>
+                Scan a source before a move for names that will fail at the target, broken
+                permissions and locked files. Export the permissions as CSV.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Copy changes since this run</h3>
+              <p>
+                A short final pass at cutover that copies only what changed since an earlier Record
+                run.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Duplicates, stale data and owners</h3>
+              <p>
+                Find duplicate files, stale folders and space by owner, then clean up from the
+                Recycle Bin-first list.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Growth and forecast</h3>
+              <p>
+                Every scan is kept, so you can see what grew since last time and when the disk will
+                fill.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Servers and shares</h3>
+              <p>
+                Use <code>\\server\share</code> or <code>\\server\C$</code> anywhere. Server
+                profiles never save a password, and shares are scan and report only.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Migration runbook</h3>
+              <p>
+                Combine readiness, Record and compare reports into one document, branded with your
+                logo and a "Prepared for" block.
+              </p>
+            </div>
           </div>
         </div>
       </section>
@@ -543,6 +586,10 @@
               </li>
               <li>Folder walks never follow symlinks, junctions or mount points.</li>
               <li>Online-only OneDrive files are flagged and never opened, hashed or read.</li>
+              <li>
+                Nothing is deleted on a network share or mapped drive, and saved server profiles
+                never hold a password.
+              </li>
               <li>
                 Saved files are written atomically, and exported HTML is escaped with a content
                 security policy.
