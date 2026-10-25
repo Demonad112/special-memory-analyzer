@@ -4,7 +4,7 @@ import { ref, watch } from 'vue'
 import type { JobInfo } from './job'
 import { brand, csvJobDetails } from './job'
 
-export type ReportKind = 'compare' | 'record' | 'diskUsage' | 'cleanup' | 'readiness'
+export type ReportKind = 'compare' | 'record' | 'diskUsage' | 'cleanup' | 'readiness' | 'runbook'
 export type ExportFormat = 'html' | 'csv'
 
 /** One saved report or record, as listed on the Reports page. */
@@ -17,6 +17,8 @@ export interface ReportEntry {
   headline: string
   problem: boolean
   job: JobInfo
+  /** Other CSV layouts the report can export, by name (`permissions` for an audited readiness report). */
+  csvLayouts: string[]
 }
 
 export const kindLabels: Record<ReportKind, string> = {
@@ -25,6 +27,7 @@ export const kindLabels: Record<ReportKind, string> = {
   diskUsage: 'Disk usage',
   cleanup: 'Cleanup',
   readiness: 'Readiness',
+  runbook: 'Runbook',
 }
 
 export function listReports(): Promise<ReportEntry[]> {
@@ -161,4 +164,99 @@ export async function pickLogo(): Promise<string | null> {
 
 export function clearLogo(): Promise<void> {
   return invoke('branding_clear_logo')
+}
+
+/** One way to export a report as CSV: the default list, or another layout of the same report. */
+export interface CsvChoice {
+  /** Passed to `report_export`; `undefined` is the default layout. */
+  layout: string | undefined
+  label: string
+  title: string
+}
+
+const layoutChoices: Record<string, Omit<CsvChoice, 'layout'>> = {
+  permissions: {
+    label: 'Export the permissions as CSV',
+    title: 'Save every folder and its access entries as CSV for Excel',
+  },
+}
+
+/**
+ * The CSV exports to offer for a report: always the default list, plus each other layout the
+ * report was saved with. A readiness report saved without the permissions audit has none, so it
+ * gets no permissions CSV.
+ */
+export function csvChoices(entry: Pick<ReportEntry, 'csvLayouts'>): CsvChoice[] {
+  const extra = (entry.csvLayouts as string[] | undefined) ?? []
+  return [
+    {
+      layout: undefined,
+      label: 'Export as CSV',
+      title: 'Save the list as CSV for Excel',
+    },
+    ...extra.flatMap((layout) => {
+      const choice = layoutChoices[layout]
+      return choice ? [{ layout, ...choice }] : []
+    }),
+  ]
+}
+
+/** The kinds a runbook can hold, in the order it reads: before the copy, the copy, after it. */
+export const runbookKinds = ['readiness', 'record', 'compare'] as const
+export type RunbookKind = (typeof runbookKinds)[number]
+
+export const MAX_RUNBOOK_PARTS = 24
+
+export function isRunbookKind(kind: ReportKind): kind is RunbookKind {
+  return (runbookKinds as readonly string[]).includes(kind)
+}
+
+function sameTicket(a: JobInfo, b: JobInfo): boolean {
+  const ticket = a.ticket.trim().toLowerCase()
+  return ticket !== '' && ticket === b.ticket.trim().toLowerCase()
+}
+
+/**
+ * The reports a runbook can be made from, with those that have the same ticket number as the
+ * first one picked ahead of the rest (each group keeps its order, newest first). Before anything
+ * is picked the list is just the eligible reports.
+ */
+export function runbookCandidates(
+  entries: ReportEntry[],
+  first: Pick<ReportEntry, 'job'> | null,
+): { entry: ReportEntry; suggested: boolean }[] {
+  const eligible = entries
+    .filter((entry) => isRunbookKind(entry.kind))
+    .map((entry) => ({ entry, suggested: first !== null && sameTicket(entry.job, first.job) }))
+  return [...eligible.filter((row) => row.suggested), ...eligible.filter((row) => !row.suggested)]
+}
+
+/** Why the picked reports cannot be a runbook yet, or '' when they can. */
+export function runbookProblem(picked: Pick<ReportEntry, 'kind'>[]): string {
+  if (picked.length === 0) {
+    return 'Pick at least one report.'
+  }
+  if (picked.filter((entry) => entry.kind === 'readiness').length > 1) {
+    return 'A runbook has one readiness report.'
+  }
+  if (picked.length > MAX_RUNBOOK_PARTS) {
+    return `A runbook holds at most ${String(MAX_RUNBOOK_PARTS)} reports.`
+  }
+  return ''
+}
+
+/** Client, ticket and technician of the first report picked: what the runbook is for. */
+export function runbookJob(first: Pick<ReportEntry, 'job'> | undefined): JobInfo {
+  return { ...(first?.job ?? { client: '', ticket: '', technician: '' }) }
+}
+
+/** Makes a runbook from the picked reports. Only ids cross; Rust checks each against its folders. */
+export function createRunbook(
+  info: JobInfo,
+  picked: Pick<ReportEntry, 'kind' | 'id'>[],
+): Promise<ReportEntry> {
+  return invoke<ReportEntry>('runbook_create', {
+    job: info,
+    parts: picked.map((entry) => ({ kind: entry.kind, id: entry.id })),
+  })
 }
