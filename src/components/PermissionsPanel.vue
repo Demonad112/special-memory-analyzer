@@ -94,6 +94,8 @@ watch(
   () => props.view,
   () => {
     seq++
+    exportSeq++
+    exporting.value = false
     open.value = null
     findings.value = []
     notice.value = ''
@@ -103,11 +105,14 @@ watch(
 )
 
 const exporting = ref(false)
+/** Bumped by every new check, so an export that finishes after it writes nothing. */
+let exportSeq = 0
 
 async function exportCsv(): Promise<void> {
   if (!props.reportId || exporting.value) {
     return
   }
+  const mine = exportSeq
   exporting.value = true
   error.value = ''
   notice.value = ''
@@ -123,13 +128,17 @@ async function exportCsv(): Promise<void> {
       'csv',
       'permissions',
     )
-    if (path) {
+    if (path && mine === exportSeq) {
       notice.value = `Saved ${path}`
     }
   } catch (err) {
-    error.value = errorMessage(err)
+    if (mine === exportSeq) {
+      error.value = errorMessage(err)
+    }
   } finally {
-    exporting.value = false
+    if (mine === exportSeq) {
+      exporting.value = false
+    }
   }
 }
 

@@ -19,12 +19,13 @@ use scan_core::security::{
 };
 use scan_core::{CancelToken, Kind, NodeId, ScanError, Tree};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex, PoisonError};
 use std::thread;
+use std::time::Duration;
 
 /// Most findings of one type a saved report keeps; the counts always cover every finding.
 pub const FINDING_LIMIT: usize = 20_000;
@@ -277,6 +278,8 @@ struct Target {
 pub struct Audit {
     findings: Vec<Finding>,
     items: Vec<AuditedItem>,
+    /// More items had entries than the budget keeps.
+    items_truncated: bool,
     folders_read: u64,
     files_read: u64,
     skipped: u64,
@@ -307,70 +310,26 @@ fn targets(tree: &Tree, every_file: bool) -> (Vec<Target>, u64) {
     (found, skipped)
 }
 
-/// Reads the permissions of the tree and classifies them. `read` gives the descriptor of a path
-/// (the system call in the app); `names` resolves SIDs. `Err(Cancelled)` when cancelled.
-pub fn audit(
-    tree: &Tree,
-    options: &AuditOptions,
-    read: &Read,
-    names: &SidNames,
-    cancel: &CancelToken,
-    counters: &Counters,
-) -> Result<Audit, ScanError> {
-    let (targets, skipped) = targets(tree, options.every_file);
-    counters.done.store(0, Ordering::Relaxed);
-    counters
-        .total
-        .store(targets.len() as u64, Ordering::Relaxed);
-    let next = AtomicUsize::new(0);
-    let parts: Mutex<Vec<(NodeId, bool, ItemResult)>> = Mutex::new(Vec::new());
-    let threads = THREADS.min(targets.len().div_ceil(BATCH)).max(1);
-    thread::scope(|scope| {
-        for _ in 0..threads {
-            scope.spawn(|| {
-                let mut mine = Vec::new();
-                loop {
-                    let from = next.fetch_add(BATCH, Ordering::Relaxed);
-                    if from >= targets.len() || cancel.is_cancelled() {
-                        break;
-                    }
-                    for target in &targets[from..(from + BATCH).min(targets.len())] {
-                        if cancel.is_cancelled() {
-                            break;
-                        }
-                        let path = exact_path(&tree.path(target.id));
-                        let result = classify(
-                            read(&path, What::OwnerAndDacl),
-                            target.dir,
-                            target.id == 0,
-                            options.server.as_deref(),
-                            names,
-                        );
-                        counters.done.fetch_add(1, Ordering::Relaxed);
-                        mine.push((target.id, target.dir, result));
-                    }
-                }
-                if let Ok(mut parts) = parts.lock() {
-                    parts.extend(mine);
-                }
-            });
-        }
-    });
-    if cancel.is_cancelled() {
-        return Err(ScanError::Cancelled);
-    }
-    let mut parts = parts.into_inner().unwrap_or_default();
-    // Tree order, so the report does not depend on thread timing.
-    parts.sort_unstable_by_key(|(id, _, _)| *id);
-    let mut audit = Audit {
-        findings: Vec::new(),
-        items: Vec::new(),
-        folders_read: 0,
-        files_read: 0,
-        skipped,
-    };
-    for (id, dir, result) in parts {
-        let path = relative(tree, id);
+/// One audited item on its way to the merge: its path, whether it is a folder, and what it gave.
+type Piece = (String, bool, ItemResult);
+
+/// Batches a worker may run ahead of the merge. Bounds what waits to be merged.
+const WINDOW: usize = 4 * THREADS;
+
+/// Results merged in tree order, as batches finish. Items stop being kept once the entry budget
+/// is spent; the counts and findings go on.
+struct Merge {
+    /// The next batch to merge.
+    next: usize,
+    pending: BTreeMap<usize, Vec<Piece>>,
+    audit: Audit,
+    entry_limit: usize,
+    entries_kept: usize,
+}
+
+impl Merge {
+    fn add(&mut self, (path, dir, result): Piece) {
+        let audit = &mut self.audit;
         if dir {
             audit.folders_read += 1;
         } else {
@@ -386,11 +345,124 @@ pub fn audit(
             });
         }
         if let Some(mut item) = result.item {
-            item.path = path;
-            audit.items.push(item);
+            let cost = item.entries.len().max(1);
+            // The first item that does not fit ends the kept items for good, so the same tree
+            // keeps the same items on every run.
+            if !audit.items_truncated && self.entries_kept + cost <= self.entry_limit {
+                self.entries_kept += cost;
+                item.path = path;
+                audit.items.push(item);
+            } else {
+                audit.items_truncated = true;
+            }
         }
     }
-    Ok(audit)
+
+    /// Takes a finished batch and merges every batch that is now next in line.
+    fn submit(&mut self, batch: usize, pieces: Vec<Piece>) {
+        self.pending.insert(batch, pieces);
+        while let Some(ready) = self.pending.remove(&self.next) {
+            for piece in ready {
+                self.add(piece);
+            }
+            self.next += 1;
+        }
+    }
+}
+
+/// Reads the permissions of the tree and classifies them. `read` gives the descriptor of a path
+/// (the system call in the app); `names` resolves SIDs. `Err(Cancelled)` when cancelled.
+pub fn audit(
+    tree: &Tree,
+    options: &AuditOptions,
+    read: &Read,
+    names: &SidNames,
+    cancel: &CancelToken,
+    counters: &Counters,
+) -> Result<Audit, ScanError> {
+    audit_with_limit(tree, options, read, names, cancel, counters, ENTRY_LIMIT)
+}
+
+/// [`audit`] keeping the entries of at most `entry_limit` access entries' worth of items. The
+/// items kept are the first ones in tree order, however the threads happen to run, and memory
+/// stays bounded whatever the size of the tree.
+pub fn audit_with_limit(
+    tree: &Tree,
+    options: &AuditOptions,
+    read: &Read,
+    names: &SidNames,
+    cancel: &CancelToken,
+    counters: &Counters,
+    entry_limit: usize,
+) -> Result<Audit, ScanError> {
+    let (targets, skipped) = targets(tree, options.every_file);
+    counters.done.store(0, Ordering::Relaxed);
+    counters
+        .total
+        .store(targets.len() as u64, Ordering::Relaxed);
+    let next = AtomicUsize::new(0);
+    let merge = Mutex::new(Merge {
+        next: 0,
+        pending: BTreeMap::new(),
+        audit: Audit {
+            findings: Vec::new(),
+            items: Vec::new(),
+            items_truncated: false,
+            folders_read: 0,
+            files_read: 0,
+            skipped,
+        },
+        entry_limit,
+        entries_kept: 0,
+    });
+    let turn = Condvar::new();
+    let lock = || merge.lock().unwrap_or_else(PoisonError::into_inner);
+    let threads = THREADS.min(targets.len().div_ceil(BATCH)).max(1);
+    thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| loop {
+                let batch = next.fetch_add(1, Ordering::Relaxed);
+                let from = batch.saturating_mul(BATCH);
+                if from >= targets.len() || cancel.is_cancelled() {
+                    break;
+                }
+                // Not too far ahead of the merge: the batch the merge waits for is always taken.
+                let mut merging = lock();
+                while batch >= merging.next + WINDOW && !cancel.is_cancelled() {
+                    merging = turn
+                        .wait_timeout(merging, Duration::from_millis(50))
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
+                }
+                drop(merging);
+                let mut pieces = Vec::new();
+                for target in &targets[from..(from + BATCH).min(targets.len())] {
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+                    let path = exact_path(&tree.path(target.id));
+                    let result = classify(
+                        read(&path, What::OwnerAndDacl),
+                        target.dir,
+                        target.id == 0,
+                        options.server.as_deref(),
+                        names,
+                    );
+                    counters.done.fetch_add(1, Ordering::Relaxed);
+                    pieces.push((relative(tree, target.id), target.dir, result));
+                }
+                lock().submit(batch, pieces);
+                turn.notify_all();
+            });
+        }
+    });
+    if cancel.is_cancelled() {
+        return Err(ScanError::Cancelled);
+    }
+    Ok(merge
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
+        .audit)
 }
 
 fn relative(tree: &Tree, id: NodeId) -> String {
@@ -553,17 +625,6 @@ impl Audit {
             listed.truncate(FINDING_LIMIT);
             findings.extend(listed);
         }
-        let mut items = Vec::new();
-        let mut kept = 0usize;
-        let mut items_truncated = false;
-        for item in self.items {
-            kept += item.entries.len().max(1);
-            if kept > ENTRY_LIMIT {
-                items_truncated = true;
-                break;
-            }
-            items.push(item);
-        }
         let counts: Vec<FindingCount> = FindingKind::ALL
             .into_iter()
             .filter_map(|kind| counts.get(&kind).map(|&count| FindingCount { kind, count }))
@@ -588,8 +649,8 @@ impl Audit {
             issues,
             counts,
             findings,
-            items,
-            items_truncated,
+            items: self.items,
+            items_truncated: self.items_truncated,
         }
     }
 }

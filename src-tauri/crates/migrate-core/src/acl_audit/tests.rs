@@ -406,15 +406,10 @@ fn the_report_counts_everything_and_caps_the_lists() {
             ..Finding::default()
         })
         .collect();
-    let item = |n: usize| AuditedItem {
-        path: format!("d{n}"),
-        dir: true,
-        entries: vec![EntryRow::default(); 40_000],
-        ..AuditedItem::default()
-    };
     let audit = Audit {
         findings,
-        items: (0..3).map(item).collect(),
+        items: vec![AuditedItem::default()],
+        items_truncated: true,
         folders_read: 3,
         files_read: 0,
         skipped: 0,
@@ -426,10 +421,90 @@ fn the_report_counts_everything_and_caps_the_lists() {
     );
     assert_eq!(report.listed(FindingKind::WideWrite).count(), FINDING_LIMIT);
     assert_eq!(report.issues, FINDING_LIMIT as u64 + 5);
-    assert_eq!(report.items.len(), 2);
+    assert_eq!(report.items.len(), 1);
     assert!(report.items_truncated);
     assert!(report.elevated);
     assert!(report.summary().findings.is_empty() && report.summary().items.is_empty());
+}
+
+/// root with 60 folders, each with a protected DACL and 3 entries.
+fn wide_tree() -> (tempfile::TempDir, Tree) {
+    let temp = tempfile::tempdir().unwrap();
+    for n in 0..60 {
+        fs::create_dir(temp.path().join(format!("d{n:02}"))).unwrap();
+    }
+    let tree = scan(temp.path(), &ScanState::new(CancelToken::new())).unwrap();
+    (temp, tree)
+}
+
+#[test]
+fn items_stop_being_kept_at_the_entry_budget_but_the_counts_go_on() {
+    let (_temp, tree) = wide_tree();
+    let read = |_: &Path, _: What| {
+        Ok(Descriptor {
+            protected: true,
+            ..descriptor(vec![
+                ace(ADMINS, security::FULL_CONTROL, false),
+                ace(EVERYONE, MODIFY, false),
+                ace("S-1-5-18", security::FULL_CONTROL, false),
+            ])
+        })
+    };
+    let run = || {
+        audit_with_limit(
+            &tree,
+            &AuditOptions::default(),
+            &read,
+            &names(),
+            &CancelToken::new(),
+            &Counters::default(),
+            // Room for 10 folders of 3 entries, and a half left over.
+            32,
+        )
+        .unwrap()
+    };
+    let first = run();
+    assert_eq!(first.items.len(), 10);
+    assert!(first.items_truncated);
+    // Everything was still read and counted: 60 folders and the root.
+    assert_eq!(first.folders_read, 61);
+    let wide = |audit: &Audit| {
+        audit
+            .findings
+            .iter()
+            .filter(|finding| finding.kind == FindingKind::WideWrite)
+            .count()
+    };
+    assert_eq!(wide(&first), 61);
+    let report = first.into_report(&AuditOptions::default(), false, true);
+    assert_eq!(report.count_of(FindingKind::WideWrite), 61);
+    assert_eq!(report.items.len(), 10);
+    assert!(report.items_truncated);
+
+    // The same items every run, whatever the thread timing: the first ones in tree order.
+    let paths = |audit: &Audit| -> Vec<String> {
+        audit.items.iter().map(|item| item.path.clone()).collect()
+    };
+    let again = run();
+    assert_eq!(paths(&again), paths(&run()));
+    assert_eq!(paths(&again)[0], "");
+}
+
+#[test]
+fn nothing_is_truncated_when_everything_fits() {
+    let (_temp, tree) = wide_tree();
+    let read = |_: &Path, _: What| Ok(descriptor(vec![ace(ADMINS, MODIFY, false)]));
+    let found = audit(
+        &tree,
+        &AuditOptions::default(),
+        &read,
+        &names(),
+        &CancelToken::new(),
+        &Counters::default(),
+    )
+    .unwrap();
+    assert_eq!(found.items.len(), 61);
+    assert!(!found.items_truncated);
 }
 
 #[test]

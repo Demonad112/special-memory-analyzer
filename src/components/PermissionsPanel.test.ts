@@ -118,6 +118,23 @@ describe('PermissionsPanel', () => {
     expect(wrapper.text()).toContain('Saved C:\\out\\p.csv')
   })
 
+  it('shows nothing from an export that finishes after a new check', async () => {
+    let saved: (path: string) => void = () => undefined
+    dialog.save.mockReturnValue(new Promise((resolve) => (saved = resolve)))
+    core.invoke.mockResolvedValue(undefined)
+    const wrapper = panel()
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text().includes('Export permissions'))
+      ?.trigger('click')
+    await wrapper.setProps({ view: 2 })
+    saved('C:\\old\\p.csv')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('Saved')
+    const button = wrapper.findAll('button').find((b) => b.text().includes('Export permissions'))
+    expect(button?.attributes('disabled')).toBeUndefined()
+  })
+
   it('cannot export when the report was not saved, and says when it did not run', () => {
     const noReport = panel({ reportId: null })
     const button = noReport.findAll('button').find((b) => b.text().includes('Export permissions'))
