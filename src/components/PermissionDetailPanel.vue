@@ -60,22 +60,22 @@ const inheritance = computed(() => {
       <li v-if="inheritance">{{ inheritance }}</li>
       <li v-if="detail.note">{{ detail.note }}</li>
       <li
-        v-for="entry in detail.missing"
-        :key="`m-${entry.sid}-${String(entry.mask)}-${entry.appliesTo}-${entry.access}`"
+        v-for="(entry, index) in detail.missing"
+        :key="`m-${index}-${entry.sid}-${String(entry.mask)}-${entry.appliesTo}-${entry.access}`"
         class="text-danger"
       >
         Missing at the destination: {{ entryText(entry) }}
       </li>
       <li
-        v-for="entry in detail.extra"
-        :key="`x-${entry.sid}-${String(entry.mask)}-${entry.appliesTo}-${entry.access}`"
+        v-for="(entry, index) in detail.extra"
+        :key="`x-${index}-${entry.sid}-${String(entry.mask)}-${entry.appliesTo}-${entry.access}`"
         class="text-danger"
       >
         Only at the destination: {{ entryText(entry) }}
       </li>
       <li
-        v-for="pair in detail.sameName"
-        :key="`s-${pair.source.sid}-${pair.destination.sid}-${String(pair.source.mask)}`"
+        v-for="(pair, index) in detail.sameName"
+        :key="`s-${index}-${pair.source.sid}-${pair.destination.sid}-${String(pair.source.mask)}`"
         class="text-warning"
       >
         Same name, different account: {{ entryText(pair.source) }} ↔ {{ pair.destination.account }}
