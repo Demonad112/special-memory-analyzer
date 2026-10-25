@@ -43,3 +43,15 @@ Manual checks to run on a test build (`vX.Y.Z-test.N`, see [Releasing](install.m
 
 - [ ] The test installer installs over 1.1.1 and keeps existing reports readable.
 - [ ] `scripts\Get-Release.ps1 -Version vX.Y.Z-test.N` verifies `SHA256SUMS`.
+
+## 1.3 checks
+
+- [ ] Readiness on a real share with the permissions audit. Open the permissions CSV in Excel.
+- [ ] Compare with permissions on two shares on different servers. "Same name, different account" shows in amber if available.
+- [ ] Delta run after editing three files. Kill the app mid-delta, reopen, and run "Copy changes since this run" again.
+- [ ] Delete a duplicate, then restore it from the Recycle Bin.
+- [ ] History: "What grew" works after two scans of the same folder.
+- [ ] `\localhost\C$\Users\Public` works in Compare, Record, Readiness and Disk Cleanup, and Disk Cleanup hides delete.
+- [ ] A mapped drive (`net use Z: \localhost\C$`) hides delete and resolves account names.
+- [ ] Settings > Servers > List shares on localhost.
+- [ ] A branded HTML export, and a runbook export with a delta chain.

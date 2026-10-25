@@ -213,8 +213,30 @@
           <div class="ans">
             <p>
               By default deletes go to the <strong>Recycle Bin</strong>. Shift+Delete deletes
-              permanently. Permanent and big runs need administrator rights and a confirmation.
-              Every delete is logged in <code>Logs\deletions.jsonl</code>.
+              permanently. Deleting permanently, or deleting more than one item at a time, needs
+              administrator rights, and big runs need a second confirmation. Every delete is logged
+              in <code>Logs\deletions.jsonl</code>.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Can I delete files on a network share?</summary>
+          <div class="ans">
+            <p>
+              No. The Recycle Bin does not cover network paths, so every delete there would be
+              permanent. Deletes on <code>\server\share</code> paths, admin shares and mapped
+              network drives are refused, and the delete buttons are hidden. Scanning and reports
+              still work.
+            </p>
+          </div>
+        </details>
+        <details data-faq>
+          <summary>Does the app save my server password?</summary>
+          <div class="ans">
+            <p>
+              Never. Saved server profiles hold a name, server, optional user name and notes only.
+              The app uses your Windows sign-in; if that is refused, the sign-in dialog connects for
+              this session only.
             </p>
           </div>
         </details>
@@ -310,7 +332,8 @@
             <p>
               Yes, under <strong>Keep</strong> on the Record page: dates, attributes, permissions,
               owner, audit rules and alternate data streams. Owner and audit rules need
-              administrator.
+              administrator. To check that they came across, turn on
+              <strong>Compare permissions</strong> in Compare.
             </p>
           </div>
         </details>
@@ -355,7 +378,8 @@
           <div class="ans">
             <p>
               Yes: <strong>Settings → Company name on reports</strong> and
-              <strong>Company logo</strong>.
+              <strong>Company logo</strong> (PNG or JPEG up to 256 KB). HTML reports also show a
+              “Prepared for” block with the client, ticket and technician.
             </p>
           </div>
         </details>

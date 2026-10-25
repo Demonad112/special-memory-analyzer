@@ -23,6 +23,9 @@ so it will still warn. The USB kit for servers is in [usb-install.md](usb-instal
 Records, reports and the deletion log are kept in `%LOCALAPPDATA%\Deep Server Analyzer`
 (`Records`, `Reports`, `Logs`). Disk Cleanup never deletes anything in that folder.
 
+Inside `Reports`, `snapshots\` holds the scan history that powers "What grew" and the forecast, and
+`branding\` holds the company logo. Saved server profiles never contain a password.
+
 Portable mode: a file named `portable.txt` next to the exe moves them to `Data\` beside the exe.
 Delete `portable.txt` to go back to `%LOCALAPPDATA%`. Settings kept by the web view (theme, recent
 folders, company name) stay on the PC, not in `Data\`.
@@ -60,10 +63,10 @@ for a final release: both scripts then use the version in `package.json`.
 
 To try the pipeline before a final release, tag a test build with the same version plus `-test.N`:
 
-1. `scripts\Set-ReleaseTag.ps1 -Version v1.2.0-test.1`. The `X.Y.Z` part must equal the version in
+1. `scripts\Set-ReleaseTag.ps1 -Version v1.3.0-test.1`. The `X.Y.Z` part must equal the version in
    `package.json`.
 2. Approve under Actions → the run → Review deployments, as above.
-3. `scripts\Get-Release.ps1 -Version v1.2.0-test.1`.
+3. `scripts\Get-Release.ps1 -Version v1.3.0-test.1`.
 
 `release.yml` publishes any tag containing `-` as a pre-release (`--prerelease --latest=false`), so
 a test build never becomes the "Latest" release. A plain `vX.Y.Z` tag is a normal latest release.
