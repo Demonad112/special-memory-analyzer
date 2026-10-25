@@ -56,6 +56,7 @@ import {
   shownBytes,
   sizeMode,
   HARD_LINK_TITLE,
+  NETWORK_NOTE,
   type CleanupRow,
   type JunkItem,
   type PickedItem,
@@ -179,6 +180,9 @@ async function copyPath(id: number): Promise<void> {
 const deleteEl = ref<InstanceType<typeof DeleteConfirm> | null>(null)
 
 function askDelete(item: PickedItem | null, permanent: boolean): void {
+  if (job.network) {
+    return
+  }
   deleteEl.value?.show(item, permanent)
 }
 
@@ -273,13 +277,19 @@ const menuItems = computed<(MenuItem | null)[]>(() => {
   return [
     { label: 'Show in Explorer', icon: FolderOpen, action: () => void reveal(item.id) },
     { label: 'Copy path', icon: Copy, action: () => void copyPath(item.id) },
-    null,
-    { label: 'Move to Recycle Bin', icon: Trash2, action: () => askDelete(item, false) },
-    {
-      label: appAdmin.elevated ? 'Delete permanently…' : 'Delete permanently (needs administrator)',
-      disabled: !appAdmin.elevated,
-      action: () => askDelete(item, true),
-    },
+    ...(job.network
+      ? []
+      : [
+          null,
+          { label: 'Move to Recycle Bin', icon: Trash2, action: () => askDelete(item, false) },
+          {
+            label: appAdmin.elevated
+              ? 'Delete permanently…'
+              : 'Delete permanently (needs administrator)',
+            disabled: !appAdmin.elevated,
+            action: () => askDelete(item, true),
+          },
+        ]),
   ]
 })
 
@@ -554,7 +564,7 @@ onBeforeUnmount(() => {
             {{ formatBytes(shownSize) }}
           </span>
         </nav>
-        <template v-if="checked.size > 0">
+        <template v-if="checked.size > 0 && !job.network">
           <button
             v-if="!canDelete(checked.size, false, appAdmin.elevated)"
             type="button"
@@ -594,6 +604,7 @@ onBeforeUnmount(() => {
             Show in Explorer
           </button>
           <button
+            v-if="!job.network"
             type="button"
             class="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-danger/40 bg-card px-3 text-[13px] text-danger hover:bg-danger-bg"
             title="Move to the Recycle Bin (Delete). Shift+Delete deletes permanently."
@@ -631,6 +642,7 @@ onBeforeUnmount(() => {
         :picked-id="picked?.id ?? null"
         :checked="checked"
         :shown-size="shownSize"
+        :selectable="!job.network"
         @pick="pick"
         @open="open"
         @menu="openMenu"
@@ -745,21 +757,31 @@ onBeforeUnmount(() => {
         :size-mode="sizeMode"
       />
 
+      <p
+        v-if="job.network"
+        class="mt-6 rounded-lg border border-stroke bg-card px-3 py-2 text-[13px] text-muted"
+      >
+        {{ NETWORK_NOTE }}
+      </p>
+
       <JunkPanel
         ref="junkEl"
         class="mt-6"
+        :read-only="job.network"
         @review="reviewJunk"
       />
 
       <DuplicatesPanel
         ref="dupesEl"
         class="mt-6"
+        :read-only="job.network"
         @review="reviewDuplicates"
       />
 
       <StalePanel
         ref="staleEl"
         class="mt-6"
+        :read-only="job.network"
         @review="reviewIds"
       />
 

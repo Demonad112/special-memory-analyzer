@@ -2,7 +2,7 @@
 //! one without touching the disk, and [`run`], which deletes one item at a time and reports each
 //! result on its own so one locked file does not stop the rest.
 
-use crate::pathsafe::{has_reparse_ancestor, is_reparse_point};
+use crate::pathsafe::{has_reparse_ancestor, is_network_path, is_reparse_point, NETWORK_REFUSAL};
 use crate::{delete_permanently, recycle, Protected};
 use scan_core::{Kind, NodeId, Tree};
 use serde::Serialize;
@@ -232,6 +232,9 @@ pub struct ItemResult {
 /// A run over [`BRAKE_ITEMS`] items or [`BRAKE_BYTES`] bytes is refused, before anything is
 /// touched, unless `token` is the one [`preview`] issued for these same targets.
 ///
+/// A network target (a UNC path in any spelling, or a mapped network drive) is refused before
+/// anything is touched, whatever command called: the Recycle Bin does not cover the network.
+///
 /// `on_result` is called with each item's result right after that item was tried.
 pub fn run(
     targets: &[Target],
@@ -241,6 +244,30 @@ pub fn run(
     token: Option<&str>,
     on_result: &mut dyn FnMut(&ItemResult),
 ) -> Result<Vec<ItemResult>, String> {
+    run_with(
+        targets,
+        permanent,
+        protected,
+        scan_root,
+        token,
+        &is_network_path,
+        on_result,
+    )
+}
+
+/// [`run`] with the network check passed in, so tests can fake a mapped drive.
+fn run_with(
+    targets: &[Target],
+    permanent: bool,
+    protected: &Protected,
+    scan_root: &Path,
+    token: Option<&str>,
+    is_network: &dyn Fn(&Path) -> bool,
+    on_result: &mut dyn FnMut(&ItemResult),
+) -> Result<Vec<ItemResult>, String> {
+    if is_network(scan_root) || targets.iter().any(|target| is_network(&target.path)) {
+        return Err(NETWORK_REFUSAL.into());
+    }
     let size = targets.iter().map(|target| target.size).sum();
     if needs_brake(targets.len() as u64, size) {
         let expected = token_for(
@@ -870,5 +897,108 @@ mod tests {
         assert_eq!(plan.go_count, 1);
         // Nothing was deleted.
         assert!(temp.path().join(&odd).exists());
+    }
+
+    fn target_at(path: &str) -> Target {
+        Target {
+            id: 1,
+            path: PathBuf::from(path),
+            size: 1,
+        }
+    }
+
+    #[test]
+    fn run_refuses_unc_targets_in_every_spelling_before_touching_anything() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("local.bin"));
+        for unc in [
+            r"\\server\share\x",
+            r"\\?\UNC\server\share\x",
+            r"\\server\C$\Users\x",
+        ] {
+            let targets = [
+                Target {
+                    id: 2,
+                    path: root.join("local.bin"),
+                    size: 1,
+                },
+                target_at(unc),
+            ];
+            let mut seen = 0;
+            let err = run(
+                &targets,
+                true,
+                &Protected::default(),
+                root,
+                None,
+                &mut |_| {
+                    seen += 1;
+                },
+            )
+            .unwrap_err();
+            assert!(err.contains("network"), "{err}");
+            assert_eq!(seen, 0, "{unc}");
+            assert!(root.join("local.bin").exists(), "{unc}");
+        }
+    }
+
+    #[test]
+    fn run_refuses_a_scan_rooted_on_a_share_even_for_a_local_looking_target() {
+        let temp = tempfile::tempdir().unwrap();
+        write(&temp.path().join("a.bin"));
+        let targets = [Target {
+            id: 1,
+            path: temp.path().join("a.bin"),
+            size: 1,
+        }];
+        let err = run(
+            &targets,
+            true,
+            &Protected::default(),
+            Path::new(r"\\server\share"),
+            None,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(err.contains("network"), "{err}");
+        assert!(temp.path().join("a.bin").exists());
+    }
+
+    #[test]
+    fn run_refuses_a_mapped_network_drive_but_not_a_local_or_subst_drive() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("a.bin"));
+        let fake = |path: &Path| path.to_string_lossy().starts_with("Z:");
+        let mapped = [target_at(r"Z:\Data\x.bin")];
+        let err = run_with(
+            &mapped,
+            true,
+            &Protected::default(),
+            Path::new(r"Z:\Data"),
+            None,
+            &fake,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(err.contains("network"), "{err}");
+
+        let local = [Target {
+            id: 1,
+            path: root.join("a.bin"),
+            size: 1,
+        }];
+        let results = run_with(
+            &local,
+            true,
+            &Protected::default(),
+            root,
+            None,
+            &fake,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(results[0].outcome, Outcome::Done);
     }
 }

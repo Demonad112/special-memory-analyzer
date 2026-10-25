@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 /// Lowercase, backslashes, no trailing backslash, no `\\?\` prefix.
-pub(crate) fn normalize(path: &str) -> String {
+pub fn normalize(path: &str) -> String {
     let path = path.trim().replace('/', "\\").to_lowercase();
     if let Some(rest) = path.strip_prefix("\\\\?\\unc\\") {
         return format!("\\\\{}", rest.trim_end_matches('\\'));
@@ -15,7 +15,7 @@ pub(crate) fn normalize(path: &str) -> String {
 
 /// True when a folder between `scan_root` (exclusive) and `path` (exclusive) is a link now. The
 /// scan saw plain folders; a swapped parent would send the delete through to another place.
-pub(crate) fn has_reparse_ancestor(path: &Path, scan_root: &Path) -> bool {
+pub fn has_reparse_ancestor(path: &Path, scan_root: &Path) -> bool {
     // Compare depths, not prefixes, so a differently cased root still stops the walk.
     let root_depth = scan_root.components().count();
     path.ancestors()
@@ -24,8 +24,71 @@ pub(crate) fn has_reparse_ancestor(path: &Path, scan_root: &Path) -> bool {
         .any(is_reparse_point)
 }
 
+/// True for `\\server\share\...` and `\\?\UNC\server\share\...`. Device paths (`\\?\C:\`,
+/// `\\.\`) are not network paths.
+pub fn is_unc(path: &str) -> bool {
+    let path = path.trim().replace('/', "\\");
+    const VERBATIM_UNC: &str = "\\\\?\\UNC\\";
+    if path
+        .get(..VERBATIM_UNC.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(VERBATIM_UNC))
+    {
+        return path.len() > VERBATIM_UNC.len();
+    }
+    path.starts_with("\\\\") && !path.starts_with("\\\\?\\") && !path.starts_with("\\\\.\\")
+}
+
+/// The drive letter of `C:\x` or `\\?\C:\x`, upper-cased.
+pub fn drive_letter(path: &str) -> Option<char> {
+    let path = path.trim();
+    let path = path.strip_prefix("\\\\?\\").unwrap_or(path);
+    let mut chars = path.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    (chars.next() == Some(':')).then(|| letter.to_ascii_uppercase())
+}
+
+/// `GetDriveTypeW` answer for a network drive (`DRIVE_REMOTE`). A `subst` or local drive is not.
+pub fn is_remote_drive_type(drive_type: u32) -> bool {
+    drive_type == 4
+}
+
+/// True when `path` is on the network: a UNC path, or a drive letter that `drive_type` reports
+/// as remote. `drive_type` is `GetDriveTypeW` on Windows; tests pass a fake.
+pub fn is_network_path_with(path: &str, drive_type: &dyn Fn(char) -> Option<u32>) -> bool {
+    if is_unc(path) {
+        return true;
+    }
+    drive_letter(path)
+        .and_then(drive_type)
+        .is_some_and(is_remote_drive_type)
+}
+
+/// The real [`is_network_path_with`]: asks Windows what kind of drive the letter is.
+pub fn is_network_path(path: &Path) -> bool {
+    is_network_path_with(&path.to_string_lossy(), &|letter| drive_type_of(letter))
+}
+
+#[cfg(windows)]
+fn drive_type_of(letter: char) -> Option<u32> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDriveTypeW(root: *const u16) -> u32;
+    }
+    let root: Vec<u16> = format!("{letter}:\\").encode_utf16().chain([0]).collect();
+    // SAFETY: `root` is a null-terminated drive root such as "Z:\".
+    Some(unsafe { GetDriveTypeW(root.as_ptr()) })
+}
+
+#[cfg(not(windows))]
+fn drive_type_of(_letter: char) -> Option<u32> {
+    None
+}
+
+/// Why a delete on the network is refused.
+pub const NETWORK_REFUSAL: &str = "Deleting on a network share or mapped network drive is not available: the Recycle Bin does not cover network paths, so every delete would be permanent. Scan and reports still work.";
+
 /// True for a symlink or junction (a Windows reparse point).
-pub(crate) fn is_reparse_point(path: &Path) -> bool {
+pub fn is_reparse_point(path: &Path) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -42,6 +105,60 @@ pub(crate) fn is_reparse_point(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unc_paths_in_every_spelling_are_network_paths() {
+        for path in [
+            r"\\server\share\x",
+            r"\\SERVER\C$\Users",
+            r"\\?\UNC\server\share\x",
+            r"\\?\unc\server\share",
+            "//server/share/x",
+            r"  \\server\share  ",
+        ] {
+            assert!(is_unc(path), "{path}");
+        }
+        for path in [
+            r"C:\x",
+            r"\\?\C:\x",
+            r"\\.\PhysicalDrive0",
+            r"\\?\UNC\",
+            r"\\?\Volume{1}\x",
+            "relative\\x",
+            "",
+        ] {
+            assert!(!is_unc(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_drive_letter_is_read_from_plain_and_verbatim_paths() {
+        assert_eq!(drive_letter(r"z:\data"), Some('Z'));
+        assert_eq!(drive_letter(r"\\?\Z:\data"), Some('Z'));
+        assert_eq!(drive_letter("Z:"), Some('Z'));
+        assert_eq!(drive_letter(r"\\server\share"), None);
+        assert_eq!(drive_letter("1:\\x"), None);
+        assert_eq!(drive_letter(""), None);
+    }
+
+    #[test]
+    fn only_a_remote_drive_type_makes_a_drive_letter_a_network_path() {
+        // DRIVE_FIXED is 3 (a local disk, or a `subst` of a local folder), DRIVE_REMOTE is 4.
+        let types = |letter: char| match letter {
+            'C' | 'S' => Some(3),
+            'Z' => Some(4),
+            'E' => Some(5),
+            _ => None,
+        };
+        assert!(is_network_path_with(r"Z:\Data", &types));
+        assert!(is_network_path_with(r"\\?\Z:\Data", &types));
+        assert!(!is_network_path_with(r"C:\Data", &types));
+        assert!(!is_network_path_with(r"S:\subst", &types));
+        assert!(!is_network_path_with(r"E:\disc", &types));
+        assert!(!is_network_path_with(r"Q:\unknown", &types));
+        assert!(is_network_path_with(r"\\server\share\x", &types));
+        assert!(!is_network_path_with("relative", &types));
+    }
 
     #[test]
     fn a_plain_parent_chain_is_not_a_reparse_ancestor() {

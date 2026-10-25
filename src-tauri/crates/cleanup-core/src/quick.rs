@@ -291,6 +291,18 @@ pub fn clean_with(
     id: QuickId,
     on_target: &mut dyn FnMut(&Path, &Cleaned),
 ) -> Result<Cleaned, String> {
+    clean_checked(places, id, &crate::pathsafe::is_network_path, on_target)
+}
+
+/// [`clean_with`] with the network check passed in, so tests can fake a mapped drive. A folder
+/// on the network (a redirected profile, say) is refused before anything is touched: the same
+/// rule as `bulk::run`.
+fn clean_checked(
+    places: &Places,
+    id: QuickId,
+    is_network: &dyn Fn(&Path) -> bool,
+    on_target: &mut dyn FnMut(&Path, &Cleaned),
+) -> Result<Cleaned, String> {
     if id == QuickId::RecycleBin {
         let before = crate::os::recycle_bin_size();
         crate::os::empty_recycle_bin()?;
@@ -303,6 +315,9 @@ pub fn clean_with(
     }
     let mut total = Cleaned::default();
     let targets = places.targets(id);
+    if targets.iter().any(|target| is_network(target)) {
+        return Err(crate::pathsafe::NETWORK_REFUSAL.into());
+    }
     for target in &targets {
         let mut done = Cleaned::default();
         sweep(&targets, id, target, target, true, &mut done);
@@ -488,6 +503,35 @@ mod tests {
         assert!(dir.is_dir());
         assert!(dir.join("fresh.tmp").exists());
         assert!(!dir.join("setup123").exists());
+    }
+
+    #[test]
+    fn a_quick_cleanup_on_a_network_folder_is_refused_before_touching_anything() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("Temp");
+        write(&dir.join("old.log"), 10);
+        age(&dir.join("old.log"), 3);
+        let places = Places {
+            temp: Some(dir.clone()),
+            ..Places::default()
+        };
+        // The folder looks like a redirected profile on a mapped network drive.
+        let mut logged = 0;
+        let err = clean_checked(&places, QuickId::UserTemp, &|_| true, &mut |_, _| {
+            logged += 1
+        })
+        .unwrap_err();
+        assert!(err.contains("network"), "{err}");
+        assert_eq!(logged, 0);
+        assert!(dir.join("old.log").exists());
+        // And the real check refuses a UNC folder by its spelling alone.
+        let unc = Places {
+            temp: Some(PathBuf::from(r"\\server\share\Temp")),
+            ..Places::default()
+        };
+        assert!(crate::pathsafe::is_network_path(
+            unc.temp.as_deref().unwrap()
+        ));
     }
 
     #[test]

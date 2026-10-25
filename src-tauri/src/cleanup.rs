@@ -85,6 +85,9 @@ pub struct ScanResult {
     rows: Vec<Row>,
     elapsed_ms: u64,
     report_id: Option<String>,
+    /// A network share or mapped network drive: the page hides every delete action, and
+    /// `bulk::run` refuses them anyway.
+    network: bool,
 }
 
 #[tauri::command]
@@ -180,6 +183,7 @@ pub async fn cleanup_scan(
         rows,
         elapsed_ms,
         report_id: saved.as_ref().map(|saved| saved.id.clone()),
+        network: cleanup_core::pathsafe::is_network_path(&path),
     };
     // A completed scan (not a cancelled one: that returned above) adds to the history.
     let saved_ms = if history.unwrap_or(true) {

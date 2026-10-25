@@ -14,6 +14,7 @@ import {
 import { errorMessage } from '@/lib/errors'
 import { formatBytes, formatDate, percentShare, plural } from '@/lib/format'
 
+defineProps<{ readOnly?: boolean }>()
 const emit = defineEmits<{ review: [ids: number[]] }>()
 
 const years = ref(DEFAULT_STALE_YEARS)
@@ -261,6 +262,7 @@ defineExpose({ reload: load })
                   </li>
                 </ul>
                 <button
+                  v-if="!readOnly"
                   type="button"
                   class="mt-2 h-8 rounded-md bg-accent px-3 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
                   :disabled="ticked.size === 0"

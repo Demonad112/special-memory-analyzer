@@ -144,6 +144,18 @@ describe('cleanup scan', () => {
     expect(cleanupJob.rows.map((item) => item.name)).toEqual(['Users'])
   })
 
+  it('marks a network scan and clears the mark on the next local scan', async () => {
+    const result = { overview: overview(100), rows: [row(1, 'Users', 100)], elapsedMs: 5 }
+    core.invoke.mockResolvedValueOnce({ ...result, path: '\\\\fs01\\C$', network: true })
+    await runScan('\\\\fs01\\C$')
+    expect(cleanupJob.network).toBe(true)
+
+    // An older Rust build sends no flag: that is a local scan.
+    core.invoke.mockResolvedValueOnce({ ...result, path: 'C:\\' })
+    await runScan('C:\\')
+    expect(cleanupJob.network).toBe(false)
+  })
+
   it('stays quiet on cancel and shows other errors', async () => {
     core.invoke.mockRejectedValueOnce('cancelled')
     await runScan('C:\\')
@@ -594,6 +606,20 @@ describe('suggested cleanups on screen', () => {
     expect(review?.textContent).toContain('Restore: Download it again from the vendor.')
     const never = host.querySelector('section[aria-labelledby="junk-never"]')
     expect(never?.querySelector('input[type="checkbox"]')).toBeNull()
+  })
+
+  it('has no Review button on a network scan', async () => {
+    core.invoke.mockImplementation((command: string) =>
+      command === 'cleanup_junk' ? Promise.resolve(junkGroups) : Promise.reject(new Error(command)),
+    )
+    const local = await mount(JunkPanel)
+    expect(local.textContent).toContain('Review 0 items')
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    createApp(JunkPanel, { readOnly: true }).mount(host)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(host.textContent).not.toContain('Review 0 items')
   })
 
   it('offers select all only in the Safe section', async () => {
