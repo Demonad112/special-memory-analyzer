@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, type Component } from 'vue'
+import { createApp, type App, type Component } from 'vue'
 import DuplicatesPanel from '@/components/DuplicatesPanel.vue'
 import JunkPanel from '@/components/JunkPanel.vue'
 import GrowthPanel from '@/components/GrowthPanel.vue'
@@ -834,7 +834,12 @@ describe('stale data', () => {
     lastAccess: 'off',
   }
 
+  // The panel under test; unmounted after each test so it stops reacting to later scans.
+  let mounted: App | null = null
+
   afterEach(() => {
+    mounted?.unmount()
+    mounted = null
     core.invoke.mockReset()
     document.body.innerHTML = ''
   })
@@ -866,7 +871,8 @@ describe('stale data', () => {
     })
     const host = document.createElement('div')
     document.body.append(host)
-    createApp(StalePanel).mount(host)
+    mounted = createApp(StalePanel)
+    mounted.mount(host)
     const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
     await settle()
 
