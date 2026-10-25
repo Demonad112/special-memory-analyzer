@@ -253,6 +253,12 @@ impl Tally {
                 planned_bytes: planned.planned_bytes,
                 folders: planned.folders,
                 excluded: planned.excluded,
+                changed: planned.changed,
+                new: planned.new,
+                retried: planned.retried,
+                unchanged: planned.unchanged,
+                changed_at_destination: planned.changed_at_destination,
+                destination_only: planned.destination_only,
                 ..RunTotals::default()
             },
         }
@@ -506,6 +512,7 @@ mod tests {
             user: String::new(),
             totals: RunTotals::default(),
             error: None,
+            previous_run_id: None,
         };
         store.save_summary(&summary).unwrap();
         store.id()
@@ -747,6 +754,79 @@ mod tests {
             (3, 36, 3)
         );
         assert_eq!((expected.planned_files, expected.excluded), (7, 1));
+    }
+
+    #[test]
+    fn a_run_saved_before_delta_sync_loads_with_no_chain_and_zero_delta_counts() {
+        let dir = TempDir::new("store-old-run");
+        let root = dir.path("runs");
+        let id = stored_run(&root, 1_000);
+        // run.json as 1.2.0 wrote it: no previousRunId, none of the delta counters.
+        let path = root.join(&id).join(SUMMARY_FILE);
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("previousRunId");
+        let totals = json["totals"].as_object_mut().unwrap();
+        for key in [
+            "changed",
+            "new",
+            "retried",
+            "unchanged",
+            "changedAtDestination",
+            "destinationOnly",
+        ] {
+            totals.remove(key);
+        }
+        fs::write(&path, json.to_string()).unwrap();
+
+        let summary = RunStore::open(&root, &id).unwrap().summary().unwrap();
+        assert_eq!(summary.previous_run_id, None);
+        assert_eq!(summary.totals, RunTotals::default());
+        assert_eq!(list_runs(&root).len(), 1);
+    }
+
+    #[test]
+    fn the_chain_and_delta_counts_survive_a_save_and_recounting_the_results() {
+        let dir = TempDir::new("store-delta-fields");
+        let store = RunStore::create(&dir.path("runs")).unwrap();
+        mixed_rows(&store);
+        let planned = RunTotals {
+            planned_files: 7,
+            changed: 1,
+            new: 2,
+            retried: 3,
+            unchanged: 4,
+            changed_at_destination: 5,
+            destination_only: 6,
+            ..RunTotals::default()
+        };
+        let mut summary = RunSummary {
+            previous_run_id: Some("20261021-180200-000".to_owned()),
+            totals: planned.clone(),
+            ..RunStore::open(&dir.path("runs"), &stored_run(&dir.path("runs"), 5))
+                .unwrap()
+                .summary()
+                .unwrap()
+        };
+        store.refresh_totals(&mut summary).unwrap();
+        assert_eq!(
+            (
+                summary.totals.changed,
+                summary.totals.new,
+                summary.totals.retried,
+                summary.totals.unchanged,
+                summary.totals.changed_at_destination,
+                summary.totals.destination_only
+            ),
+            (1, 2, 3, 4, 5, 6),
+            "the copy outcomes are recounted, the plan is kept"
+        );
+        assert_eq!(summary.totals.copied, 3);
+
+        store.save_summary(&summary).unwrap();
+        let back = store.summary().unwrap();
+        assert_eq!(back.previous_run_id.as_deref(), Some("20261021-180200-000"));
+        assert_eq!(back.totals, summary.totals);
     }
 
     #[test]

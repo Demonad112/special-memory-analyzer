@@ -163,6 +163,7 @@ pub fn prepare_only(
         user: user_name(),
         totals: RunTotals::default(),
         error: None,
+        previous_run_id: None,
     };
     store.save_summary(&summary)?;
 

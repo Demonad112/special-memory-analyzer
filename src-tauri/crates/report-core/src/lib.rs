@@ -573,6 +573,7 @@ mod tests {
                     ..RunTotals::default()
                 },
                 error: None,
+                previous_run_id: None,
             })
             .unwrap();
         let job = JobInfo {
@@ -638,6 +639,7 @@ mod tests {
                     ..RunTotals::default()
                 },
                 error: None,
+                previous_run_id: None,
             })
             .unwrap();
         let item = |path: &str, size: u64, status: ItemStatus| ItemResult {
