@@ -108,6 +108,7 @@ pub fn run() {
             reports::branding_clear_logo,
             compare::compare_start,
             compare::compare_children,
+            compare::compare_permission_detail,
             compare::compare_cancel,
             compare::compare_path,
             compare::compare_reveal,

@@ -8,6 +8,7 @@ use crate::{
     format_bytes, format_count, plural, record_job, Body, Entry, JobInfo, ReadinessReport,
     ReportKind, Saved,
 };
+use migrate_core::PermissionsCompare;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::Path;
@@ -33,8 +34,19 @@ pub struct CompareReport {
     /// Folders on either side that could not be read completely.
     pub unreadable: u64,
     pub elapsed_ms: u64,
+    /// Items whose permissions differ for real (not the same-name ones), when the compare looked
+    /// at permissions. Kept ahead of the long lists so the Reports page reads it from the header.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub permission_mismatches: u64,
     /// Relative to the source; may be cut short (see [`CompareReport::missing`]).
     pub missing_paths: Vec<MissingFile>,
+    /// The permissions compare; absent (and not written) when the compare did not look.
+    #[serde(skip_serializing_if = "PermissionsCompare::is_off")]
+    pub permissions: PermissionsCompare,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// A source file the destination lacks. Reports saved before sizes were kept hold bare path
@@ -246,16 +258,25 @@ pub(crate) fn header_entry(header: Header) -> Entry {
             ReportKind::Compare,
             "Compare".to_string(),
             format!("{} → {}", report.source, report.destination),
-            if report.missing > 0 {
-                format!(
-                    "{} missing ({})",
-                    plural(report.missing, "file"),
-                    format_bytes(report.missing_bytes)
-                )
-            } else {
-                "Nothing missing".to_string()
+            {
+                let mut headline = if report.missing > 0 {
+                    format!(
+                        "{} missing ({})",
+                        plural(report.missing, "file"),
+                        format_bytes(report.missing_bytes)
+                    )
+                } else {
+                    "Nothing missing".to_string()
+                };
+                if report.permission_mismatches > 0 {
+                    headline.push_str(&format!(
+                        " · {} differ",
+                        plural(report.permission_mismatches, "permission")
+                    ));
+                }
+                headline
             },
-            report.missing > 0,
+            report.missing > 0 || report.permission_mismatches > 0,
         ),
         BodyHeader::DiskUsage(report) => {
             let removed: u64 = report.removed.iter().map(|item| item.size).sum();

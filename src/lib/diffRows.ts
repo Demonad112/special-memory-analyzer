@@ -1,7 +1,7 @@
-import type { DiffRow } from './compare'
+import type { DiffRow, PermCell, PermStatus } from './compare'
 import { formatCount } from './format'
 
-export type CompareFilter = 'all' | 'changes' | 'missing'
+export type CompareFilter = 'all' | 'changes' | 'missing' | 'permissions'
 
 export interface VisibleRow {
   row: DiffRow
@@ -66,7 +66,14 @@ export function matchesFilter(row: DiffRow, filter: CompareFilter): boolean {
       return row.status !== 'same'
     case 'missing':
       return row.status === 'onlyLeft' || row.missing > 0
+    case 'permissions':
+      return hasPermissionDifference(row.permissions)
   }
+}
+
+/** A row whose permissions differ, or that holds items below it whose permissions do. */
+export function hasPermissionDifference(cell: PermCell | undefined): boolean {
+  return cell !== undefined && ((cell.status !== null && cell.status !== 'same') || cell.below > 0)
 }
 
 /**
@@ -124,4 +131,30 @@ export function statusLabel(row: DiffRow): { text: string; tone: Tone } {
         ? { text: `${formatCount(row.missing)} missing`, tone: 'danger' }
         : { text: 'Differs', tone: 'warning' }
   }
+}
+
+const permissionText: Record<PermStatus, { text: string; tone: Tone }> = {
+  same: { text: 'Same', tone: 'success' },
+  ownerDiffers: { text: 'Owner differs', tone: 'danger' },
+  entriesDiffer: { text: 'Entries differ', tone: 'danger' },
+  inheritanceDiffers: { text: 'Inheritance differs', tone: 'danger' },
+  // Amber, not red: the entries name the same account, only the SIDs differ.
+  sameNameDifferentAccount: { text: 'Same name, different account', tone: 'warning' },
+  notReadable: { text: 'Not readable', tone: 'warning' },
+  other: { text: 'Other', tone: 'neutral' },
+}
+
+/** Text and colour of the permissions column, or null when the row has nothing to show. */
+export function permissionLabel(cell: PermCell | undefined): { text: string; tone: Tone } | null {
+  if (!cell) {
+    return null
+  }
+  if (cell.status === null || cell.status === 'same') {
+    return cell.below > 0
+      ? { text: `${formatCount(cell.below)} differ below`, tone: 'warning' }
+      : cell.status === 'same'
+        ? permissionText.same
+        : null
+  }
+  return permissionText[cell.status]
 }

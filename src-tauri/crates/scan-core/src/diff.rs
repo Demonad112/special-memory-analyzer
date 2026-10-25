@@ -140,6 +140,12 @@ impl DiffTree {
         self.nodes.get(id as usize)
     }
 
+    /// The folder `id` sits in; `None` for the root and for an id that does not exist. A parent
+    /// always comes before its children, so a pass from the last id back to 0 sees children first.
+    pub fn parent(&self, id: NodeId) -> Option<NodeId> {
+        self.node(id).filter(|_| id != 0).map(|node| node.parent)
+    }
+
     pub fn row(&self, id: NodeId) -> Option<DiffRow> {
         let node = self.node(id)?;
         Some(DiffRow {

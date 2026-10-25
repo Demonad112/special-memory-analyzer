@@ -584,7 +584,7 @@ fn classify(
     ItemResult { findings, item }
 }
 
-fn entry_row(ace: &Ace, account: &Account) -> EntryRow {
+pub(crate) fn entry_row(ace: &Ace, account: &Account) -> EntryRow {
     EntryRow {
         account: account.display(&ace.sid),
         sid: ace.sid.clone(),

@@ -31,10 +31,12 @@ import CompareToolbar from '@/components/CompareToolbar.vue'
 import JobFields from '@/components/JobFields.vue'
 import ContextMenu, { type MenuItem } from '@/components/ContextMenu.vue'
 import PageHeader from '@/components/PageHeader.vue'
+import PermissionDetailPanel from '@/components/PermissionDetailPanel.vue'
 import PathField from '@/components/PathField.vue'
 import SummaryStrip from '@/components/SummaryStrip.vue'
 import { copyText } from '@/lib/clipboard'
 import { errorMessage } from '@/lib/errors'
+import { currentJob } from '@/lib/job'
 import { useElapsed } from '@/lib/useElapsed'
 import { useToast } from '@/lib/useToast'
 import {
@@ -43,6 +45,7 @@ import {
   formatMissingList,
   ignoreJunk,
   loadMissing,
+  loadPermissionDetail,
   loadPaths,
   loadRecent,
   pickFolder,
@@ -54,6 +57,7 @@ import {
   toggleRow,
   type ComparePaths,
   type DiffRow,
+  type PermissionDetail,
   type Side,
 } from '@/lib/compare'
 import {
@@ -71,7 +75,7 @@ import {
   recordJob,
   type RecordProgress,
 } from '@/lib/record'
-import { openReport } from '@/lib/reports'
+import { exportReport, openReport } from '@/lib/reports'
 import { sections } from '@/router'
 
 const section = sections.find((candidate) => candidate.path === '/compare')
@@ -94,6 +98,9 @@ const loading = toRef(compareJob, 'loading')
 const filter = ref<CompareFilter>('all')
 const sort = ref<Sort>(defaultSort)
 const selected = ref<number | null>(null)
+/** "Compare permissions": off until asked for, because it reads every folder's security twice. */
+const comparePermissions = ref(false)
+const permissionsProgress = toRef(compareJob, 'permissionsProgress')
 
 const canCompare = computed(
   () => !running.value && cleanPath(paths.left) !== '' && cleanPath(paths.right) !== '',
@@ -117,6 +124,76 @@ const elapsed = useElapsed(
 
 const resultsEl = ref<HTMLElement | null>(null)
 
+/** Bumped when a new compare starts or the selection moves, so late answers write nothing. */
+let resultSeq = 0
+let detailSeq = 0
+const detail = ref<PermissionDetail | null>(null)
+const detailLoading = ref(false)
+const exportingPermissions = ref(false)
+
+const permissionsChecked = computed(() => result.value?.permissions?.status === 'checked')
+const selectedRow = computed(() => rows.value.find((visible) => visible.row.id === selected.value))
+const selectedCell = computed(() => selectedRow.value?.row.permissions)
+
+watch(selected, async (id) => {
+  const mine = ++detailSeq
+  detail.value = null
+  const cell = selectedCell.value
+  if (id === null || !cell || cell.status === null || cell.status === 'same') {
+    detailLoading.value = false
+    return
+  }
+  detailLoading.value = true
+  try {
+    const loaded = await loadPermissionDetail(id)
+    if (mine === detailSeq) {
+      detail.value = loaded
+    }
+  } catch (err) {
+    if (mine === detailSeq) {
+      showToast(errorMessage(err))
+    }
+  } finally {
+    if (mine === detailSeq) {
+      detailLoading.value = false
+    }
+  }
+})
+
+/** Saves the permission differences of this compare's saved report as a CSV. */
+async function exportPermissions(): Promise<void> {
+  const reportId = result.value?.reportId
+  if (!reportId || exportingPermissions.value) {
+    return
+  }
+  const mine = resultSeq
+  exportingPermissions.value = true
+  try {
+    const path = await exportReport(
+      {
+        kind: 'compare',
+        id: reportId,
+        title: 'Compare',
+        createdAtMs: (finishedAt.value ?? new Date()).getTime(),
+        job: currentJob(),
+      },
+      'csv',
+      'permissions',
+    )
+    if (path && mine === resultSeq) {
+      showToast(`Saved ${path}`)
+    }
+  } catch (err) {
+    if (mine === resultSeq) {
+      showToast(errorMessage(err))
+    }
+  } finally {
+    if (mine === resultSeq) {
+      exportingPermissions.value = false
+    }
+  }
+}
+
 async function runCompare(pair?: ComparePaths): Promise<void> {
   if (pair) {
     paths.left = pair.left
@@ -132,10 +209,18 @@ async function runCompare(pair?: ComparePaths): Promise<void> {
   confirmingCopy.value = false
   selected.value = null
   sort.value = defaultSort
-  await runCompareJob(left, right, ignoreJunk.value)
+  // Anything still in flight for the previous result must not write to this one.
+  resultSeq++
+  exportingPermissions.value = false
+  detail.value = null
+  detailLoading.value = false
+  await runCompareJob(left, right, ignoreJunk.value, comparePermissions.value)
   recent.value = loadRecent()
   if (result.value) {
-    filter.value = result.value.summary.missing > 0 ? 'missing' : 'all'
+    const mismatches = (result.value.permissions?.counts ?? []).some(
+      (count) => count.status !== 'sameNameDifferentAccount',
+    )
+    filter.value = result.value.summary.missing > 0 ? 'missing' : mismatches ? 'permissions' : 'all'
     await nextTick()
     resultsEl.value?.scrollIntoView({ block: 'start', behavior: 'smooth' })
   }
@@ -459,6 +544,19 @@ function shortPath(path: string): string {
       />
       Ignore system and temp files (Thumbs.db, desktop.ini, ~$ Office lock files, .tmp)
     </label>
+    <label
+      class="mt-1 flex w-fit items-center gap-2 text-[13px] text-muted"
+      title="Reads the owner, inheritance and access entries of every folder on both sides (and of files that have entries of their own). Read only; slower on big trees."
+    >
+      <input
+        v-model="comparePermissions"
+        type="checkbox"
+        class="size-4 accent-accent"
+        :disabled="running"
+        data-testid="compare-permissions"
+      />
+      Compare permissions (owner, inheritance and entries; read only)
+    </label>
     <JobFields
       class="mt-3"
       :disabled="running"
@@ -485,6 +583,7 @@ function shortPath(path: string): string {
       v-if="running"
       :progress="progress"
       :elapsed="elapsed"
+      :permissions="permissionsProgress"
     />
 
     <div
@@ -510,6 +609,21 @@ function shortPath(path: string): string {
           low.
         </p>
         <p
+          v-if="result.permissions?.status === 'notSupported'"
+          class="flex items-center gap-2 text-muted"
+        >
+          <Info class="size-4 shrink-0" />
+          Permissions can only be compared on Windows.
+        </p>
+        <p
+          v-if="permissionsChecked && result.permissions?.itemsTruncated"
+          class="flex items-center gap-2 text-warning"
+        >
+          <TriangleAlert class="size-4 shrink-0" />
+          Many items differ: the table shows every status, but details and the saved report keep
+          only the first ones.
+        </p>
+        <p
           v-if="cloudFiles > 0"
           class="flex items-center gap-2 text-muted"
         >
@@ -524,8 +638,10 @@ function shortPath(path: string): string {
         :finished-at="finishedAt"
         :filter="filter"
         :confirming="confirmingCopy"
+        :exporting="exportingPermissions"
         @filter="filter = $event"
         @report="openCompareReport"
+        @export-permissions="exportPermissions"
         @copy-list="copyMissing"
         @copy-files="copyMissingFiles"
         @confirming="confirmingCopy = $event"
@@ -539,6 +655,7 @@ function shortPath(path: string): string {
         :loading="loading"
         :sort="sort"
         :selected="selected"
+        :show-permissions="permissionsChecked"
         @toggle="toggle"
         @select="selected = $event"
         @open="openRow"
@@ -560,7 +677,9 @@ function shortPath(path: string): string {
                 ? 'Nothing is missing'
                 : filter === 'changes'
                   ? 'No differences'
-                  : 'Both folders are empty'
+                  : filter === 'permissions'
+                    ? 'No permission differences'
+                    : 'Both folders are empty'
             }}
           </p>
           <p class="mt-1 text-[13px] text-muted">
@@ -569,11 +688,20 @@ function shortPath(path: string): string {
                 ? 'Every source file is at the destination.'
                 : filter === 'changes'
                   ? 'Both folders hold the same files with the same sizes.'
-                  : 'There is nothing to compare.'
+                  : filter === 'permissions'
+                    ? 'Owners, inheritance and entries match everywhere that was compared.'
+                    : 'There is nothing to compare.'
             }}
           </p>
         </div>
       </div>
+      <PermissionDetailPanel
+        v-if="selectedRow && selectedCell && permissionsChecked"
+        :name="selectedRow.row.name || 'the compared folder'"
+        :cell="selectedCell"
+        :detail="detail"
+        :loading="detailLoading"
+      />
       <p
         v-if="rows.length > 0"
         class="mt-2 text-xs text-faint"

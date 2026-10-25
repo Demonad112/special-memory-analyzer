@@ -1,0 +1,27 @@
+{
+  "kind": "compare",
+  "data": {
+    "source": "C:\\Data",
+    "destination": "E:\\Data",
+    "sourceSize": 5000,
+    "sourceFiles": 4,
+    "destinationSize": 3900,
+    "destinationFiles": 3,
+    "missing": 2,
+    "missingBytes": 1100,
+    "different": 1,
+    "extra": 1,
+    "unreadable": 1,
+    "elapsedMs": 1500,
+    "missingPaths": [
+      {
+        "path": "a.txt",
+        "size": 1024
+      },
+      {
+        "path": "it's\\</script>.txt",
+        "size": 76
+      }
+    ]
+  }
+}
