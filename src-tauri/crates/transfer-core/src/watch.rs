@@ -643,6 +643,7 @@ mod tests {
             modified_at_ms: None,
             blocked: None,
             cloud: true,
+            replace: false,
         }
     }
 
@@ -666,6 +667,7 @@ mod tests {
             modified_at_ms: None,
             blocked: None,
             cloud: false,
+            replace: false,
         };
         let target = dir.path("dst/a.bin");
 

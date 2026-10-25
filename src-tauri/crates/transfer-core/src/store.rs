@@ -15,6 +15,7 @@ const PREFLIGHT_FILE: &str = "preflight.json";
 const MANIFEST_FILE: &str = "manifest.jsonl";
 const RESULTS_FILE: &str = "results.jsonl";
 const AUDIT_FILE: &str = "audit.jsonl";
+const DELTA_LEFT_FILE: &str = "delta-left.jsonl";
 
 /// How a run step ended, in `audit.jsonl`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -106,6 +107,22 @@ impl RunStore {
     /// Appends to `results.jsonl`, flushing each row so a crash loses at most the file in flight.
     pub fn results_writer(&self) -> Result<JsonlWriter> {
         JsonlWriter::create(&self.dir.join(RESULTS_FILE), true)
+    }
+
+    /// Rows of the files a delta run left alone because they were edited at the destination.
+    pub fn delta_left_writer(&self) -> Result<JsonlWriter> {
+        JsonlWriter::create(&self.dir.join(DELTA_LEFT_FILE), false)
+    }
+
+    /// The rows [`RunStore::delta_left_writer`] wrote, or `None` for a run that is not a delta run.
+    pub fn delta_left<T: DeserializeOwned>(
+        &self,
+    ) -> Result<Option<impl Iterator<Item = Result<T>>>> {
+        let path = self.dir.join(DELTA_LEFT_FILE);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        read_jsonl(self, &path).map(Some)
     }
 
     /// The latest outcome per relative path, every row kept. Only for callers that need whole

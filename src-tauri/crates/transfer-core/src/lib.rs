@@ -13,6 +13,7 @@
 
 pub mod copy;
 mod csv;
+pub mod delta;
 pub mod meta;
 pub mod prepare;
 pub mod reason;
@@ -126,7 +127,7 @@ pub struct RunTotals {
     /// Files edited at the destination after the previous run finished, left alone and listed.
     #[serde(default)]
     pub changed_at_destination: u64,
-    /// Files only at the destination, left in place. A delta run never deletes anything.
+    /// Files only at the destination, left in place. A delta run never removes anything.
     #[serde(default)]
     pub destination_only: u64,
 }
