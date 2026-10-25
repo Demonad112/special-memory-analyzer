@@ -328,6 +328,8 @@ struct World {
     /// `(is source, path relative to the root with "/")` to what that path reads as.
     overrides: HashMap<(bool, String), Descriptor>,
     failing: HashSet<(bool, String)>,
+    /// Paths that became a link or an online-only file after the scan: the read refuses them.
+    swapped: HashSet<(bool, String)>,
     reads: Mutex<Vec<(bool, String)>>,
 }
 
@@ -344,6 +346,7 @@ impl World {
             ),
             overrides: HashMap::new(),
             failing: HashSet::new(),
+            swapped: HashSet::new(),
             reads: Mutex::new(Vec::new()),
         };
         for root in [world.left.path(), world.right.path()] {
@@ -378,6 +381,9 @@ impl World {
     fn read(&self, path: &Path, _: What) -> io::Result<Descriptor> {
         let key = self.key(path);
         self.reads.lock().unwrap().push(key.clone());
+        if self.swapped.contains(&key) {
+            return Err(io::Error::other(scan_core::security::ChangedSinceScan));
+        }
         if self.failing.contains(&key) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -547,6 +553,24 @@ fn an_unreadable_side_is_not_readable_and_names_the_side() {
     assert!(item.error.starts_with("Destination: "), "{}", item.error);
     assert!(item.error.contains("Access is denied"));
     assert!(!item.error.contains("Source:"));
+}
+
+#[test]
+fn a_pair_that_became_a_link_after_the_scan_is_skipped_not_unreadable() {
+    // DSA-091: the read refuses an item that is a link or online-only now.
+    let mut world = World::new(&["a", "b"]);
+    world.swapped.insert((true, "a".to_owned()));
+    world.swapped.insert((false, "b".to_owned()));
+    let result = world.run();
+    let report = result.report();
+    assert_eq!(report.skipped, 2, "one pair per swapped side");
+    assert_eq!(report.count_of(PermStatus::NotReadable), 0);
+    assert!(report.items.is_empty());
+    // The root is still checked; the swapped pairs have no status.
+    assert_eq!(report.folders_checked, 1);
+    assert_eq!(result.status(world.id_of("a")), None);
+    assert_eq!(result.status(world.id_of("b")), None);
+    assert_eq!(result.status(0), Some(PermStatus::Same));
 }
 
 #[test]

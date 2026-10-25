@@ -415,10 +415,7 @@ pub async fn record_delta(
     job(&state, move |control| {
         let root = transfer_core::records_root();
         let mut sink = ChannelSink::new(&on_event);
-        // The job slot is ours, so a run still saying Running was left by a dead app.
-        if let Ok(store) = RunStore::open(&root, &run_id) {
-            let _ = transfer_core::run::recover_interrupted(&store);
-        }
+        recover_before_delta(&root, &run_id)?;
         let (summary, preflight) =
             transfer_core::prepare::prepare_delta(&root, &run_id, &control.cancel, &mut sink)
                 .map_err(to_text)?;
@@ -436,6 +433,16 @@ pub async fn record_delta(
         finished.map(|summary| summary.id).map_err(to_text)
     })
     .await
+}
+
+/// The job slot is ours, so a run still saying Running or Watching was left by a dead app:
+/// settle it first. A failed recovery is the error the user sees, not the unrelated "only a
+/// finished run" refusal the delta run would give for a run that is still Running (DSA-089).
+fn recover_before_delta(root: &std::path::Path, run_id: &str) -> Result<(), String> {
+    let store = RunStore::open(root, run_id).map_err(to_text)?;
+    transfer_core::run::recover_interrupted(&store)
+        .map(|_| ())
+        .map_err(|err| format!("The run the app stopped during could not be settled: {err}"))
 }
 
 /// Copies the not-copied files again: the given relative paths, or all of them.
@@ -688,5 +695,79 @@ mod scan_exclusion_tests {
         assert!(state.scan_guard_as(false).is_ok());
         drop(scan);
         state.end();
+    }
+}
+
+#[cfg(test)]
+mod delta_recovery_tests {
+    use super::*;
+    use transfer_core::{
+        ConflictPolicy, RunState, RunSummary, RunTotals, TransferMode, TransferSettings,
+        VerifyLevel,
+    };
+
+    /// A run on disk that says Running, as a crash would leave it.
+    fn crashed_run(root: &std::path::Path) -> RunStore {
+        let store = RunStore::create(root).unwrap();
+        let summary = RunSummary {
+            id: store.id(),
+            settings: TransferSettings {
+                source: "C:\\src".into(),
+                destination: "D:\\dst".into(),
+                mode: TransferMode::Copy,
+                verify: VerifyLevel::SizeAndTime,
+                conflict: ConflictPolicy::Skip,
+                ignore_junk: false,
+                download_cloud: false,
+                preserve: Default::default(),
+            },
+            state: RunState::Running,
+            created_at_ms: 1,
+            started_at_ms: Some(1_000),
+            finished_at_ms: None,
+            machine: String::new(),
+            user: String::new(),
+            totals: RunTotals::default(),
+            error: None,
+            previous_run_id: None,
+        };
+        store.save_summary(&summary).unwrap();
+        store
+    }
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("dsa-record-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_failed_recovery_shows_its_own_error_not_the_finished_run_refusal() {
+        let root = temp_root("recovery-fails");
+        // No manifest: the unreached files cannot be listed, so recovery fails.
+        let store = crashed_run(&root);
+        let err = recover_before_delta(&root, &store.id()).unwrap_err();
+        assert!(err.contains("could not be settled"), "{err}");
+        assert!(!err.contains("Only a finished run"), "{err}");
+        // The run is left as it was.
+        assert_eq!(store.summary().unwrap().state, RunState::Running);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_missing_run_is_an_error_and_a_recoverable_one_is_settled() {
+        let root = temp_root("recovery-ok");
+        assert!(recover_before_delta(&root, "nope").is_err());
+
+        let store = crashed_run(&root);
+        store.manifest_writer().unwrap().finish().unwrap();
+        recover_before_delta(&root, &store.id()).unwrap();
+        let summary = store.summary().unwrap();
+        assert_eq!(summary.state, RunState::Cancelled);
+        assert!(summary.finished_at_ms.is_some());
+        // A finished run is left alone.
+        recover_before_delta(&root, &store.id()).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

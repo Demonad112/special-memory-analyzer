@@ -109,6 +109,17 @@ impl RunStore {
         JsonlWriter::create(&self.dir.join(RESULTS_FILE), true)
     }
 
+    /// When `results.jsonl` was last written (ms since the Unix epoch), or `None` before the file
+    /// exists. Each row is flushed as it is written, so this is the last moment a live run was
+    /// known to be working.
+    pub fn results_modified_ms(&self) -> Option<u64> {
+        let modified = fs::metadata(self.dir.join(RESULTS_FILE))
+            .and_then(|meta| meta.modified())
+            .ok()?;
+        let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+        u64::try_from(since.as_millis()).ok()
+    }
+
     /// Rows of the files a delta run left alone because they were edited at the destination.
     pub fn delta_left_writer(&self) -> Result<JsonlWriter> {
         JsonlWriter::create(&self.dir.join(DELTA_LEFT_FILE), false)

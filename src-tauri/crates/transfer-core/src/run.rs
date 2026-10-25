@@ -211,6 +211,14 @@ pub fn recover_interrupted(store: &RunStore) -> Result<bool> {
     if !matches!(summary.state, RunState::Running | RunState::Watching) {
         return Ok(false);
     }
+    // The app stopped no later than its last write to the results file (or at the start, when
+    // nothing was written). Taken before the unreached files are listed below, which writes the
+    // same file. A delta run compares the destination against this time (DSA-089), so edits made
+    // after the crash are left alone, not overwritten.
+    let stopped_ms = store
+        .results_modified_ms()
+        .or(summary.started_at_ms)
+        .unwrap_or_else(now_ms);
     let seen = store.result_keys()?;
     let mut results = store.results_writer()?;
     let mut listed = 0_u64;
@@ -231,7 +239,7 @@ pub fn recover_interrupted(store: &RunStore) -> Result<bool> {
     }
     results.finish()?;
     summary.state = RunState::Cancelled;
-    summary.finished_at_ms.get_or_insert_with(now_ms);
+    summary.finished_at_ms.get_or_insert(stopped_ms);
     store.refresh_totals(&mut summary)?;
     store.save_summary(&summary)?;
     store.audit(
@@ -864,6 +872,50 @@ mod tests {
         .unwrap();
         assert_eq!(summary.state, RunState::Completed);
         assert_eq!((summary.totals.copied, summary.totals.not_copied), (4, 0));
+    }
+
+    #[test]
+    fn a_recovered_run_finishes_when_its_results_were_last_written() {
+        let dir = TempDir::new("run-recover-time");
+        dir.write("src/a.txt", b"a");
+        dir.write("src/b.txt", b"b");
+        let id = prepared(&dir);
+        let store = RunStore::open(&dir.path("runs"), &id).unwrap();
+        // The run never wrote a result: the finish is its start, not the time of the recovery.
+        let mut summary = store.summary().unwrap();
+        summary.state = RunState::Running;
+        summary.started_at_ms = Some(1_000_000);
+        summary.finished_at_ms = None;
+        store.save_summary(&summary).unwrap();
+        let _ = fs::remove_file(store.dir().join("results.jsonl"));
+        assert_eq!(store.results_modified_ms(), None);
+        assert!(recover_interrupted(&store).unwrap());
+        assert_eq!(store.summary().unwrap().finished_at_ms, Some(1_000_000));
+        assert!(store.results_modified_ms().is_some());
+
+        // A run that wrote results: the finish is the last write, which is not after the recovery.
+        let dir = TempDir::new("run-recover-time2");
+        dir.write("src/a.txt", b"a");
+        let id = prepared(&dir);
+        run_copy(
+            &dir.path("runs"),
+            &id,
+            None,
+            &CancelToken::default(),
+            &mut NullSink,
+        )
+        .unwrap();
+        let store = RunStore::open(&dir.path("runs"), &id).unwrap();
+        let written = store.results_modified_ms().unwrap();
+        let mut summary = store.summary().unwrap();
+        summary.state = RunState::Running;
+        summary.finished_at_ms = None;
+        store.save_summary(&summary).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert!(recover_interrupted(&store).unwrap());
+        let finished = store.summary().unwrap().finished_at_ms.unwrap();
+        assert_eq!(finished, written);
+        assert!(finished < now_ms());
     }
 
     #[test]

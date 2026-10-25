@@ -33,6 +33,8 @@ import ContextMenu, { type MenuItem } from '@/components/ContextMenu.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PermissionDetailPanel from '@/components/PermissionDetailPanel.vue'
 import PathField from '@/components/PathField.vue'
+import ShareSignIn from '@/components/ShareSignIn.vue'
+import { needsSignIn } from '@/lib/servers'
 import SummaryStrip from '@/components/SummaryStrip.vue'
 import { copyText } from '@/lib/clipboard'
 import { errorMessage } from '@/lib/errors'
@@ -570,6 +572,10 @@ function shortPath(path: string): string {
       <TriangleAlert class="mt-0.5 size-4 shrink-0" />
       {{ error }}
     </p>
+    <ShareSignIn
+      :paths="[paths.left, paths.right]"
+      :open="needsSignIn(error)"
+    />
     <p
       v-if="notice"
       class="mt-4 flex items-center gap-2 text-[13px] text-muted"
@@ -614,6 +620,13 @@ function shortPath(path: string): string {
         >
           <Info class="size-4 shrink-0" />
           Permissions can only be compared on Windows.
+        </p>
+        <p
+          v-if="permissionsChecked && result.permissions?.serverNote"
+          class="flex items-center gap-2 text-muted"
+        >
+          <Info class="size-4 shrink-0" />
+          {{ result.permissions.serverNote }}
         </p>
         <p
           v-if="permissionsChecked && result.permissions?.itemsTruncated"

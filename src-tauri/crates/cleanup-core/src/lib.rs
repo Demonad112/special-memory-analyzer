@@ -8,7 +8,7 @@ pub mod junk;
 pub mod log;
 mod os;
 pub mod owners;
-mod pathsafe;
+pub mod pathsafe;
 mod protect;
 pub mod quick;
 pub mod restore;

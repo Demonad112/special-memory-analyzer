@@ -70,6 +70,7 @@ pub(crate) struct CompareHeader {
     pub missing: u64,
     pub missing_bytes: u64,
     pub permission_mismatches: u64,
+    pub permissions_checked: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -142,6 +143,10 @@ pub(crate) struct CleanedHeader {
 }
 
 impl Header {
+    pub(crate) fn is_runbook(&self) -> bool {
+        self.body.kind() == ReportKind::Runbook
+    }
+
     /// The header of a report that is already fully loaded.
     pub(crate) fn of(saved: &Saved) -> Self {
         let body = match &saved.body {
@@ -151,6 +156,8 @@ impl Header {
                 missing: report.missing,
                 missing_bytes: report.missing_bytes,
                 permission_mismatches: report.permission_mismatches,
+                permissions_checked: report.permissions_checked
+                    || report.permissions.status == AuditStatus::Checked,
             }),
             Body::DiskUsage(report) => BodyHeader::DiskUsage(UsageHeader {
                 path: report.path.clone(),
@@ -419,6 +426,10 @@ impl<'de> Visitor<'de> for DataSeed<'_> {
                     head.permission_mismatches = map.next_value()?;
                     0
                 }
+                (true, "permissionsChecked") => {
+                    head.permissions_checked = map.next_value()?;
+                    0
+                }
                 (false, "path") => {
                     usage.path = map.next_value()?;
                     0b001
@@ -502,6 +513,31 @@ mod tests {
         let row = header_entry(read_text(&old).unwrap());
         assert!(!row.problem);
         assert_eq!(row.headline, "Nothing missing");
+    }
+
+    #[test]
+    fn a_compare_saved_with_the_permissions_check_offers_the_permissions_csv() {
+        let checked = format!(
+            r#"{{{ENVELOPE},"body":{{"kind":"compare","data":{{"source":"S","destination":"D","missing":0,"missingBytes":0,"permissionsChecked":true,"missingPaths":[],"permissions":{{"status":"checked","items":[{{"pa"#
+        );
+        let row = header_entry(read_text(&checked).unwrap());
+        assert_eq!(row.csv_layouts, ["permissions"]);
+        assert!(!row.problem, "nothing differs, so it is not a problem");
+        // Saved before the flag, with differences counted: the check ran, so it is offered.
+        let older = format!(
+            r#"{{{ENVELOPE},"body":{{"kind":"compare","data":{{"source":"S","destination":"D","missing":0,"missingBytes":0,"permissionMismatches":2,"missingPaths":[]}}}}}}"#
+        );
+        assert_eq!(
+            header_entry(read_text(&older).unwrap()).csv_layouts,
+            ["permissions"]
+        );
+        // No permissions check: only the default list.
+        let off = format!(
+            r#"{{{ENVELOPE},"body":{{"kind":"compare","data":{{"source":"S","destination":"D","missing":1,"missingBytes":1,"missingPaths":[]}}}}}}"#
+        );
+        assert!(header_entry(read_text(&off).unwrap())
+            .csv_layouts
+            .is_empty());
     }
 
     #[test]

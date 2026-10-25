@@ -119,6 +119,8 @@ interface ScanResult {
   rows: CleanupRow[]
   elapsedMs: number
   reportId: string | null
+  /** A network share or mapped network drive. */
+  network?: boolean
 }
 
 /**
@@ -144,7 +146,13 @@ export const cleanupJob = reactive({
   reportId: null as string | null,
   /** When set, folders list only the files this owner owns (see `OwnersPanel`). */
   ownerFilter: null as OwnerFilter | null,
+  /** The scan is of a network share or mapped network drive: scan and report only. */
+  network: false,
 })
+
+/** Why every delete action is hidden for a network scan (`bulk::run` refuses them as well). */
+export const NETWORK_NOTE =
+  'This is a network location, so Disk Cleanup scans and reports only. The Recycle Bin does not cover network paths, so nothing can be deleted here.'
 
 /** This PC's drives, for the drive tiles on Home and Disk Cleanup. */
 export const drives = ref<Drive[]>([])
@@ -202,6 +210,7 @@ async function scanFolder(path: string): Promise<void> {
     notice: '',
     reportId: null,
     ownerFilter: null,
+    network: false,
   })
   navSeq++
   const onProgress = new Channel<ScanProgress>()
@@ -222,6 +231,7 @@ async function scanFolder(path: string): Promise<void> {
       rows: result.rows,
       elapsedMs: result.elapsedMs,
       reportId: result.reportId,
+      network: result.network ?? false,
       finishedAt: new Date(),
     })
     if (result.overview.warning) {
@@ -877,6 +887,10 @@ export interface OwnerTable {
   totalDisk: number
   totalFiles: number
   rows: OwnerRow[]
+  /** Account names were asked of this server; empty for this PC. */
+  server?: string
+  /** Said when the server of a network drive could not be found. */
+  note?: string
 }
 
 export interface OwnerProgress {

@@ -85,6 +85,9 @@ pub struct ScanResult {
     rows: Vec<Row>,
     elapsed_ms: u64,
     report_id: Option<String>,
+    /// A network share or mapped network drive: the page hides every delete action, and
+    /// `bulk::run` refuses them anyway.
+    network: bool,
 }
 
 #[tauri::command]
@@ -110,7 +113,7 @@ pub async fn cleanup_scan(
     }
     // One canonical form for the tree root, so every later never-delete check sees the real
     // folder whatever name the user typed (short name, admin share, subst drive).
-    let path = scan_core::canonical_root(&path)?;
+    let path = scan_core::canonical_scan_root(&path)?;
     // Held until the scan is done: an elevated record and a scan must not overlap.
     let _scan = record.scan_guard()?;
     let cancel = CancelToken::new();
@@ -180,6 +183,7 @@ pub async fn cleanup_scan(
         rows,
         elapsed_ms,
         report_id: saved.as_ref().map(|saved| saved.id.clone()),
+        network: cleanup_core::pathsafe::is_network_path(&path),
     };
     // A completed scan (not a cancelled one: that returned above) adds to the history.
     let saved_ms = if history.unwrap_or(true) {
@@ -701,6 +705,8 @@ pub async fn cleanup_owners_read(
         };
         let counters = owners::Counters::default();
         let names = scan_core::security::SidNames::default();
+        // Names are asked of the server the scanned folder is on (D-07).
+        let from = with_tree(&state, |tree| Ok(crate::netpath::names_from(&tree.path(0))))?;
         thread::scope(|scope| {
             let job = scope.spawn(|| {
                 owners::read_all(
@@ -708,6 +714,7 @@ pub async fn cleanup_owners_read(
                     &paths,
                     &owners::read_system,
                     &names,
+                    from.server.as_deref(),
                     &job_cancel,
                     &counters,
                 )
@@ -720,6 +727,12 @@ pub async fn cleanup_owners_read(
             job.join()
         })
         .map_err(|_| "The owner pass stopped unexpectedly.".to_string())
+        .map(|index| {
+            index.map(|mut index| {
+                index.note = from.note.clone();
+                index
+            })
+        })
     })
     .await
     .map_err(|err| err.to_string())??;

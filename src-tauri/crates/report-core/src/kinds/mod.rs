@@ -38,6 +38,10 @@ pub struct CompareReport {
     /// at permissions. Kept ahead of the long lists so the Reports page reads it from the header.
     #[serde(skip_serializing_if = "is_zero")]
     pub permission_mismatches: u64,
+    /// The compare looked at permissions. Also kept ahead of the long lists, so the Reports page
+    /// can offer the permissions CSV from the header (a report with none is written as before).
+    #[serde(skip_serializing_if = "is_false")]
+    pub permissions_checked: bool,
     /// Relative to the source; may be cut short (see [`CompareReport::missing`]).
     pub missing_paths: Vec<MissingFile>,
     /// The permissions compare; absent (and not written) when the compare did not look.
@@ -47,6 +51,10 @@ pub struct CompareReport {
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// A source file the destination lacks. Reports saved before sizes were kept hold bare path
@@ -254,30 +262,37 @@ pub(crate) fn entry(saved: &Saved) -> Entry {
 pub(crate) fn header_entry(header: Header) -> Entry {
     let mut csv_layouts = Vec::new();
     let (kind, title, subject, headline, problem) = match header.body {
-        BodyHeader::Compare(report) => (
-            ReportKind::Compare,
-            "Compare".to_string(),
-            format!("{} → {}", report.source, report.destination),
-            {
-                let mut headline = if report.missing > 0 {
-                    format!(
-                        "{} missing ({})",
-                        plural(report.missing, "file"),
-                        format_bytes(report.missing_bytes)
-                    )
-                } else {
-                    "Nothing missing".to_string()
-                };
-                if report.permission_mismatches > 0 {
-                    headline.push_str(&format!(
-                        " · {} differ",
-                        plural(report.permission_mismatches, "permission")
-                    ));
-                }
-                headline
-            },
-            report.missing > 0 || report.permission_mismatches > 0,
-        ),
+        BodyHeader::Compare(report) => {
+            // A report saved before the flag existed still offers the CSV when it counted
+            // permission differences, which only a permissions compare does.
+            if report.permissions_checked || report.permission_mismatches > 0 {
+                csv_layouts.push(compare::PERMISSIONS_LAYOUT.to_string());
+            }
+            (
+                ReportKind::Compare,
+                "Compare".to_string(),
+                format!("{} → {}", report.source, report.destination),
+                {
+                    let mut headline = if report.missing > 0 {
+                        format!(
+                            "{} missing ({})",
+                            plural(report.missing, "file"),
+                            format_bytes(report.missing_bytes)
+                        )
+                    } else {
+                        "Nothing missing".to_string()
+                    };
+                    if report.permission_mismatches > 0 {
+                        headline.push_str(&format!(
+                            " · {} differ",
+                            plural(report.permission_mismatches, "permission")
+                        ));
+                    }
+                    headline
+                },
+                report.missing > 0 || report.permission_mismatches > 0,
+            )
+        }
         BodyHeader::DiskUsage(report) => {
             let removed: u64 = report.removed.iter().map(|item| item.size).sum();
             let mut headline = format!("{} used", format_bytes(report.size));

@@ -10,6 +10,8 @@ defineProps<{
   pickedId: number | null
   checked: Set<number>
   shownSize: number
+  /** False on a network scan: nothing can be deleted, so no tick boxes. */
+  selectable?: boolean
 }>()
 const emit = defineEmits<{
   pick: [row: CleanupRow]
@@ -40,6 +42,7 @@ const emit = defineEmits<{
         class="flex items-center"
       >
         <input
+          v-if="selectable !== false"
           type="checkbox"
           class="ml-3 shrink-0"
           :checked="checked.has(row.id)"

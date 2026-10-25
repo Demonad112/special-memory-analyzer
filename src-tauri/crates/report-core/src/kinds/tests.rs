@@ -1105,6 +1105,7 @@ fn compared_with_permissions() -> CompareReport {
             status: AuditStatus::Checked,
             elevated: true,
             destination_server: "nas2".into(),
+            server_note: "Drive Y: is a network drive, so names came from this PC.".into(),
             folders_checked: 10,
             files_checked: 2,
             skipped: 1,
@@ -1191,6 +1192,7 @@ fn a_compare_with_permissions_lists_the_differences_and_exports_a_csv() {
     assert!(note.contains("10 folder pairs"), "{note}");
     assert!(note.contains("Compared as administrator."), "{note}");
     assert!(note.contains("looked up on nas2"), "{note}");
+    assert!(note.contains("Drive Y: is a network drive"), "{note}");
     assert!(note.contains("counts cover all 4"), "{note}");
 
     let csv = doc.csv_layout_with(Some("permissions"), false).unwrap();
@@ -1547,4 +1549,27 @@ fn a_readiness_row_offers_the_permissions_csv_only_when_the_audit_ran() {
     assert!(entry(&saved(Body::Compare(clean_compare())))
         .csv_layouts
         .is_empty());
+}
+
+#[test]
+fn a_compare_row_offers_the_permissions_csv_only_when_the_check_ran() {
+    // The saved report carries the flag ahead of its long lists; the loaded one derives it.
+    let mut checked = compared_with_permissions();
+    checked.permissions_checked = true;
+    let saved_checked = saved(Body::Compare(checked.clone()));
+    assert_eq!(entry(&saved_checked).csv_layouts, ["permissions"]);
+    let text = serde_json::to_string(&saved_checked.body).unwrap();
+    assert!(
+        text.find("permissionsChecked").unwrap() < text.find("missingPaths").unwrap(),
+        "the flag is written ahead of the long lists"
+    );
+    // Loaded with the check's status but without the flag (older code): still offered.
+    checked.permissions_checked = false;
+    assert_eq!(
+        entry(&saved(Body::Compare(checked))).csv_layouts,
+        ["permissions"]
+    );
+    // No check, no flag in the file, no CSV.
+    let plain = serde_json::to_string(&Body::Compare(clean_compare())).unwrap();
+    assert!(!plain.contains("permissionsChecked"));
 }

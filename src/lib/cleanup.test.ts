@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, type Component } from 'vue'
+import { createApp, type App, type Component } from 'vue'
 import DuplicatesPanel from '@/components/DuplicatesPanel.vue'
 import JunkPanel from '@/components/JunkPanel.vue'
 import GrowthPanel from '@/components/GrowthPanel.vue'
@@ -142,6 +142,18 @@ describe('cleanup scan', () => {
     expect(cleanupJob.running).toBe(false)
     expect(cleanupJob.trail.map((folder) => folder.id)).toEqual([0])
     expect(cleanupJob.rows.map((item) => item.name)).toEqual(['Users'])
+  })
+
+  it('marks a network scan and clears the mark on the next local scan', async () => {
+    const result = { overview: overview(100), rows: [row(1, 'Users', 100)], elapsedMs: 5 }
+    core.invoke.mockResolvedValueOnce({ ...result, path: '\\\\fs01\\C$', network: true })
+    await runScan('\\\\fs01\\C$')
+    expect(cleanupJob.network).toBe(true)
+
+    // An older Rust build sends no flag: that is a local scan.
+    core.invoke.mockResolvedValueOnce({ ...result, path: 'C:\\' })
+    await runScan('C:\\')
+    expect(cleanupJob.network).toBe(false)
   })
 
   it('stays quiet on cancel and shows other errors', async () => {
@@ -596,6 +608,20 @@ describe('suggested cleanups on screen', () => {
     expect(never?.querySelector('input[type="checkbox"]')).toBeNull()
   })
 
+  it('has no Review button on a network scan', async () => {
+    core.invoke.mockImplementation((command: string) =>
+      command === 'cleanup_junk' ? Promise.resolve(junkGroups) : Promise.reject(new Error(command)),
+    )
+    const local = await mount(JunkPanel)
+    expect(local.textContent).toContain('Review 0 items')
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    createApp(JunkPanel, { readOnly: true }).mount(host)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(host.textContent).not.toContain('Review 0 items')
+  })
+
   it('offers select all only in the Safe section', async () => {
     core.invoke.mockImplementation((command: string) =>
       command === 'cleanup_junk' ? Promise.resolve(junkGroups) : Promise.reject(new Error(command)),
@@ -808,7 +834,12 @@ describe('stale data', () => {
     lastAccess: 'off',
   }
 
+  // The panel under test; unmounted after each test so it stops reacting to later scans.
+  let mounted: App | null = null
+
   afterEach(() => {
+    mounted?.unmount()
+    mounted = null
     core.invoke.mockReset()
     document.body.innerHTML = ''
   })
@@ -840,7 +871,8 @@ describe('stale data', () => {
     })
     const host = document.createElement('div')
     document.body.append(host)
-    createApp(StalePanel).mount(host)
+    mounted = createApp(StalePanel)
+    mounted.mount(host)
     const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
     await settle()
 

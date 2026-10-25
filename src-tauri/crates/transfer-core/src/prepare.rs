@@ -1406,6 +1406,50 @@ mod tests {
         }
 
         #[test]
+        fn a_destination_edit_made_after_a_crash_is_left_not_overwritten() {
+            // DSA-089: the recovered run finished when its results were last written, not when
+            // the app was started again.
+            let dir = TempDir::new("delta-recovered");
+            dir.write("src/a.txt", b"original");
+            let first = first_run(&dir);
+            let store = RunStore::open(&dir.path("runs"), &first).unwrap();
+            let crashed = SystemTime::now() - 3 * DAY;
+            let results = store.dir().join("results.jsonl");
+            set_time(&results, crashed);
+            let mut summary = store.summary().unwrap();
+            summary.state = RunState::Running;
+            summary.finished_at_ms = None;
+            store.save_summary(&summary).unwrap();
+
+            // After the crash, before the app was opened again: the destination file is edited.
+            dir.write("dst/a.txt", b"edited at the destination");
+            set_time(&dir.path("dst/a.txt"), crashed + DAY);
+            // The source also differs, so a plain delta run would copy it.
+            dir.write("src/a.txt", b"original, changed again at the source");
+            set_time(&dir.path("src/a.txt"), crashed - DAY);
+
+            assert!(crate::run::recover_interrupted(&store).unwrap());
+            let finished = store.summary().unwrap().finished_at_ms.unwrap();
+            let crashed_ms = crashed
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            assert!(
+                finished.abs_diff(crashed_ms) < 2_000,
+                "{finished} {crashed_ms}"
+            );
+
+            let (next, _) = delta(&dir, &first);
+            assert_eq!(next.totals.changed_at_destination, 1);
+            assert!(manifest_paths(&dir, &next.id).is_empty());
+            assert_eq!(left_alone(&dir, &next.id).len(), 1);
+            assert_eq!(
+                fs::read(dir.path("dst/a.txt")).unwrap(),
+                b"edited at the destination"
+            );
+        }
+
+        #[test]
         fn files_only_at_the_destination_are_counted_and_never_removed() {
             let dir = TempDir::new("delta-dest-only");
             dir.write("src/a.txt", b"a");

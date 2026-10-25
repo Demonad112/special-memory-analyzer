@@ -367,17 +367,31 @@ fn permissions_note(permissions: &PermissionsReport) -> String {
                     "Ran without administrator rights, so folders this account cannot read are listed as unreadable. "
                 },
                 if permissions.server.is_empty() {
-                    "Account names were looked up on this PC.".to_string()
+                    if permissions.server_note.is_empty() {
+                        "Account names were looked up on this PC.".to_string()
+                    } else {
+                        format!(
+                            "Account names were looked up on this PC. {}",
+                            permissions.server_note
+                        )
+                    }
                 } else {
                     format!("Account names were looked up on {}.", permissions.server)
                 },
-                if permissions.skipped > 0 {
-                    format!(
-                        " {} (links, online-only files) were not read.",
-                        plural(permissions.skipped, "item")
-                    )
-                } else {
-                    String::new()
+                {
+                    let mut tail = String::new();
+                    if permissions.skipped > 0 {
+                        tail.push_str(&format!(
+                            " {} (links, online-only files) were not read.",
+                            plural(permissions.skipped, "item")
+                        ));
+                    }
+                    if permissions.findings_truncated {
+                        tail.push_str(
+                            " Many findings: each list keeps the first ones in folder order; the counts cover all of them.",
+                        );
+                    }
+                    tail
                 }
             )
         }

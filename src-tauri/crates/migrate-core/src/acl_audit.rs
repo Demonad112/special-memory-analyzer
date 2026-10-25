@@ -199,6 +199,8 @@ pub struct PermissionsReport {
     pub elevated: bool,
     /// Account names were asked of this server (empty: this PC).
     pub server: String,
+    /// Said when a mapped drive's server could not be found, so names were asked of this PC.
+    pub server_note: String,
     pub folders_read: u64,
     pub files_read: u64,
     /// Items not read: links and online-only files, and names that are not valid Unicode.
@@ -208,6 +210,8 @@ pub struct PermissionsReport {
     pub counts: Vec<FindingCount>,
     /// Grouped by kind, then by path; at most [`FINDING_LIMIT`] per kind.
     pub findings: Vec<Finding>,
+    /// More findings of some kind were found than `findings` keeps; the counts cover them all.
+    pub findings_truncated: bool,
     /// Folders (and files with entries of their own) with their entries: the permissions CSV.
     pub items: Vec<AuditedItem>,
     /// More items had entries than [`ENTRY_LIMIT`] keeps.
@@ -267,6 +271,9 @@ type Read<'a> = dyn Fn(&Path, What) -> io::Result<Descriptor> + Sync + 'a;
 struct ItemResult {
     findings: Vec<(FindingKind, String, String)>,
     item: Option<AuditedItem>,
+    /// The item became a link or an online-only file after the scan and was not read (DSA-091):
+    /// counted as skipped, not as unreadable.
+    changed: bool,
 }
 
 struct Target {
@@ -274,9 +281,15 @@ struct Target {
     dir: bool,
 }
 
-/// What the audit found, before it is capped for a saved report.
+/// What the audit found, before it is capped for a saved report. The findings are bounded while
+/// they are collected: at most `FINDING_LIMIT` per kind, the first ones in tree order. `counts`
+/// covers every finding.
 pub struct Audit {
     findings: Vec<Finding>,
+    /// Every finding of each kind, kept or not.
+    counts: HashMap<FindingKind, u64>,
+    /// More findings of some kind were found than were kept.
+    findings_truncated: bool,
     items: Vec<AuditedItem>,
     /// More items had entries than the budget keeps.
     items_truncated: bool,
@@ -325,17 +338,33 @@ struct Merge {
     audit: Audit,
     entry_limit: usize,
     entries_kept: usize,
+    /// Findings kept per kind, up to `finding_limit`.
+    finding_limit: usize,
+    findings_kept: HashMap<FindingKind, usize>,
 }
 
 impl Merge {
     fn add(&mut self, (path, dir, result): Piece) {
         let audit = &mut self.audit;
+        if result.changed {
+            audit.skipped += 1;
+            return;
+        }
         if dir {
             audit.folders_read += 1;
         } else {
             audit.files_read += 1;
         }
         for (kind, detail, sid) in result.findings {
+            *audit.counts.entry(kind).or_default() += 1;
+            // The batches arrive in tree order, so the kept findings are the first ones, the
+            // same on every run, and memory stays bounded however many are found.
+            let kept = self.findings_kept.entry(kind).or_default();
+            if *kept >= self.finding_limit {
+                audit.findings_truncated = true;
+                continue;
+            }
+            *kept += 1;
             audit.findings.push(Finding {
                 path: path.clone(),
                 dir,
@@ -380,12 +409,19 @@ pub fn audit(
     cancel: &CancelToken,
     counters: &Counters,
 ) -> Result<Audit, ScanError> {
-    audit_with_limit(tree, options, read, names, cancel, counters, ENTRY_LIMIT)
+    audit_with_limits(
+        tree,
+        options,
+        read,
+        names,
+        cancel,
+        counters,
+        ENTRY_LIMIT,
+        FINDING_LIMIT,
+    )
 }
 
-/// [`audit`] keeping the entries of at most `entry_limit` access entries' worth of items. The
-/// items kept are the first ones in tree order, however the threads happen to run, and memory
-/// stays bounded whatever the size of the tree.
+/// [`audit`] keeping the entries of at most `entry_limit` access entries' worth of items.
 pub fn audit_with_limit(
     tree: &Tree,
     options: &AuditOptions,
@@ -394,6 +430,33 @@ pub fn audit_with_limit(
     cancel: &CancelToken,
     counters: &Counters,
     entry_limit: usize,
+) -> Result<Audit, ScanError> {
+    audit_with_limits(
+        tree,
+        options,
+        read,
+        names,
+        cancel,
+        counters,
+        entry_limit,
+        FINDING_LIMIT,
+    )
+}
+
+/// [`audit`] keeping the entries of at most `entry_limit` access entries' worth of items and at
+/// most `finding_limit` findings of each kind. What is kept is the first ones in tree order,
+/// however the threads happen to run, and memory stays bounded whatever the size of the tree.
+/// The counts cover everything found.
+#[allow(clippy::too_many_arguments)]
+pub fn audit_with_limits(
+    tree: &Tree,
+    options: &AuditOptions,
+    read: &Read,
+    names: &SidNames,
+    cancel: &CancelToken,
+    counters: &Counters,
+    entry_limit: usize,
+    finding_limit: usize,
 ) -> Result<Audit, ScanError> {
     let (targets, skipped) = targets(tree, options.every_file);
     counters.done.store(0, Ordering::Relaxed);
@@ -406,6 +469,8 @@ pub fn audit_with_limit(
         pending: BTreeMap::new(),
         audit: Audit {
             findings: Vec::new(),
+            counts: HashMap::new(),
+            findings_truncated: false,
             items: Vec::new(),
             items_truncated: false,
             folders_read: 0,
@@ -414,6 +479,8 @@ pub fn audit_with_limit(
         },
         entry_limit,
         entries_kept: 0,
+        finding_limit,
+        findings_kept: HashMap::new(),
     });
     let turn = Condvar::new();
     let lock = || merge.lock().unwrap_or_else(PoisonError::into_inner);
@@ -487,10 +554,17 @@ fn classify(
 ) -> ItemResult {
     let descriptor = match read {
         Ok(descriptor) => descriptor,
+        Err(err) if scan_core::security::is_changed_since_scan(&err) => {
+            return ItemResult {
+                changed: true,
+                ..ItemResult::default()
+            }
+        }
         Err(err) => {
             return ItemResult {
                 findings: vec![(FindingKind::Unreadable, err.to_string(), String::new())],
                 item: None,
+                changed: false,
             }
         }
     };
@@ -581,7 +655,11 @@ fn classify(
             .map(|ace| entry_row(ace, &named(&ace.sid)))
             .collect(),
     });
-    ItemResult { findings, item }
+    ItemResult {
+        findings,
+        item,
+        changed: false,
+    }
 }
 
 pub(crate) fn entry_row(ace: &Ace, account: &Account) -> EntryRow {
@@ -609,10 +687,7 @@ impl Audit {
         elevated: bool,
         supported: bool,
     ) -> PermissionsReport {
-        let mut counts: HashMap<FindingKind, u64> = HashMap::new();
-        for finding in &self.findings {
-            *counts.entry(finding.kind).or_default() += 1;
-        }
+        let counts = self.counts;
         let mut findings = Vec::new();
         for kind in FindingKind::ALL {
             let mut listed: Vec<Finding> = self
@@ -643,12 +718,14 @@ impl Audit {
             every_file: options.every_file,
             elevated,
             server: options.server.clone().unwrap_or_default(),
+            server_note: String::new(),
             folders_read: self.folders_read,
             files_read: self.files_read,
             skipped: self.skipped,
             issues,
             counts,
             findings,
+            findings_truncated: self.findings_truncated,
             items: self.items,
             items_truncated: self.items_truncated,
         }
@@ -657,7 +734,7 @@ impl Audit {
 
 /// The system calls behind the audit, for the app.
 pub fn system_read(path: &Path, what: What) -> io::Result<Descriptor> {
-    security::read(path, what)
+    security::read_unless_changed(path, what)
 }
 
 #[cfg(test)]

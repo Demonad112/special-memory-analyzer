@@ -14,6 +14,7 @@ import {
 import { isTauri } from '@tauri-apps/api/core'
 import { onMounted, ref } from 'vue'
 import PageHeader from '@/components/PageHeader.vue'
+import ServersSection from '@/components/ServersSection.vue'
 import { appInfo } from '@/lib/appInfo'
 import { deleteHistory, keepHistory, loadHistoryRoots, type RootHistory } from '@/lib/cleanup'
 import { errorMessage } from '@/lib/errors'
@@ -324,6 +325,7 @@ const themes: { value: ThemeChoice; label: string; icon: typeof Sun }[] = [
         {{ historyError }}
       </p>
     </section>
+    <ServersSection />
     <label class="mt-3 flex items-center gap-4 rounded-lg border border-stroke bg-card px-5 py-4">
       <Timer
         class="size-5 shrink-0"

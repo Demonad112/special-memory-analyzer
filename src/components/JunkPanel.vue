@@ -16,6 +16,7 @@ import {
 import { errorMessage } from '@/lib/errors'
 import { formatBytes, plural } from '@/lib/format'
 
+defineProps<{ readOnly?: boolean }>()
 const emit = defineEmits<{ review: [items: JunkItem[]] }>()
 
 const groups = ref<JunkGroup[]>([])
@@ -107,6 +108,7 @@ defineExpose({ forget, reload })
       </h2>
       <span class="text-xs text-muted">Nothing is ticked for you.</span>
       <button
+        v-if="!readOnly"
         type="button"
         class="ml-auto h-8 rounded-md bg-accent px-3 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
         :disabled="ticked.size === 0"

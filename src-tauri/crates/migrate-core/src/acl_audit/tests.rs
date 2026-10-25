@@ -398,7 +398,7 @@ fn a_cancelled_audit_gives_nothing() {
 
 #[test]
 fn the_report_counts_everything_and_caps_the_lists() {
-    let findings: Vec<Finding> = (0..FINDING_LIMIT + 5)
+    let findings: Vec<Finding> = (0..FINDING_LIMIT)
         .map(|n| Finding {
             path: format!("d{n:06}"),
             dir: true,
@@ -408,6 +408,8 @@ fn the_report_counts_everything_and_caps_the_lists() {
         .collect();
     let audit = Audit {
         findings,
+        counts: HashMap::from([(FindingKind::WideWrite, FINDING_LIMIT as u64 + 5)]),
+        findings_truncated: true,
         items: vec![AuditedItem::default()],
         items_truncated: true,
         folders_read: 3,
@@ -421,10 +423,72 @@ fn the_report_counts_everything_and_caps_the_lists() {
     );
     assert_eq!(report.listed(FindingKind::WideWrite).count(), FINDING_LIMIT);
     assert_eq!(report.issues, FINDING_LIMIT as u64 + 5);
+    assert!(report.findings_truncated);
     assert_eq!(report.items.len(), 1);
     assert!(report.items_truncated);
     assert!(report.elevated);
     assert!(report.summary().findings.is_empty() && report.summary().items.is_empty());
+}
+
+#[test]
+fn findings_are_bounded_while_collecting_and_the_totals_stay_complete() {
+    let (_temp, tree) = wide_tree();
+    // Everyone can write in every folder: 61 wide-write findings (the root and 60 folders).
+    let read = |_: &Path, _: What| Ok(descriptor(vec![ace(EVERYONE, MODIFY, false)]));
+    let run = |limit: usize| {
+        audit_with_limits(
+            &tree,
+            &AuditOptions::default(),
+            &read,
+            &names(),
+            &CancelToken::new(),
+            &Counters::default(),
+            ENTRY_LIMIT,
+            limit,
+        )
+        .unwrap()
+    };
+    let first = run(5);
+    // Only five are held in memory, but all 61 are counted.
+    assert_eq!(first.findings.len(), 5);
+    assert!(first.findings_truncated);
+    let paths =
+        |audit: &Audit| -> Vec<String> { audit.findings.iter().map(|f| f.path.clone()).collect() };
+    // The first ones in tree order, the root first, and the same on every run.
+    assert_eq!(paths(&first)[0], "");
+    assert_eq!(paths(&first), paths(&run(5)));
+    let report = first.into_report(&AuditOptions::default(), false, true);
+    assert_eq!(report.count_of(FindingKind::WideWrite), 61);
+    assert_eq!(report.issues, 61);
+    assert_eq!(report.listed(FindingKind::WideWrite).count(), 5);
+    assert!(report.findings_truncated);
+
+    // The limit is per kind: another kind keeps its own findings.
+    let protected = |_: &Path, _: What| {
+        Ok(Descriptor {
+            protected: true,
+            ..descriptor(vec![ace(EVERYONE, MODIFY, false)])
+        })
+    };
+    let both = audit_with_limits(
+        &tree,
+        &AuditOptions::default(),
+        &protected,
+        &names(),
+        &CancelToken::new(),
+        &Counters::default(),
+        ENTRY_LIMIT,
+        5,
+    )
+    .unwrap();
+    let kept = |kind: FindingKind| both.findings.iter().filter(|f| f.kind == kind).count();
+    assert_eq!(kept(FindingKind::WideWrite), 5);
+    assert_eq!(kept(FindingKind::BrokenInheritance), 5);
+
+    // Nothing is truncated when everything fits.
+    let all = run(FINDING_LIMIT);
+    assert_eq!(all.findings.len(), 61);
+    assert!(!all.findings_truncated);
 }
 
 /// root with 60 folders, each with a protected DACL and 3 entries.
@@ -488,6 +552,38 @@ fn items_stop_being_kept_at_the_entry_budget_but_the_counts_go_on() {
     let again = run();
     assert_eq!(paths(&again), paths(&run()));
     assert_eq!(paths(&again)[0], "");
+}
+
+#[test]
+fn an_item_that_became_a_link_after_the_scan_is_skipped_not_unreadable() {
+    // DSA-091: the read refuses an item that is a link or online-only now.
+    let (_temp, tree) = wide_tree();
+    let read = |path: &Path, _: What| {
+        if path.ends_with("d01") || path.ends_with("d02") {
+            Err(io::Error::other(security::ChangedSinceScan))
+        } else {
+            Ok(descriptor(vec![ace(ADMINS, MODIFY, false)]))
+        }
+    };
+    let found = audit(
+        &tree,
+        &AuditOptions::default(),
+        &read,
+        &names(),
+        &CancelToken::new(),
+        &Counters::default(),
+    )
+    .unwrap();
+    // 61 folders were targets; two changed and are skipped, the rest were read.
+    assert_eq!(found.skipped, 2);
+    assert_eq!(found.folders_read, 59);
+    assert!(found
+        .findings
+        .iter()
+        .all(|finding| finding.kind != FindingKind::Unreadable));
+    let report = found.into_report(&AuditOptions::default(), false, true);
+    assert_eq!(report.skipped, 2);
+    assert_eq!(report.count_of(FindingKind::Unreadable), 0);
 }
 
 #[test]

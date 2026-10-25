@@ -431,6 +431,61 @@ pub fn read(path: &Path, what: What) -> io::Result<Descriptor> {
     imp::read(path, what)
 }
 
+/// [`read`] for a pass that decided from a scan which items to read. The scan's view can be old:
+/// a folder may have become a link, or a file may have gone online-only, since. The item is
+/// checked again right before it is opened (the DSA-085 rule) and one that changed is refused
+/// with [`ChangedSinceScan`], so the caller counts it as skipped instead of describing what it
+/// now is.
+pub fn read_unless_changed(path: &Path, what: What) -> io::Result<Descriptor> {
+    if let Some((is_link, is_dir, attributes)) = current_state(path) {
+        if changed_since_scan(is_link, is_dir, attributes) {
+            return Err(io::Error::other(ChangedSinceScan));
+        }
+    }
+    read(path, what)
+}
+
+/// The error [`read_unless_changed`] gives for an item that is a link or online-only now. Test for it with
+/// [`is_changed_since_scan`].
+#[derive(Debug)]
+pub struct ChangedSinceScan;
+
+impl std::fmt::Display for ChangedSinceScan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("It became a link or an online-only file after the scan, so it was not read.")
+    }
+}
+
+impl std::error::Error for ChangedSinceScan {}
+
+/// True for the error [`read_unless_changed`] gives when an item changed since the scan.
+pub fn is_changed_since_scan(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<ChangedSinceScan>())
+}
+
+/// Offline, recall-on-open and recall-on-data-access: a file's data is in the cloud.
+const CLOUD_ATTRIBUTES: u32 = 0x1000 | 0x4_0000 | 0x40_0000;
+
+/// The pure rule: a link, or an online-only file (folders can carry the cloud bits and are
+/// still read), is not read.
+pub fn changed_since_scan(is_link: bool, is_dir: bool, attributes: u32) -> bool {
+    is_link || (!is_dir && attributes & CLOUD_ATTRIBUTES != 0)
+}
+
+/// What the directory entry of `path` says now: (is a symlink or junction, is a folder, file
+/// attributes). One cheap attribute query, nothing opened. `None` when it cannot be queried; the
+/// read then reports its own error.
+fn current_state(path: &Path) -> Option<(bool, bool, u32)> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    #[cfg(windows)]
+    let attributes = std::os::windows::fs::MetadataExt::file_attributes(&meta);
+    #[cfg(not(windows))]
+    let attributes = 0;
+    Some((meta.file_type().is_symlink(), meta.is_dir(), attributes))
+}
+
 /// What an account lookup found.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "result")]
@@ -1185,5 +1240,67 @@ mod tests {
             ));
             assert_eq!(names.lookup("S-1-5-21-1-2-3-1001", None), Account::NotFound);
         }
+    }
+
+    #[test]
+    fn a_link_or_an_online_only_file_is_not_read_but_a_cloud_folder_is() {
+        use super::changed_since_scan;
+        // (is_link, is_dir, attributes)
+        assert!(changed_since_scan(true, true, 0));
+        assert!(changed_since_scan(true, false, 0));
+        assert!(
+            changed_since_scan(false, false, 0x40_0000),
+            "recall on data access"
+        );
+        assert!(changed_since_scan(false, false, 0x1000), "offline");
+        assert!(changed_since_scan(false, false, 0x4_0000), "recall on open");
+        assert!(
+            !changed_since_scan(false, true, 0x40_0000),
+            "a cloud folder is read"
+        );
+        assert!(
+            !changed_since_scan(false, false, 0x20),
+            "an archive file is read"
+        );
+        assert!(!changed_since_scan(false, true, 0x10));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_became_a_link_is_refused_with_the_marker_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let err = super::read_unless_changed(&link, What::OwnerAndDacl).unwrap_err();
+        assert!(super::is_changed_since_scan(&err), "{err}");
+        assert!(err.to_string().contains("after the scan"));
+        // Any other failure is not that marker.
+        let other =
+            super::read_unless_changed(&temp.path().join("missing"), What::Owner).unwrap_err();
+        assert!(!super::is_changed_since_scan(&other));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_swapped_in_after_the_scan_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = temp.path().join("link");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "mklink /J failed");
+        let err = super::read_unless_changed(&link, What::OwnerAndDacl).unwrap_err();
+        assert!(super::is_changed_since_scan(&err), "{err}");
+        // A plain folder is still read.
+        assert!(super::read_unless_changed(&real, What::OwnerAndDacl).is_ok());
+        // Plain `read` still reports a link's own descriptor.
+        assert!(super::read(&link, What::OwnerAndDacl).is_ok());
     }
 }

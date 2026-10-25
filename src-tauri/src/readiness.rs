@@ -7,7 +7,7 @@ use migrate_core::{
     ReadinessState as CheckState, Row,
 };
 use report_core::{Body, JobInfo};
-use scan_core::{canonical_root, clean_path, CancelToken, TargetProfile};
+use scan_core::{canonical_scan_root, clean_path, CancelToken, TargetProfile};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -131,7 +131,9 @@ pub async fn readiness_start(
     job: JobInfo,
     on_event: Channel<ReadinessEvent>,
 ) -> Result<ReadinessResult, String> {
-    let root = canonical_root(&clean_path(&path))?;
+    let root = canonical_scan_root(&clean_path(&path))?;
+    // Account names are asked of the server the path is on, a mapped drive included.
+    let names = crate::netpath::names_from(&root);
     let options = Options {
         target,
         destination_root: destination_root(&destination)?,
@@ -140,6 +142,8 @@ pub async fn readiness_start(
         every_file,
         // Only recorded in the report: never taken from the webview.
         elevated: cleanup_core::is_elevated(),
+        server: names.server,
+        server_note: names.note,
     };
     // Held until the check is done: an elevated record and a scan must not overlap.
     let _scan = record.scan_guard()?;
