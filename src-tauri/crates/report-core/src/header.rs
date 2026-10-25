@@ -143,6 +143,10 @@ pub(crate) struct CleanedHeader {
 }
 
 impl Header {
+    pub(crate) fn is_runbook(&self) -> bool {
+        self.body.kind() == ReportKind::Runbook
+    }
+
     /// The header of a report that is already fully loaded.
     pub(crate) fn of(saved: &Saved) -> Self {
         let body = match &saved.body {

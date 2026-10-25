@@ -23,6 +23,7 @@ pub use kinds::{RunbookPart, RunbookReport};
 pub use migrate_core::ReadinessReport;
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use transfer_core::store::{list_runs, RunStore};
@@ -295,15 +296,27 @@ pub fn delete(reports: &Path, records: &Path, kind: ReportKind, id: &str) -> Res
 /// Deletes saved reports (Compare, Disk usage, Quick cleanup) last written more than `days` days
 /// before `now_ms` and returns how many went. Record runs live in their own folder and are never
 /// touched: they are client proof. `days == 0` keeps everything.
+///
+/// A report that a migration runbook lists as a part is kept, however old, so a runbook never
+/// loses its parts early. Which runbooks protect is decided before anything is deleted: a
+/// runbook that is itself pruned now frees its parts on the next prune.
 pub fn prune(reports: &Path, days: u32, now_ms: u64) -> u64 {
     if days == 0 {
         return 0;
     }
     let cutoff = now_ms.saturating_sub(u64::from(days) * 24 * 60 * 60 * 1000);
+    let protected = runbook_parts(reports);
     let mut removed = 0;
     for entry in fs::read_dir(reports).into_iter().flatten().flatten() {
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        if path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|id| protected.contains(id))
+        {
             continue;
         }
         let written = entry
@@ -317,6 +330,32 @@ pub fn prune(reports: &Path, days: u32, now_ms: u64) -> u64 {
         }
     }
     removed
+}
+
+/// The ids of every report that a saved runbook lists as a part. Only runbooks are loaded in
+/// full (they hold ids, not data); other reports are told apart by their header.
+fn runbook_parts(reports: &Path) -> HashSet<String> {
+    let mut parts = HashSet::new();
+    for entry in fs::read_dir(reports).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_suffix(".json") else {
+            continue;
+        };
+        let Ok(path) = report_path(reports, id) else {
+            continue;
+        };
+        if !header::read(&path, id).is_ok_and(|header| header.is_runbook()) {
+            continue;
+        }
+        if let Ok(Saved {
+            body: Body::Runbook(runbook),
+            ..
+        }) = load(reports, id)
+        {
+            parts.extend(runbook.parts.into_iter().map(|part| part.id));
+        }
+    }
+    parts
 }
 
 /// The report as a document, ready for [`Document::html`] or [`Document::csv`].
@@ -550,6 +589,75 @@ mod tests {
         assert!(load(&reports, &saved.id).is_err());
         assert!(reports.join("notes.txt").exists());
         assert_eq!(prune(&temp.path().join("missing"), 30, now_ms()), 0);
+    }
+
+    /// Marks a saved report as written `days` days ago.
+    fn age(reports: &Path, id: &str, days: u64) {
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(reports.join(format!("{id}.json")))
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+
+    #[test]
+    fn prune_keeps_the_parts_of_a_runbook_and_frees_them_when_the_runbook_goes() {
+        let temp = tempfile::tempdir().unwrap();
+        let reports = temp.path().join("Reports");
+        let part_a = save(&reports, JobInfo::default(), usage()).unwrap().id;
+        let part_b = save(&reports, JobInfo::default(), usage()).unwrap().id;
+        let loose = save(&reports, JobInfo::default(), usage()).unwrap().id;
+        let runbook = save(
+            &reports,
+            JobInfo::default(),
+            Body::Runbook(RunbookReport {
+                parts: [&part_a, &part_b, &"a-record-run".to_string()]
+                    .into_iter()
+                    .map(|id| RunbookPart {
+                        kind: ReportKind::DiskUsage,
+                        id: id.clone(),
+                    })
+                    .collect(),
+            }),
+        )
+        .unwrap()
+        .id;
+        // The parts and an unrelated report are old; the runbook is recent.
+        for id in [&part_a, &part_b, &loose] {
+            age(&reports, id, 100);
+        }
+        age(&reports, &runbook, 1);
+
+        // Only the unrelated old report goes; a kept runbook never loses its parts early.
+        assert_eq!(prune(&reports, 30, now_ms()), 1);
+        assert!(load(&reports, &loose).is_err());
+        assert!(load(&reports, &part_a).is_ok() && load(&reports, &part_b).is_ok());
+        assert!(load(&reports, &runbook).is_ok());
+        // And again: nothing changes while the runbook stays.
+        assert_eq!(prune(&reports, 30, now_ms()), 0);
+
+        // Time passes and the runbook is old too: it goes, its parts stay for this prune ...
+        age(&reports, &runbook, 100);
+        assert_eq!(prune(&reports, 30, now_ms()), 1);
+        assert!(load(&reports, &runbook).is_err());
+        assert!(load(&reports, &part_a).is_ok() && load(&reports, &part_b).is_ok());
+        // ... and are freed on the next one.
+        assert_eq!(prune(&reports, 30, now_ms()), 2);
+        assert!(load(&reports, &part_a).is_err() && load(&reports, &part_b).is_err());
+    }
+
+    #[test]
+    fn prune_survives_an_unreadable_runbook_and_files_that_are_not_reports() {
+        let temp = tempfile::tempdir().unwrap();
+        let reports = temp.path().join("Reports");
+        let old = save(&reports, JobInfo::default(), usage()).unwrap().id;
+        fs::write(reports.join("junk.json"), "{ not json").unwrap();
+        age(&reports, &old, 100);
+        // The broken file protects nothing and is itself old enough only if aged.
+        assert_eq!(prune(&reports, 30, now_ms()), 1);
+        assert!(reports.join("junk.json").exists());
     }
 
     #[test]
