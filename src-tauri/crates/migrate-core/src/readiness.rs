@@ -11,7 +11,9 @@
 //! [`HOLDER_CAP`] files it finds in use. It never opens a link, an online-only file or a file whose
 //! name is not valid Unicode, and it never reads a byte.
 
+use crate::acl_audit::{self, AuditOptions, Counters, PermissionsReport};
 use scan_core::inuse::{self, Holder, Holders, InUse, HOLDER_CAP, HOLDER_DEADLINE};
+use scan_core::security::{self, SidNames, What};
 use scan_core::{
     name_issues, scan, CancelToken, Kind, NameIssue, NodeId, ScanError, ScanProgress, ScanState,
     TargetProfile, Tree,
@@ -37,6 +39,12 @@ pub struct Options {
     pub destination_root: String,
     /// Open every file to find the ones another program holds (D-08). On by default.
     pub check_in_use: bool,
+    /// Read the owner and access list of every folder (on by default).
+    pub check_permissions: bool,
+    /// Read every file's permissions too (D-05). Off: folders only.
+    pub every_file: bool,
+    /// The check runs as administrator; only recorded in the report. The command sets it.
+    pub elevated: bool,
 }
 
 impl Default for Options {
@@ -45,6 +53,9 @@ impl Default for Options {
             target: TargetProfile::default(),
             destination_root: String::new(),
             check_in_use: true,
+            check_permissions: true,
+            every_file: false,
+            elevated: false,
         }
     }
 }
@@ -257,6 +268,10 @@ pub struct ReadinessReport {
     pub problems: Vec<Problem>,
     /// What the in-use pass did.
     pub in_use: InUseSummary,
+    /// Owners and access lists (F-002).
+    pub permissions: PermissionsReport,
+    /// Permission findings that call for action: unknown accounts, wide write access, unreadable.
+    pub permission_issues: u64,
 }
 
 /// Whether the in-use pass ran.
@@ -308,9 +323,11 @@ impl ReadinessReport {
 
     /// Something will fail or needs a look before the copy (links alone do not count).
     pub fn has_problems(&self) -> bool {
-        self.counts
-            .iter()
-            .any(|count| count.kind != ProblemKind::Link && count.count > 0)
+        self.permission_issues > 0
+            || self
+                .counts
+                .iter()
+                .any(|count| count.kind != ProblemKind::Link && count.count > 0)
     }
 }
 
@@ -322,6 +339,7 @@ pub enum Phase {
     Scan,
     Names,
     InUse,
+    Permissions,
 }
 
 /// Live state of one check. The check updates it; another thread reads
@@ -334,6 +352,7 @@ pub struct ReadinessState {
     to_check: AtomicU64,
     checked: AtomicU64,
     in_use: AtomicU64,
+    permissions: Counters,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -345,6 +364,9 @@ pub struct ReadinessProgress {
     pub to_check: u64,
     pub checked: u64,
     pub in_use: u64,
+    /// Permissions pass: items to read and read so far.
+    pub perm_to_check: u64,
+    pub perm_checked: u64,
 }
 
 impl ReadinessState {
@@ -356,6 +378,7 @@ impl ReadinessState {
             to_check: AtomicU64::new(0),
             checked: AtomicU64::new(0),
             in_use: AtomicU64::new(0),
+            permissions: Counters::default(),
         }
     }
 
@@ -368,12 +391,15 @@ impl ReadinessState {
             phase: match self.phase.load(Ordering::Relaxed) {
                 0 => Phase::Scan,
                 1 => Phase::Names,
-                _ => Phase::InUse,
+                2 => Phase::InUse,
+                _ => Phase::Permissions,
             },
             scan: self.scan.progress(),
             to_check: self.to_check.load(Ordering::Relaxed),
             checked: self.checked.load(Ordering::Relaxed),
             in_use: self.in_use.load(Ordering::Relaxed),
+            perm_to_check: self.permissions.total.load(Ordering::Relaxed),
+            perm_checked: self.permissions.done.load(Ordering::Relaxed),
         }
     }
 }
@@ -415,6 +441,8 @@ pub fn run(root: &Path, options: &Options, state: &ReadinessState) -> Result<Rea
         },
         cap: HOLDER_CAP,
         deadline: HOLDER_DEADLINE,
+        read: &security::read,
+        names: &SidNames::default(),
     };
     run_with(root, options, state, &probes)
 }
@@ -422,7 +450,7 @@ pub fn run(root: &Path, options: &Options, state: &ReadinessState) -> Result<Rea
 /// The `\\?\` form of an absolute Windows path, so a name Win32 would change (`ends.`, `top `,
 /// `CON`) is opened exactly as listed instead of as the file it normalizes to. Other paths, and
 /// every path off Windows, are returned as they are.
-fn exact_path(path: &Path) -> PathBuf {
+pub(crate) fn exact_path(path: &Path) -> PathBuf {
     if !cfg!(windows) {
         return path.to_path_buf();
     }
@@ -451,6 +479,9 @@ struct Probes<'a> {
     holders: &'a dyn Fn(&Path) -> Holders,
     cap: usize,
     deadline: Duration,
+    /// The security descriptor of a path, and the account names behind its SIDs.
+    read: &'a (dyn Fn(&Path, What) -> std::io::Result<security::Descriptor> + Sync),
+    names: &'a SidNames,
 }
 
 fn run_with(
@@ -477,10 +508,47 @@ fn run_with(
         state.set_phase(Phase::InUse);
         in_use_pass(&tree, state, probes, &mut findings)?
     };
+    let permissions = if options.check_permissions {
+        state.set_phase(Phase::Permissions);
+        permissions_pass(&tree, options, state, probes)?
+    } else {
+        PermissionsReport::default()
+    };
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let mut result = Readiness::new(tree, findings, options, elapsed_ms);
     result.report.in_use = in_use;
+    result.report.permissions = permissions;
+    result.report.permission_issues = result.report.permissions.issues;
     Ok(result)
+}
+
+/// Reads the owners and access lists (F-002). Off Windows nothing is read.
+fn permissions_pass(
+    tree: &Tree,
+    options: &Options,
+    state: &ReadinessState,
+    probes: &Probes,
+) -> Result<PermissionsReport, ScanError> {
+    let audit_options = AuditOptions {
+        every_file: options.every_file,
+        server: acl_audit::server_of(&tree.path(0).to_string_lossy()),
+    };
+    if !probes.supported {
+        return Ok(PermissionsReport {
+            status: acl_audit::AuditStatus::NotSupported,
+            every_file: options.every_file,
+            ..PermissionsReport::default()
+        });
+    }
+    let audit = acl_audit::audit(
+        tree,
+        &audit_options,
+        probes.read,
+        probes.names,
+        &state.cancel,
+        &state.permissions,
+    )?;
+    Ok(audit.into_report(&audit_options, options.elevated, true))
 }
 
 /// Files the in-use pass may open: never a link, an online-only file (that would download it) or
@@ -1252,6 +1320,8 @@ mod tests {
             holders: &outlook,
             cap: HOLDER_CAP,
             deadline: HOLDER_DEADLINE,
+            read: &security::read,
+            names: &SidNames::default(),
         };
         let state = ReadinessState::new(CancelToken::new());
         run_with(root, options, &state, &probes).unwrap()
@@ -1404,6 +1474,8 @@ mod tests {
             holders: &outlook,
             cap: HOLDER_CAP,
             deadline: HOLDER_DEADLINE,
+            read: &security::read,
+            names: &SidNames::default(),
         };
         let outcome = run_with(temp.path(), &Options::default(), &state, &probes);
         assert!(matches!(outcome, Err(ScanError::Cancelled)));
@@ -1428,6 +1500,8 @@ mod tests {
             holders: &lookup,
             cap: 2,
             deadline: HOLDER_DEADLINE,
+            read: &security::read,
+            names: &SidNames::default(),
         };
         let paths: Vec<PathBuf> = [r"\\nas\share\a.pst", "/a", "/b", "/c"]
             .iter()
