@@ -15,6 +15,7 @@ import {
 import { computed, onBeforeUnmount, onMounted, reactive, watch } from 'vue'
 import JobFields from '@/components/JobFields.vue'
 import PageHeader from '@/components/PageHeader.vue'
+import PermissionsPanel from '@/components/PermissionsPanel.vue'
 import PathField from '@/components/PathField.vue'
 import { cleanPath, pickFolder } from '@/lib/compare'
 import { errorMessage } from '@/lib/errors'
@@ -66,6 +67,8 @@ const phaseText = computed(() => {
       return 'Checking names…'
     case 'inUse':
       return 'Looking for files in use…'
+    case 'permissions':
+      return 'Reading permissions…'
     default:
       return 'Reading the folder…'
   }
@@ -173,7 +176,7 @@ function rowIcon(row: ReadinessRow): typeof File {
     <div class="flex items-start justify-between gap-6">
       <PageHeader
         title="Migration readiness"
-        summary="Check a folder before you move it: names the target cannot hold, paths that will be too long there, and files in use."
+        summary="Check a folder before you move it: names the target cannot hold, paths that will be too long there, files in use, and risky or broken permissions."
       />
       <button
         v-if="!running"
@@ -242,6 +245,33 @@ function rowIcon(row: ReadinessRow): typeof File {
         Find files in use (opens each file for read; slower on big shares)
       </label>
     </fieldset>
+    <fieldset
+      class="mt-3 flex flex-wrap items-center gap-4 text-[13px]"
+      :disabled="running"
+    >
+      <legend class="sr-only">Permissions</legend>
+      <span class="font-semibold">Permissions</span>
+      <label class="flex items-center gap-2">
+        <input
+          v-model="form.checkPermissions"
+          type="checkbox"
+          class="size-4 accent-accent"
+        />
+        Audit permissions (read only)
+      </label>
+      <label
+        class="flex items-center gap-2 text-muted"
+        :class="form.checkPermissions ? '' : 'opacity-50'"
+      >
+        <input
+          v-model="form.everyFile"
+          type="checkbox"
+          class="size-4 accent-accent"
+          :disabled="!form.checkPermissions"
+        />
+        Check every file (folders only by default; much slower on big shares)
+      </label>
+    </fieldset>
     <JobFields
       class="mt-3"
       :disabled="running"
@@ -277,7 +307,14 @@ function rowIcon(row: ReadinessRow): typeof File {
         <p class="text-xs text-muted tabular-nums">{{ elapsed }} · Esc to cancel</p>
       </div>
       <p
-        v-if="readinessJob.progress?.phase === 'inUse'"
+        v-if="readinessJob.progress?.phase === 'permissions'"
+        class="mt-3 tabular-nums"
+      >
+        {{ readinessJob.progress.permChecked.toLocaleString() }} of
+        {{ plural(readinessJob.progress.permToCheck, 'item') }} read
+      </p>
+      <p
+        v-else-if="readinessJob.progress?.phase === 'inUse'"
         class="mt-3 tabular-nums"
       >
         {{ readinessJob.progress.checked.toLocaleString() }} of
@@ -296,7 +333,7 @@ function rowIcon(row: ReadinessRow): typeof File {
         :title="readinessJob.progress?.scan.current"
       >
         {{
-          readinessJob.progress?.phase === 'inUse'
+          readinessJob.progress?.phase === 'inUse' || readinessJob.progress?.phase === 'permissions'
             ? ' '
             : readinessJob.progress?.scan.current || ' '
         }}
@@ -359,6 +396,11 @@ function rowIcon(row: ReadinessRow): typeof File {
         </template>
         {{ inUseText }}
       </p>
+      <PermissionsPanel
+        :permissions="report.permissions"
+        :report-id="result?.reportId ?? null"
+        :view="readinessJob.startedAt"
+      />
       <p
         v-if="report.inUse.inUse > 0"
         class="mt-3 flex items-start gap-2 rounded-lg border border-stroke bg-card px-4 py-3 text-[13px]"
