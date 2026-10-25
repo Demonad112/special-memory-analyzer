@@ -13,7 +13,14 @@ import {
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import StatusChip from '@/components/StatusChip.vue'
 import type { DiffRow, DiffSide } from '@/lib/compare'
-import { sizeDelta, statusLabel, type Sort, type SortKey, type VisibleRow } from '@/lib/diffRows'
+import {
+  permissionLabel,
+  sizeDelta,
+  statusLabel,
+  type Sort,
+  type SortKey,
+  type VisibleRow,
+} from '@/lib/diffRows'
 import { formatBytes, formatDelta } from '@/lib/format'
 
 const props = defineProps<{
@@ -21,6 +28,8 @@ const props = defineProps<{
   loading: ReadonlySet<number>
   sort: Sort
   selected: number | null
+  /** The compare looked at permissions: show their column. */
+  showPermissions?: boolean
 }>()
 const emit = defineEmits<{
   toggle: [id: number]
@@ -220,6 +229,7 @@ const ariaSort = (key: SortKey): 'ascending' | 'descending' | 'none' =>
 <template>
   <div
     class="compare-table flex min-h-0 flex-col overflow-hidden rounded-lg border border-stroke bg-card"
+    :class="{ perms: showPermissions }"
     role="treegrid"
     aria-label="Compare result"
     :aria-rowcount="rows.length"
@@ -250,6 +260,12 @@ const ariaSort = (key: SortKey): 'ascending' | 'descending' | 'none' =>
         role="columnheader"
         class="flex items-center"
         >Status</span
+      >
+      <span
+        v-if="showPermissions"
+        role="columnheader"
+        class="flex items-center"
+        >Permissions</span
       >
     </div>
     <div
@@ -383,6 +399,18 @@ const ariaSort = (key: SortKey): 'ascending' | 'descending' | 'none' =>
             >
               <StatusChip v-bind="statusLabel(visible.row)" />
             </span>
+            <span
+              v-if="showPermissions"
+              class="min-w-0"
+              role="gridcell"
+              :title="visible.row.permissions?.summary || undefined"
+              data-testid="permissions-cell"
+            >
+              <StatusChip
+                v-if="permissionLabel(visible.row.permissions)"
+                v-bind="permissionLabel(visible.row.permissions) ?? { text: '', tone: 'neutral' }"
+              />
+            </span>
           </div>
         </div>
       </div>
@@ -419,6 +447,17 @@ const ariaSort = (key: SortKey): 'ascending' | 'descending' | 'none' =>
 
   span.delta-col {
     display: block;
+  }
+}
+
+/* The permissions column takes the width the Difference column gives up when it is hidden. */
+.perms .grid-row {
+  grid-template-columns: minmax(0, 1fr) 6rem 6.5rem 8.5rem 11rem;
+}
+
+@container (min-width: 42rem) {
+  .perms .grid-row {
+    grid-template-columns: minmax(0, 1fr) 6.5rem 6.5rem 6.5rem 9rem 11rem;
   }
 }
 

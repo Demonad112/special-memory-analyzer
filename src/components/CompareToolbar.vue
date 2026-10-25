@@ -1,31 +1,40 @@
 <script setup lang="ts">
-import { ClipboardList, Copy, FileText, History } from '@lucide/vue'
+import { ClipboardList, Copy, FileSpreadsheet, FileText, History } from '@lucide/vue'
+import { computed } from 'vue'
 import type { ComparePaths, CompareResult } from '@/lib/compare'
 import type { CompareFilter } from '@/lib/diffRows'
 import { formatBytes, formatDuration, formatTime, plural } from '@/lib/format'
 
-defineProps<{
+const props = defineProps<{
   result: CompareResult
   compared: ComparePaths
   finishedAt: Date | null
   filter: CompareFilter
   /** Whether the "Copy missing files" confirm panel is open. */
   confirming: boolean
+  /** A permissions export is being written. */
+  exporting?: boolean
 }>()
 const emit = defineEmits<{
   filter: [filter: CompareFilter]
   report: []
+  exportPermissions: []
   copyList: []
   copyFiles: []
   confirming: [open: boolean]
   recheck: []
 }>()
 
-const filters: { value: CompareFilter; label: string }[] = [
+const sizeFilters: { value: CompareFilter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'changes', label: 'Differences' },
   { value: 'missing', label: 'Missing' },
 ]
+const filters = computed(() =>
+  props.result.permissions?.status === 'checked'
+    ? [...sizeFilters, { value: 'permissions' as const, label: 'Permissions' }]
+    : sizeFilters,
+)
 </script>
 
 <template>
@@ -70,6 +79,20 @@ const filters: { value: CompareFilter; label: string }[] = [
         :stroke-width="1.75"
       />
       Report
+    </button>
+    <button
+      v-if="result.permissions?.status === 'checked' && result.reportId"
+      type="button"
+      class="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-stroke bg-card px-3 text-[13px] hover:bg-card-hover disabled:opacity-50"
+      title="Save the permission differences as a CSV for Excel"
+      :disabled="exporting"
+      @click="emit('exportPermissions')"
+    >
+      <FileSpreadsheet
+        class="size-4"
+        :stroke-width="1.75"
+      />
+      Permissions CSV
     </button>
     <button
       v-if="result.summary.missing > 0"

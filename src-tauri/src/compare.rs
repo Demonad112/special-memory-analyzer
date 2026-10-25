@@ -117,6 +117,7 @@ fn save_report(
     diff: &DiffTree,
     elapsed_ms: u64,
     job: JobInfo,
+    permissions: Option<&PermissionsResult>,
 ) -> Option<String> {
     let summary = diff.summary();
     let missing_paths: Vec<MissingFile> = diff
@@ -141,7 +142,11 @@ fn save_report(
         extra: summary.extra,
         unreadable: summary.left_errors + summary.right_errors,
         elapsed_ms,
+        permission_mismatches: permissions.map_or(0, |result| result.report().mismatches()),
         missing_paths,
+        permissions: permissions
+            .map(|result| result.report().clone())
+            .unwrap_or_default(),
     };
     report_core::save(&report_core::reports_root(), job, Body::Compare(report))
         .map(|saved| saved.id)
@@ -201,7 +206,14 @@ pub async fn compare_start(
                 None
             };
             let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let report_id = save_report(&job_left, &job_right, &diff, elapsed_ms, job);
+            let report_id = save_report(
+                &job_left,
+                &job_right,
+                &diff,
+                elapsed_ms,
+                job,
+                permissions.as_ref(),
+            );
             Ok::<_, String>((diff, permissions, elapsed_ms, report_id))
         })
         .await

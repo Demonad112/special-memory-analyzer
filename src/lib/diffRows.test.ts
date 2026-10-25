@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import type { DiffRow } from './compare'
+import type { DiffRow, PermCell } from './compare'
 import {
   defaultSort,
+  hasPermissionDifference,
   matchesFilter,
   nextSort,
+  permissionLabel,
   sizeDelta,
   sortRows,
   statusLabel,
@@ -131,5 +133,52 @@ describe('sorting', () => {
     expect(nextSort(defaultSort, 'name')).toEqual({ key: 'name', dir: 'asc' })
     expect(nextSort({ key: 'name', dir: 'asc' }, 'name')).toEqual({ key: 'name', dir: 'desc' })
     expect(nextSort(defaultSort, 'left')).toEqual({ key: 'left', dir: 'desc' })
+  })
+})
+
+describe('permissions', () => {
+  const cell = (status: PermCell['status'], below = 0): PermCell => ({ status, below, summary: '' })
+
+  it('filters to rows that differ or hold differences below them', () => {
+    const differs = row(10, { permissions: cell('ownerDiffers') })
+    const holder = row(11, { kind: 'dir', permissions: cell('same', 2) })
+    const unchecked = row(12, { kind: 'dir', permissions: cell(null, 1) })
+    const clean = row(13, { permissions: cell('same') })
+    const plain = row(14)
+    const shown = [differs, holder, unchecked, clean, plain].filter((candidate) =>
+      matchesFilter(candidate, 'permissions'),
+    )
+    expect(shown.map((candidate) => candidate.id)).toEqual([10, 11, 12])
+    expect(hasPermissionDifference(undefined)).toBe(false)
+    expect(hasPermissionDifference(cell('sameNameDifferentAccount'))).toBe(true)
+    expect(hasPermissionDifference(cell('notReadable'))).toBe(true)
+  })
+
+  it('the other filters ignore permissions entirely', () => {
+    const differs = row(10, { permissions: cell('entriesDiffer') })
+    expect(matchesFilter(differs, 'changes')).toBe(false)
+    expect(matchesFilter(differs, 'missing')).toBe(false)
+    expect(matchesFilter(differs, 'all')).toBe(true)
+  })
+
+  it('labels each status, with the same-name one in amber and the real ones in red', () => {
+    expect(permissionLabel(undefined)).toBeNull()
+    expect(permissionLabel(cell(null))).toBeNull()
+    expect(permissionLabel(cell('same'))).toEqual({ text: 'Same', tone: 'success' })
+    expect(permissionLabel(cell('ownerDiffers'))).toEqual({ text: 'Owner differs', tone: 'danger' })
+    expect(permissionLabel(cell('entriesDiffer'))?.tone).toBe('danger')
+    expect(permissionLabel(cell('inheritanceDiffers'))?.text).toBe('Inheritance differs')
+    expect(permissionLabel(cell('sameNameDifferentAccount'))).toEqual({
+      text: 'Same name, different account',
+      tone: 'warning',
+    })
+    expect(permissionLabel(cell('notReadable'))?.tone).toBe('warning')
+    expect(permissionLabel(cell(null, 1200))).toEqual({
+      text: '1,200 differ below',
+      tone: 'warning',
+    })
+    expect(permissionLabel(cell('same', 3))?.text).toBe('3 differ below')
+    // Its own difference wins over the count below it.
+    expect(permissionLabel(cell('entriesDiffer', 3))?.text).toBe('Entries differ')
   })
 })

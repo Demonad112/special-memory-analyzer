@@ -834,3 +834,56 @@ fn rows_with_permissions_add_one_cell_and_change_nothing_else() {
     without["permissions"] = cell;
     assert_eq!(json, without);
 }
+
+/// Windows only: two real trees, one folder's ACL changed at the destination after "copying",
+/// read with the system calls. Verified by the Windows CI job.
+#[cfg(windows)]
+#[test]
+fn windows_a_changed_acl_at_the_destination_is_found_with_the_real_reader() {
+    let world = World::new(&["a", "b"]);
+    let changed = world.right.path().join("a");
+    let status = std::process::Command::new("icacls")
+        .arg(&changed)
+        .args(["/grant", "*S-1-1-0:(OI)(CI)R"])
+        .output()
+        .expect("icacls runs");
+    assert!(status.status.success(), "{status:?}");
+
+    let state = ScanState::default();
+    let diff = compare(
+        &scan(world.left.path(), &state).unwrap(),
+        &scan(world.right.path(), &state).unwrap(),
+    );
+    let result = compare_permissions(
+        &diff,
+        world.left.path(),
+        world.right.path(),
+        &CompareOptions::default(),
+        &system_read,
+        &SidNames::default(),
+        &CancelToken::new(),
+        &Counters::default(),
+    )
+    .unwrap();
+
+    let id_of = |name: &str| {
+        (0..diff.len() as u32)
+            .find(|&id| diff.node(id).unwrap().name == name)
+            .unwrap()
+    };
+    assert_eq!(result.status(id_of("a")), Some(PermStatus::EntriesDiffer));
+    assert_eq!(result.status(id_of("b")), Some(PermStatus::Same));
+    let detail = result
+        .detail(id_of("a"))
+        .expect("the changed folder has details");
+    assert!(
+        detail.extra.iter().any(|entry| entry.sid == EVERYONE),
+        "Everyone's read entry exists only at the destination: {detail:?}"
+    );
+    assert!(detail.missing.is_empty(), "{detail:?}");
+    assert_ne!(
+        result.status(0),
+        Some(PermStatus::NotReadable),
+        "the compare roots are readable"
+    );
+}

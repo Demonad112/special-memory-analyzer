@@ -1,9 +1,14 @@
 <script setup lang="ts">
 import { CircleCheck, LoaderCircle } from '@lucide/vue'
-import type { CompareProgress } from '@/lib/compare'
-import { formatBytes, plural } from '@/lib/format'
+import type { CompareProgress, PermissionsProgress } from '@/lib/compare'
+import { formatBytes, formatCount, plural } from '@/lib/format'
 
-defineProps<{ progress: CompareProgress | null; elapsed: string }>()
+defineProps<{
+  progress: CompareProgress | null
+  elapsed: string
+  /** Set once both folders are read and the permissions pass has started. */
+  permissions?: PermissionsProgress | null
+}>()
 </script>
 
 <template>
@@ -14,10 +19,16 @@ defineProps<{ progress: CompareProgress | null; elapsed: string }>()
     <div class="flex items-center justify-between gap-4">
       <p class="flex items-center gap-2 font-semibold">
         <LoaderCircle class="size-4 animate-spin text-accent" />
-        Reading both folders…
+        {{ permissions ? 'Comparing permissions…' : 'Reading both folders…' }}
       </p>
       <p class="text-xs text-muted tabular-nums">{{ elapsed }} · Esc to cancel</p>
     </div>
+    <p
+      v-if="permissions"
+      class="mt-2 text-xs text-muted tabular-nums"
+    >
+      {{ formatCount(permissions.done) }} of {{ formatCount(permissions.total) }} items read
+    </p>
     <div class="indeterminate mt-3 h-1 overflow-hidden rounded-full bg-subtle-strong" />
     <div class="mt-3 grid grid-cols-2 gap-6">
       <div

@@ -1081,3 +1081,192 @@ fn compare_without_permissions_is_byte_identical_to_1_2_0() {
     }
     assert!(!json.contains("ermission"), "{json}");
 }
+
+fn compared_with_permissions() -> CompareReport {
+    use migrate_core::{
+        AuditStatus, EntryRow, PermDetail, PermStatus, PermissionsCompare, SameNameEntry,
+        StatusCount,
+    };
+    let entry = |account: &str, sid: &str| EntryRow {
+        account: account.into(),
+        sid: sid.into(),
+        access: "Allow".into(),
+        rights: "Modify".into(),
+        mask: 0x1301BF,
+        inherited: false,
+        applies_to: "This folder, subfolders and files".into(),
+    };
+    CompareReport {
+        source: r"C:\Data".into(),
+        destination: r"E:\Data".into(),
+        permission_mismatches: 3,
+        permissions: PermissionsCompare {
+            status: AuditStatus::Checked,
+            elevated: true,
+            destination_server: "nas2".into(),
+            folders_checked: 10,
+            files_checked: 2,
+            skipped: 1,
+            counts: vec![
+                StatusCount {
+                    status: PermStatus::EntriesDiffer,
+                    count: 2,
+                },
+                StatusCount {
+                    status: PermStatus::OwnerDiffers,
+                    count: 1,
+                },
+                StatusCount {
+                    status: PermStatus::SameNameDifferentAccount,
+                    count: 1,
+                },
+            ],
+            items: vec![
+                PermDetail {
+                    path: String::new(),
+                    dir: true,
+                    status: PermStatus::EntriesDiffer,
+                    missing: vec![entry(r"SRV\alice", "S-1-5-21-1-2-3-1001")],
+                    ..PermDetail::default()
+                },
+                PermDetail {
+                    path: "Finance".into(),
+                    dir: true,
+                    status: PermStatus::OwnerDiffers,
+                    source_owner: r"SRV\alice".into(),
+                    destination_owner: "S-1-5-18".into(),
+                    ..PermDetail::default()
+                },
+                PermDetail {
+                    path: "=cmd.xlsx".into(),
+                    dir: false,
+                    status: PermStatus::SameNameDifferentAccount,
+                    same_name: vec![SameNameEntry {
+                        source: entry(r"OLD\bob", "S-1-5-21-1-2-3-1002"),
+                        destination: entry(r"NEW\bob", "S-1-5-21-4-5-6-1002"),
+                    }],
+                    ..PermDetail::default()
+                },
+            ],
+            items_truncated: true,
+            ..PermissionsCompare::default()
+        },
+        ..CompareReport::default()
+    }
+}
+
+#[test]
+fn a_compare_with_permissions_lists_the_differences_and_exports_a_csv() {
+    let report = compared_with_permissions();
+    let saved = saved(Body::Compare(report));
+    let row = entry(&saved);
+    assert!(
+        row.problem,
+        "a permission mismatch is a problem even with nothing missing"
+    );
+    assert_eq!(row.headline, "Nothing missing · 3 permissions differ");
+    let doc = document(&saved);
+    assert_eq!(doc.verdict, Some(Verdict::Bad));
+    // The size table stays first, so the default CSV is the one 1.2.0 wrote.
+    assert_eq!(doc.tables[0].heading, "Missing at destination");
+    let table = &doc.tables[1];
+    assert_eq!(table.heading, "Permission differences");
+    assert_eq!(table.rows.len(), 3);
+    assert_eq!(table.rows[0][0], "(the source folder)");
+    assert_eq!(table.rows[1][0], r"Finance\");
+    assert_eq!(table.rows[1][1], "Owner differs");
+    assert_eq!(table.rows[1][2], r"Owner: SRV\alice → S-1-5-18");
+    assert_eq!(table.rows[2][1], "Same name, different account");
+    assert_eq!(
+        table.row_tone.as_ref().unwrap(),
+        &vec![Tone::Bad, Tone::Bad, Tone::Warn],
+        "amber for the same-name row only"
+    );
+    assert!(table.footnote.starts_with("The first 3 of 4 are listed."));
+    let permissions_tile = doc.tiles.last().unwrap();
+    assert_eq!(permissions_tile.label, "Permissions");
+    assert_eq!(permissions_tile.tone, Tone::Bad);
+    let note = doc.notes.last().unwrap();
+    assert!(note.contains("10 folder pairs"), "{note}");
+    assert!(note.contains("Compared as administrator."), "{note}");
+    assert!(note.contains("looked up on nas2"), "{note}");
+    assert!(note.contains("counts cover all 4"), "{note}");
+
+    let csv = doc.csv_layout_with(Some("permissions"), false).unwrap();
+    let lines: Vec<&str> = csv.trim_start_matches('\u{feff}').split("\r\n").collect();
+    assert!(lines[0].starts_with("Path,Item,Status,Source owner"));
+    // Entry rows, plus a row for the owner difference that has no entry to show.
+    assert!(csv.contains("Missing at the destination"));
+    assert!(csv.contains("S-1-5-21-1-2-3-1001"));
+    assert!(csv.contains("Source (same name, different account)"));
+    assert!(csv.contains("Destination (same name, different account)"));
+    assert!(csv.contains("S-1-5-18"));
+    assert!(csv.contains("0x001301BF"));
+    // A hostile name is defused like every other CSV cell.
+    assert!(csv.contains("'=cmd.xlsx"), "{csv}");
+    assert!(doc.csv_layout_with(Some("nonsense"), false).is_err());
+}
+
+#[test]
+fn the_permissions_tile_is_amber_when_only_same_name_accounts_differ() {
+    use migrate_core::{AuditStatus, PermStatus, PermissionsCompare, StatusCount};
+    let report = CompareReport {
+        permissions: PermissionsCompare {
+            status: AuditStatus::Checked,
+            counts: vec![StatusCount {
+                status: PermStatus::SameNameDifferentAccount,
+                count: 5,
+            }],
+            ..PermissionsCompare::default()
+        },
+        ..CompareReport::default()
+    };
+    let saved = saved(Body::Compare(report));
+    let doc = document(&saved);
+    assert_eq!(doc.verdict, Some(Verdict::Good), "amber is not a failure");
+    assert_eq!(doc.tiles.last().unwrap().tone, Tone::Warn);
+    assert!(!entry(&saved).problem);
+}
+
+#[test]
+fn a_compare_that_could_not_read_permissions_says_so() {
+    use migrate_core::{AuditStatus, PermissionsCompare};
+    let report = CompareReport {
+        permissions: PermissionsCompare {
+            status: AuditStatus::NotSupported,
+            ..PermissionsCompare::default()
+        },
+        ..CompareReport::default()
+    };
+    let doc = document(&saved(Body::Compare(report)));
+    assert_eq!(doc.tiles.last().unwrap().value, "Not compared");
+    assert!(doc
+        .notes
+        .last()
+        .unwrap()
+        .contains("not compared on this system"));
+    assert!(doc.csv_layout_with(Some("permissions"), false).is_err() || doc.csv_layouts.is_empty());
+}
+
+#[test]
+fn saved_permissions_read_back_and_older_reports_load_as_off() {
+    let report = compared_with_permissions();
+    let text = serde_json::to_string(&Body::Compare(report.clone())).unwrap();
+    assert!(text.contains("\"permissionMismatches\":3"));
+    // The count is written ahead of the long lists, so the Reports page can stop before them.
+    assert!(text.find("permissionMismatches").unwrap() < text.find("missingPaths").unwrap());
+    let Body::Compare(again) = serde_json::from_str::<Body>(&text).unwrap() else {
+        panic!("a compare")
+    };
+    assert_eq!(again, report);
+    // 1.2.0's report has neither field.
+    let old = r#"{"source":"C:\\A","destination":"D:\\B","missing":1}"#;
+    let loaded: CompareReport = serde_json::from_str(old).unwrap();
+    assert!(loaded.permissions.is_off());
+    assert_eq!(loaded.permission_mismatches, 0);
+    // A status written by a newer version loads without failing the report.
+    let newer =
+        r#"{"permissions":{"status":"somethingNewer","counts":[{"status":"alsoNew","count":2}]}}"#;
+    let loaded: CompareReport = serde_json::from_str(newer).unwrap();
+    assert_eq!(loaded.permissions.status, migrate_core::AuditStatus::Other);
+}

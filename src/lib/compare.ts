@@ -186,6 +186,37 @@ export async function startCompare(
   )
 }
 
+/** What differs on one item's permissions, as the backend keeps it (the report's item shape). */
+export interface PermissionEntry {
+  account: string
+  sid: string
+  access: string
+  rights: string
+  mask: number
+  inherited: boolean
+  appliesTo: string
+}
+
+export interface PermissionDetail {
+  path: string
+  dir: boolean
+  status: PermStatus
+  sourceOwner: string
+  destinationOwner: string
+  sourceProtected: boolean
+  destinationProtected: boolean
+  note: string
+  error: string
+  missing: PermissionEntry[]
+  extra: PermissionEntry[]
+  sameName: { source: PermissionEntry; destination: PermissionEntry }[]
+}
+
+/** What differs on one row's permissions; null when the report limit left its details out. */
+export function loadPermissionDetail(id: number): Promise<PermissionDetail | null> {
+  return invoke<PermissionDetail | null>('compare_permission_detail', { id })
+}
+
 /** Rows below one folder of the last compare. */
 export function loadChildren(id: number): Promise<DiffRow[]> {
   return invoke<DiffRow[]>('compare_children', { id })
@@ -358,6 +389,8 @@ export function rememberRecent(pair: ComparePaths): ComparePaths[] {
 export const compareJob = shallowReactive({
   running: false,
   progress: null as CompareProgress | null,
+  /** Set while the permissions pass runs, after both folders are read. */
+  permissionsProgress: null as PermissionsProgress | null,
   result: null as CompareResult | null,
   compared: { left: '', right: '' } as ComparePaths,
   finishedAt: null as Date | null,
@@ -374,6 +407,7 @@ export async function runCompareJob(
   left: string,
   right: string,
   ignoreJunk: boolean,
+  comparePermissions = false,
 ): Promise<void> {
   if (compareJob.running) {
     return
@@ -383,6 +417,7 @@ export async function runCompareJob(
     error: '',
     notice: '',
     progress: null,
+    permissionsProgress: null,
     result: null,
     children: new Map(),
     expanded: new Set(),
@@ -390,9 +425,18 @@ export async function runCompareJob(
     startedAt: Date.now(),
   })
   try {
-    const result = await startCompare(left, right, ignoreJunk, (update) => {
-      compareJob.progress = update
-    })
+    const result = await startCompare(
+      left,
+      right,
+      ignoreJunk,
+      (update) => {
+        compareJob.progress = update
+      },
+      comparePermissions,
+      (update) => {
+        compareJob.permissionsProgress = update
+      },
+    )
     Object.assign(compareJob, {
       result,
       compared: { left, right },
@@ -408,6 +452,7 @@ export async function runCompareJob(
     }
   } finally {
     compareJob.running = false
+    compareJob.permissionsProgress = null
   }
 }
 

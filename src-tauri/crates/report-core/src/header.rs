@@ -44,6 +44,7 @@ pub(crate) struct CompareHeader {
     pub destination: String,
     pub missing: u64,
     pub missing_bytes: u64,
+    pub permission_mismatches: u64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -117,6 +118,7 @@ impl Header {
                 destination: report.destination.clone(),
                 missing: report.missing,
                 missing_bytes: report.missing_bytes,
+                permission_mismatches: report.permission_mismatches,
             }),
             Body::DiskUsage(report) => BodyHeader::DiskUsage(UsageHeader {
                 path: report.path.clone(),
@@ -364,6 +366,11 @@ impl<'de> Visitor<'de> for DataSeed<'_> {
                     head.missing_bytes = map.next_value()?;
                     0b1000
                 }
+                // Written ahead of the long lists, and only when there are any.
+                (true, "permissionMismatches") => {
+                    head.permission_mismatches = map.next_value()?;
+                    0
+                }
                 (false, "path") => {
                     usage.path = map.next_value()?;
                     0b001
@@ -429,6 +436,24 @@ mod tests {
         let row = header_entry(read_text(&compare).unwrap());
         assert_eq!(row.subject, "S → D");
         assert!(row.problem);
+    }
+
+    #[test]
+    fn permission_mismatches_reach_the_row_without_reading_the_big_lists() {
+        // Nothing missing, but the permissions differ: still a problem, read from the header.
+        let text = format!(
+            r#"{{{ENVELOPE},"body":{{"kind":"compare","data":{{"source":"S","destination":"D","missing":0,"missingBytes":0,"elapsedMs":4,"permissionMismatches":3,"missingPaths":[],"permissions":{{"status":"checked","items":[{{"pa"#
+        );
+        let row = header_entry(read_text(&text).unwrap());
+        assert!(row.problem);
+        assert_eq!(row.headline, "Nothing missing · 3 permissions differ");
+        // A report from before the option has no such key and reads as before.
+        let old = format!(
+            r#"{{{ENVELOPE},"body":{{"kind":"compare","data":{{"source":"S","destination":"D","missing":0,"missingBytes":0,"missingPaths":[]}}}}}}"#
+        );
+        let row = header_entry(read_text(&old).unwrap());
+        assert!(!row.problem);
+        assert_eq!(row.headline, "Nothing missing");
     }
 
     #[test]
