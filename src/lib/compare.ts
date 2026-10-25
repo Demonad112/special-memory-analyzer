@@ -118,6 +118,8 @@ export interface PermissionsSummary {
   elevated: boolean
   sourceServer: string
   destinationServer: string
+  /** Said when a mapped drive's server could not be found, so names were asked of this PC. */
+  serverNote?: string
   foldersChecked: number
   filesChecked: number
   skipped: number

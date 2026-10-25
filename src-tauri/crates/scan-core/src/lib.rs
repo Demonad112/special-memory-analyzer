@@ -20,6 +20,6 @@ pub use names::{
     is_valid_windows_name, name_issues, os_name_issues, path_length_issue, NameIssue,
     TargetProfile, LONG_PATH_LIMIT,
 };
-pub use paths::{canonical_root, check_pair, clean_path, strip_verbatim};
+pub use paths::{canonical_root, canonical_scan_root, check_pair, clean_path, strip_verbatim};
 pub use portable::{data_dir_in, portable_data_dir, PORTABLE_MARKER};
 pub use scan::{scan, CancelToken, Kind, Node, NodeId, ScanError, ScanProgress, ScanState, Tree};

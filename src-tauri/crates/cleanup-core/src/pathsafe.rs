@@ -65,11 +65,12 @@ pub fn is_network_path_with(path: &str, drive_type: &dyn Fn(char) -> Option<u32>
 
 /// The real [`is_network_path_with`]: asks Windows what kind of drive the letter is.
 pub fn is_network_path(path: &Path) -> bool {
-    is_network_path_with(&path.to_string_lossy(), &|letter| drive_type_of(letter))
+    is_network_path_with(&path.to_string_lossy(), &drive_type_of)
 }
 
+/// `GetDriveTypeW` for a drive letter; `None` off Windows.
 #[cfg(windows)]
-fn drive_type_of(letter: char) -> Option<u32> {
+pub fn drive_type_of(letter: char) -> Option<u32> {
     #[link(name = "kernel32")]
     extern "system" {
         fn GetDriveTypeW(root: *const u16) -> u32;
@@ -80,7 +81,7 @@ fn drive_type_of(letter: char) -> Option<u32> {
 }
 
 #[cfg(not(windows))]
-fn drive_type_of(_letter: char) -> Option<u32> {
+pub fn drive_type_of(_letter: char) -> Option<u32> {
     None
 }
 

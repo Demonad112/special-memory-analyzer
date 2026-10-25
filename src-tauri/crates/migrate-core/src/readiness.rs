@@ -45,6 +45,11 @@ pub struct Options {
     pub every_file: bool,
     /// The check runs as administrator; only recorded in the report. The command sets it.
     pub elevated: bool,
+    /// The server to ask for account names, found by the command from the source path (a
+    /// `\\server\share` path or a mapped network drive). Whatever the webview sends is replaced.
+    pub server: Option<String>,
+    /// Said when a mapped drive's server could not be found, so names were asked of this PC.
+    pub server_note: String,
 }
 
 impl Default for Options {
@@ -56,6 +61,8 @@ impl Default for Options {
             check_permissions: true,
             every_file: false,
             elevated: false,
+            server: None,
+            server_note: String::new(),
         }
     }
 }
@@ -531,7 +538,10 @@ fn permissions_pass(
 ) -> Result<PermissionsReport, ScanError> {
     let audit_options = AuditOptions {
         every_file: options.every_file,
-        server: acl_audit::server_of(&tree.path(0).to_string_lossy()),
+        server: options
+            .server
+            .clone()
+            .or_else(|| acl_audit::server_of(&tree.path(0).to_string_lossy())),
     };
     if !probes.supported {
         return Ok(PermissionsReport {
@@ -548,7 +558,9 @@ fn permissions_pass(
         &state.cancel,
         &state.permissions,
     )?;
-    Ok(audit.into_report(&audit_options, options.elevated, true))
+    let mut report = audit.into_report(&audit_options, options.elevated, true);
+    report.server_note = options.server_note.clone();
+    Ok(report)
 }
 
 /// Files the in-use pass may open: never a link, an online-only file (that would download it) or
@@ -1325,6 +1337,63 @@ mod tests {
         };
         let state = ReadinessState::new(CancelToken::new());
         run_with(root, options, &state, &probes).unwrap()
+    }
+
+    #[test]
+    fn account_names_are_asked_of_the_server_the_command_found() {
+        use scan_core::security::{Account, Descriptor, What};
+        use std::sync::Mutex;
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("a.txt"), b"x").unwrap();
+        let read = |_: &Path, _: What| -> std::io::Result<Descriptor> {
+            Ok(Descriptor {
+                owner: Some("S-1-5-21-1-2-3-1001".into()),
+                protected: false,
+                null_dacl: false,
+                aces: Vec::new(),
+                sddl: None,
+            })
+        };
+        let asked: std::sync::Arc<Mutex<Vec<Option<String>>>> = Default::default();
+        let seen = asked.clone();
+        let names = SidNames::with_resolver(move |_, server| {
+            seen.lock().unwrap().push(server.map(str::to_owned));
+            Account::NotFound
+        });
+        let fake = Fake::new();
+        let probe = |path: &Path| fake.probe(path);
+        let probes = Probes {
+            supported: true,
+            probe: &probe,
+            holders: &outlook,
+            cap: HOLDER_CAP,
+            deadline: HOLDER_DEADLINE,
+            read: &read,
+            names: &names,
+        };
+        // A mapped drive the command resolved: the local path says nothing, the options do.
+        let options = Options {
+            server: Some("fs01".into()),
+            server_note: "Drive Z: note".into(),
+            ..Options::default()
+        };
+        let state = ReadinessState::new(CancelToken::new());
+        let result = run_with(temp.path(), &options, &state, &probes).unwrap();
+        let permissions = &result.report().permissions;
+        assert_eq!(permissions.server, "fs01");
+        assert_eq!(permissions.server_note, "Drive Z: note");
+        let asked = asked.lock().unwrap();
+        assert!(!asked.is_empty());
+        assert!(asked.iter().all(|server| server.as_deref() == Some("fs01")));
+    }
+
+    #[test]
+    fn the_server_fields_load_from_older_options_and_reports() {
+        let options: Options = serde_json::from_str(r#"{"checkInUse":false}"#).unwrap();
+        assert_eq!(options.server, None);
+        assert_eq!(options.server_note, "");
+        let report: PermissionsReport = serde_json::from_str("{}").unwrap();
+        assert_eq!(report.server_note, "");
     }
 
     #[test]

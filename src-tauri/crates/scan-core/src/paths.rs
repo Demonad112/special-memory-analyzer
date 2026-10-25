@@ -38,18 +38,36 @@ pub fn check_pair(left: &Path, right: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The folder to scan or delete in, in one canonical form: symlinks, 8.3 short names and `subst`
+/// The folder to delete in (or to check against the never-delete list), in one canonical form: symlinks, 8.3 short names and `subst`
 /// drives resolved, the `\\?\` prefix gone. Refuses roots that reach the local machine by another
 /// name (`\\localhost\c$`, `\\?\GLOBALROOT`, `\\?\Volume{...}`), which a path-prefix check
 /// against `C:\Windows` would never match. A path that does not resolve is an error, so callers
 /// refuse to delete rather than guess.
 pub fn canonical_root(path: &Path) -> Result<PathBuf, String> {
+    canonical(path, Aliases::Refuse)
+}
+
+/// [`canonical_root`] for a folder that is only read (a scan, a readiness check). It still
+/// refuses device paths, but accepts this PC's own admin shares (`\\localhost\C$\Users`): they
+/// are network paths, so Disk Cleanup can never delete through them (`bulk::run` refuses), and
+/// the never-delete list is not what protects them.
+pub fn canonical_scan_root(path: &Path) -> Result<PathBuf, String> {
+    canonical(path, Aliases::AllowLocalShares)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Aliases {
+    Refuse,
+    AllowLocalShares,
+}
+
+fn canonical(path: &Path, aliases: Aliases) -> Result<PathBuf, String> {
     let computer = std::env::var("COMPUTERNAME").ok();
-    refuse_alias(&path.to_string_lossy(), computer.as_deref())?;
+    refuse_alias(&path.to_string_lossy(), computer.as_deref(), aliases)?;
     let resolved = fs::canonicalize(path)
         .map_err(|err| format!("Can't resolve {}: {err}", path.to_string_lossy()))?;
     let text = resolved.to_string_lossy();
-    refuse_alias(&text, computer.as_deref())?;
+    refuse_alias(&text, computer.as_deref(), aliases)?;
     Ok(PathBuf::from(strip_verbatim(&text)))
 }
 
@@ -67,7 +85,7 @@ pub fn strip_verbatim(path: &str) -> String {
 const REFUSED_ROOT: &str = "This folder is reached through a name that hides where it really is (a local network share, a volume GUID or a device path). Pick it by its drive letter, for example C:\\Users.";
 
 /// Rejects spellings of the local disk that do not match a protected folder by name.
-fn refuse_alias(path: &str, computer: Option<&str>) -> Result<(), String> {
+fn refuse_alias(path: &str, computer: Option<&str>, aliases: Aliases) -> Result<(), String> {
     let lower = path.trim().replace('/', "\\").to_lowercase();
     if lower.starts_with(r"\\?\globalroot") || lower.starts_with(r"\\?\volume{") {
         return Err(REFUSED_ROOT.into());
@@ -80,6 +98,9 @@ fn refuse_alias(path: &str, computer: Option<&str>) -> Result<(), String> {
     let Some(unc) = unc else {
         return Ok(());
     };
+    if aliases == Aliases::AllowLocalShares {
+        return Ok(());
+    }
     let host = unc.split('\\').next().unwrap_or_default();
     let own = computer.map(str::to_lowercase);
     let local = matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]" | ".")
@@ -94,6 +115,34 @@ fn refuse_alias(path: &str, computer: Option<&str>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_local_admin_share_is_refused_as_a_root_but_not_as_a_scan_root() {
+        for path in [
+            r"\\localhost\c$\Windows",
+            r"\\LOCALHOST\C$\Users\Public",
+            r"\\127.0.0.1\c$",
+            r"\\?\UNC\localhost\c$\x",
+            r"\\MYPC\c$\x",
+        ] {
+            let err = refuse_alias(path, Some("MYPC"), Aliases::Refuse).unwrap_err();
+            assert!(err.contains("hides where it really is"), "{path}");
+            assert!(
+                refuse_alias(path, Some("MYPC"), Aliases::AllowLocalShares).is_ok(),
+                "{path}"
+            );
+        }
+        // Another server is fine either way.
+        assert!(refuse_alias(r"\\fs01\C$\x", Some("MYPC"), Aliases::Refuse).is_ok());
+    }
+
+    #[test]
+    fn device_paths_are_refused_even_for_a_scan_root() {
+        for path in [r"\\?\GLOBALROOT\Device\x", r"\\?\Volume{1234}\x"] {
+            assert!(refuse_alias(path, None, Aliases::AllowLocalShares).is_err());
+            assert!(refuse_alias(path, None, Aliases::Refuse).is_err());
+        }
+    }
 
     #[test]
     fn strips_spaces_and_copy_as_path_quotes() {
@@ -146,7 +195,10 @@ mod tests {
             r"\\SERVER01\c$\Windows",
         ] {
             let computer = Some("server01");
-            assert!(refuse_alias(path, computer).is_err(), "{path}");
+            assert!(
+                refuse_alias(path, computer, Aliases::Refuse).is_err(),
+                "{path}"
+            );
         }
         for path in [
             r"C:\Windows",
@@ -154,7 +206,10 @@ mod tests {
             r"\\fileserver\share\x",
             r"\\?\UNC\fileserver\share",
         ] {
-            assert!(refuse_alias(path, Some("server01")).is_ok(), "{path}");
+            assert!(
+                refuse_alias(path, Some("server01"), Aliases::Refuse).is_ok(),
+                "{path}"
+            );
         }
     }
 

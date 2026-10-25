@@ -27,6 +27,8 @@ import JobFields from '@/components/JobFields.vue'
 import JunkPanel from '@/components/JunkPanel.vue'
 import OwnersPanel from '@/components/OwnersPanel.vue'
 import PathField from '@/components/PathField.vue'
+import ShareSignIn from '@/components/ShareSignIn.vue'
+import { needsSignIn } from '@/lib/servers'
 import QuickWins from '@/components/QuickWins.vue'
 import RestoreLast from '@/components/RestoreLast.vue'
 import StalePanel from '@/components/StalePanel.vue'
@@ -422,6 +424,10 @@ onBeforeUnmount(() => {
       <TriangleAlert class="mt-0.5 size-4 shrink-0" />
       {{ job.error }}
     </p>
+    <ShareSignIn
+      :paths="[folderInput, job.path]"
+      :open="needsSignIn(job.error)"
+    />
     <p
       v-if="job.notice"
       class="mb-4 flex items-center gap-2 text-[13px] text-muted"

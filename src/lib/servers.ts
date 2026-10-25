@@ -141,6 +141,11 @@ export function sharePath(server: string, share: string): string {
   return `\\\\${serverName(server)}\\${share}`
 }
 
+/** True for an error message that a sign-in to the share could fix (access denied, bad logon). */
+export function needsSignIn(message: string): boolean {
+  return /access is denied|os error (5|1326|1219)\b|logon failure|access denied/i.test(message)
+}
+
 /** A share every Windows server has, to sign in to before listing: `\\server\IPC$`. */
 export function signInShare(server: string): string {
   return sharePath(server, 'IPC$')

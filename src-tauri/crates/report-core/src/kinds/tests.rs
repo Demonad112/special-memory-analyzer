@@ -1105,6 +1105,7 @@ fn compared_with_permissions() -> CompareReport {
             status: AuditStatus::Checked,
             elevated: true,
             destination_server: "nas2".into(),
+            server_note: "Drive Y: is a network drive, so names came from this PC.".into(),
             folders_checked: 10,
             files_checked: 2,
             skipped: 1,
@@ -1191,6 +1192,7 @@ fn a_compare_with_permissions_lists_the_differences_and_exports_a_csv() {
     assert!(note.contains("10 folder pairs"), "{note}");
     assert!(note.contains("Compared as administrator."), "{note}");
     assert!(note.contains("looked up on nas2"), "{note}");
+    assert!(note.contains("Drive Y: is a network drive"), "{note}");
     assert!(note.contains("counts cover all 4"), "{note}");
 
     let csv = doc.csv_layout_with(Some("permissions"), false).unwrap();

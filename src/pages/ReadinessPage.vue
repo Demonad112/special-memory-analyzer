@@ -17,6 +17,8 @@ import JobFields from '@/components/JobFields.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PermissionsPanel from '@/components/PermissionsPanel.vue'
 import PathField from '@/components/PathField.vue'
+import ShareSignIn from '@/components/ShareSignIn.vue'
+import { needsSignIn } from '@/lib/servers'
 import { cleanPath, pickFolder } from '@/lib/compare'
 import { errorMessage } from '@/lib/errors'
 import { formatBytes, plural } from '@/lib/format'
@@ -285,6 +287,10 @@ function rowIcon(row: ReadinessRow): typeof File {
       <TriangleAlert class="mt-0.5 size-4 shrink-0" />
       {{ readinessJob.error }}
     </p>
+    <ShareSignIn
+      :paths="[form.path, form.destination]"
+      :open="needsSignIn(readinessJob.error)"
+    />
     <p
       v-if="readinessJob.notice"
       class="mt-4 flex items-center gap-2 text-[13px] text-muted"

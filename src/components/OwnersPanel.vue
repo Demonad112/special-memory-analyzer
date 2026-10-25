@@ -220,6 +220,8 @@ defineExpose({ reload })
       <p class="mt-2 text-xs text-muted">
         {{ formatBytes(table.totalDisk) }} in {{ plural(table.totalFiles, 'file') }}. Online-only
         cloud files are listed with their owner but take no space here.
+        <template v-if="table.server">Names were asked of {{ table.server }}.</template>
+        {{ table.note }}
       </p>
     </template>
   </section>

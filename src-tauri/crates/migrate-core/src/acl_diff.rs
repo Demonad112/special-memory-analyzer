@@ -346,6 +346,8 @@ pub struct PermissionsCompare {
     /// Account names were asked of these servers (empty: this PC).
     pub source_server: String,
     pub destination_server: String,
+    /// Said when a mapped drive's server could not be found, so names were asked of this PC.
+    pub server_note: String,
     /// Folder pairs and file pairs (with an entry of their own on either side) compared.
     pub folders_checked: u64,
     pub files_checked: u64,
@@ -446,6 +448,12 @@ impl PermissionsResult {
         self.report.elevated = elevated;
         self.report.source_server = source_server.unwrap_or_default().to_owned();
         self.report.destination_server = destination_server.unwrap_or_default().to_owned();
+        self
+    }
+
+    /// The same result with a note about where the account names came from.
+    pub fn with_note(mut self, note: &str) -> Self {
+        self.report.server_note = note.to_owned();
         self
     }
 
@@ -911,6 +919,7 @@ pub fn compare_permissions_with_limit(
             elevated: false,
             source_server: String::new(),
             destination_server: String::new(),
+            server_note: String::new(),
             folders_checked: merged.folders_checked,
             files_checked: merged.files_checked,
             skipped,

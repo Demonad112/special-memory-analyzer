@@ -199,6 +199,8 @@ pub struct PermissionsReport {
     pub elevated: bool,
     /// Account names were asked of this server (empty: this PC).
     pub server: String,
+    /// Said when a mapped drive's server could not be found, so names were asked of this PC.
+    pub server_note: String,
     pub folders_read: u64,
     pub files_read: u64,
     /// Items not read: links and online-only files, and names that are not valid Unicode.
@@ -643,6 +645,7 @@ impl Audit {
             every_file: options.every_file,
             elevated,
             server: options.server.clone().unwrap_or_default(),
+            server_note: String::new(),
             folders_read: self.folders_read,
             files_read: self.files_read,
             skipped: self.skipped,

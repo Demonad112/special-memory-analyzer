@@ -163,3 +163,14 @@ describe('share listing', () => {
     expect(await lister('fs01')).toEqual(answer('fs01'))
   })
 })
+
+describe('sign-in errors', () => {
+  it('recognises the errors a share sign-in can fix', async () => {
+    const { needsSignIn } = await import('./servers')
+    expect(needsSignIn('Access is denied. (os error 5)')).toBe(true)
+    expect(needsSignIn('Access denied for that account.')).toBe(true)
+    expect(needsSignIn('The user name or password is wrong. (os error 1326)')).toBe(true)
+    expect(needsSignIn('The system cannot find the path specified. (os error 3)')).toBe(false)
+    expect(needsSignIn('')).toBe(false)
+  })
+})

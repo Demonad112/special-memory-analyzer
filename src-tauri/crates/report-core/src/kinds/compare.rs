@@ -164,6 +164,10 @@ fn permissions_note(permissions: &PermissionsCompare) -> String {
             note.push_str(&format!(" Names on the {side} were looked up on {server}."));
         }
     }
+    if !permissions.server_note.is_empty() {
+        note.push(' ');
+        note.push_str(&permissions.server_note);
+    }
     if permissions.skipped > 0 {
         note.push_str(&format!(
             " {} (links, online-only files and unusual names) were not read.",

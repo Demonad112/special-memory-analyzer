@@ -50,6 +50,10 @@ pub struct Owner {
 pub struct OwnerIndex {
     pub owners: Vec<Owner>,
     of: Vec<u32>,
+    /// The server the account names were asked of (empty: this PC).
+    pub server: String,
+    /// Said when names could not be asked of the right server; set by the caller.
+    pub note: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -83,6 +87,10 @@ pub struct OwnerTable {
     pub total_files: u64,
     /// Most space first. Owners with no live file left are omitted.
     pub rows: Vec<OwnerRow>,
+    /// Account names were asked of this server (empty: this PC).
+    pub server: String,
+    /// Said when the names could not be asked of the right server.
+    pub note: String,
 }
 
 /// Counters the pass updates and the command reads every 100 ms.
@@ -171,6 +179,7 @@ pub fn read_all(
     paths: &(dyn Fn(&[NodeId]) -> Vec<Option<PathBuf>> + Sync),
     read: &(dyn Fn(&Path) -> io::Result<Option<String>> + Sync),
     names: &SidNames,
+    server: Option<&str>,
     cancel: &CancelToken,
     counters: &Counters,
 ) -> Option<OwnerIndex> {
@@ -223,7 +232,7 @@ pub fn read_all(
         let index = match sid {
             None => UNREADABLE,
             Some(sid) => *by_sid.entry(sid.to_ascii_uppercase()).or_insert_with(|| {
-                let account = names.lookup(&sid, None);
+                let account = names.lookup(&sid, server);
                 owners.push(Owner {
                     name: account.display(&sid),
                     kind: match account {
@@ -237,7 +246,12 @@ pub fn read_all(
         };
         of[id as usize] = index;
     }
-    Some(OwnerIndex { owners, of })
+    Some(OwnerIndex {
+        owners,
+        of,
+        server: server.unwrap_or_default().to_owned(),
+        note: String::new(),
+    })
 }
 
 impl OwnerIndex {
@@ -250,7 +264,11 @@ impl OwnerIndex {
         // Per owner: files, disk, and disk per first-level folder.
         let mut sums: Vec<(u64, u64, HashMap<NodeId, u64>)> =
             self.owners.iter().map(|_| (0, 0, HashMap::new())).collect();
-        let mut table = OwnerTable::default();
+        let mut table = OwnerTable {
+            server: self.server.clone(),
+            note: self.note.clone(),
+            ..OwnerTable::default()
+        };
         // (folder, the first-level folder it is under)
         let mut stack = vec![(0, 0)];
         while let Some((at, group)) = stack.pop() {
@@ -427,7 +445,7 @@ mod tests {
                 .map(|&id| (!tree.node(id).lossy_name).then(|| tree.path(id)))
                 .collect()
         };
-        read_all(&collect(tree), &paths, read, names, cancel, counters)
+        read_all(&collect(tree), &paths, read, names, None, cancel, counters)
     }
 
     fn put(root: &Path, name: &str, len: usize) {
@@ -468,6 +486,44 @@ mod tests {
             .iter()
             .find(|row| row.name == name)
             .unwrap_or_else(|| panic!("no row {name}: {:?}", table.rows))
+    }
+
+    #[test]
+    fn names_are_asked_of_the_server_the_caller_names() {
+        use std::sync::Mutex;
+        let temp = tempfile::tempdir().unwrap();
+        put(temp.path(), "alice-1.bin", 100);
+        let tree = scan(temp.path(), &ScanState::default()).unwrap();
+        let asked: std::sync::Arc<Mutex<Vec<Option<String>>>> = Default::default();
+        let seen = asked.clone();
+        let names = SidNames::with_resolver(move |_, server| {
+            seen.lock().unwrap().push(server.map(str::to_owned));
+            Account::Found {
+                name: "alice".into(),
+                domain: "FS01".into(),
+            }
+        });
+        let paths = |ids: &[NodeId]| -> Vec<Option<PathBuf>> {
+            ids.iter().map(|&id| Some(tree.path(id))).collect()
+        };
+        let index = read_all(
+            &collect(&tree),
+            &paths,
+            &reader,
+            &names,
+            Some("fs01"),
+            &CancelToken::default(),
+            &Counters::default(),
+        )
+        .unwrap();
+        assert_eq!(*asked.lock().unwrap(), [Some("fs01".to_string())]);
+        let table = index.table(&tree);
+        assert_eq!(table.server, "fs01");
+        assert_eq!(table.rows[0].name, "FS01\\alice");
+
+        // This PC: no server, and an empty name in the table.
+        let (_temp, tree, index) = tree_and_index();
+        assert_eq!(index.table(&tree).server, "");
     }
 
     #[test]

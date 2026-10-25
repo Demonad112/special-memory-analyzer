@@ -1,7 +1,8 @@
 //! Compare commands: scan both folders in parallel, stream progress over a channel, keep the
 //! result in memory and hand it to the UI one folder level at a time.
 
-use migrate_core::acl_audit::{server_of, Counters};
+use crate::netpath::{names_from, NamesFrom};
+use migrate_core::acl_audit::Counters;
 use migrate_core::acl_diff::system_read;
 use migrate_core::{
     compare_permissions, compare_rows as rows, CompareOptions, CompareRow, PermDetail,
@@ -299,6 +300,7 @@ fn read_permissions(
         cancel,
         cleanup_core::is_elevated(),
         &system_read,
+        &names_from,
         &|done, total| {
             // A closed channel (page left) is not an error; the pass still finishes.
             let _ = on_event.send(CompareEvent::Permissions { done, total });
@@ -310,6 +312,7 @@ type Reader<'a> = dyn Fn(&Path, What) -> io::Result<Descriptor> + Sync + 'a;
 
 /// [`read_permissions`] with the system read and the progress sink handed in, so it is tested
 /// everywhere.
+#[allow(clippy::too_many_arguments)]
 fn pass(
     diff: &DiffTree,
     left: &Path,
@@ -317,11 +320,18 @@ fn pass(
     cancel: &CancelToken,
     elevated: bool,
     read: &Reader,
+    names_of: &dyn Fn(&Path) -> NamesFrom,
     progress: &(dyn Fn(u64, u64) + Sync),
 ) -> Result<PermissionsResult, String> {
-    // Each side's names are asked of its own server (D-07).
-    let source_server = server_of(&left.to_string_lossy());
-    let destination_server = server_of(&right.to_string_lossy());
+    // Each side's names are asked of its own server (D-07), a mapped drive's included.
+    let source = names_of(left);
+    let destination = names_of(right);
+    let (source_server, destination_server) = (source.server, destination.server);
+    let note = [source.note, destination.note]
+        .into_iter()
+        .filter(|note| !note.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
     let options = CompareOptions {
         source_server: source_server.clone(),
         destination_server: destination_server.clone(),
@@ -349,11 +359,13 @@ fn pass(
         Err(_) => Err("The permissions check stopped unexpectedly.".to_string()),
         Ok(Err(ScanError::Cancelled)) => Err(CANCELLED.to_string()),
         Ok(Err(err)) => Err(err.to_string()),
-        Ok(Ok(result)) => Ok(result.with_context(
-            elevated,
-            source_server.as_deref(),
-            destination_server.as_deref(),
-        )),
+        Ok(Ok(result)) => Ok(result
+            .with_context(
+                elevated,
+                source_server.as_deref(),
+                destination_server.as_deref(),
+            )
+            .with_note(&note)),
     }
 }
 
@@ -536,6 +548,7 @@ mod tests {
             &CancelToken::new(),
             false,
             &read,
+            &names_from,
             &|_, _| {},
         )
         .unwrap();
@@ -585,6 +598,7 @@ mod tests {
             &CancelToken::new(),
             true,
             &read,
+            &names_from,
             &|done, total| *last.lock().unwrap() = (done, total),
         )
         .unwrap();
@@ -600,7 +614,52 @@ mod tests {
         let read = |_: &Path, _: What| -> io::Result<Descriptor> { Ok(descriptor("S-1-5-18")) };
         let cancel = CancelToken::new();
         cancel.cancel();
-        let err = pass(&diff, &left, &right, &cancel, false, &read, &|_, _| {}).unwrap_err();
+        let err = pass(
+            &diff,
+            &left,
+            &right,
+            &cancel,
+            false,
+            &read,
+            &names_from,
+            &|_, _| {},
+        )
+        .unwrap_err();
         assert_eq!(err, CANCELLED);
+    }
+
+    #[test]
+    fn each_side_asks_the_server_its_path_or_mapped_drive_points_at() {
+        let (left, right, diff) = two_trees("mapped");
+        let read = |_: &Path, _: What| -> io::Result<Descriptor> { Ok(descriptor("S-1-5-18")) };
+        // The source is a mapped drive that resolves; the destination is one that does not.
+        let names_of = |path: &Path| {
+            if path == left.as_path() {
+                NamesFrom {
+                    server: Some("fs01".into()),
+                    note: String::new(),
+                }
+            } else {
+                NamesFrom {
+                    server: None,
+                    note: "Drive Y: note".into(),
+                }
+            }
+        };
+        let result = pass(
+            &diff,
+            &left,
+            &right,
+            &CancelToken::new(),
+            false,
+            &read,
+            &names_of,
+            &|_, _| {},
+        )
+        .unwrap();
+        let report = result.report();
+        assert_eq!(report.source_server, "fs01");
+        assert_eq!(report.destination_server, "");
+        assert_eq!(report.server_note, "Drive Y: note");
     }
 }

@@ -1,5 +1,6 @@
 mod cleanup;
 mod compare;
+mod netpath;
 mod readiness;
 mod record;
 mod report_writer;

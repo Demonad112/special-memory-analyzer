@@ -887,6 +887,10 @@ export interface OwnerTable {
   totalDisk: number
   totalFiles: number
   rows: OwnerRow[]
+  /** Account names were asked of this server; empty for this PC. */
+  server?: string
+  /** Said when the server of a network drive could not be found. */
+  note?: string
 }
 
 export interface OwnerProgress {

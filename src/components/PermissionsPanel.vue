@@ -178,6 +178,7 @@ function where(finding: Finding): string {
         read, nothing changed ·
         {{ permissions.elevated ? 'as administrator' : 'without administrator rights' }}
         <template v-if="permissions.server"> · names asked of {{ permissions.server }}</template>
+        <template v-if="permissions.serverNote"> · {{ permissions.serverNote }}</template>
       </span>
       <span
         v-else

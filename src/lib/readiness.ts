@@ -110,6 +110,8 @@ export interface PermissionsSummary {
   elevated: boolean
   /** The server account names were asked of; empty for this PC. */
   server: string
+  /** Said when a mapped drive's server could not be found, so names were asked of this PC. */
+  serverNote?: string
   foldersRead: number
   filesRead: number
   skipped: number

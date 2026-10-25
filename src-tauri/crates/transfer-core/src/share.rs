@@ -196,6 +196,37 @@ pub fn list_shares(_server: &str) -> Result<Vec<ShareInfo>, ListError> {
     })
 }
 
+/// `\\server\share` that a mapped network drive letter points at (`Z` gives `\\fs01\Finance`),
+/// or `None` when the letter is not a network connection.
+#[cfg(windows)]
+pub fn mapped_drive_root(letter: char) -> Option<String> {
+    use windows_sys::Win32::NetworkManagement::WNet::WNetGetConnectionW;
+
+    if !letter.is_ascii_alphabetic() {
+        return None;
+    }
+    let local: Vec<u16> = format!("{}:", letter.to_ascii_uppercase())
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // A UNC path is at most 32,767 units.
+    let mut buffer = vec![0u16; 1024];
+    let mut len = buffer.len() as u32;
+    // SAFETY: `local` is NUL-terminated; `buffer` has `len` units, which the call updates.
+    let code = unsafe { WNetGetConnectionW(local.as_ptr(), buffer.as_mut_ptr(), &mut len) };
+    if code != 0 {
+        return None;
+    }
+    let end = buffer.iter().position(|&unit| unit == 0)?;
+    let root = String::from_utf16_lossy(&buffer[..end]);
+    (!root.is_empty()).then_some(root)
+}
+
+#[cfg(not(windows))]
+pub fn mapped_drive_root(_letter: char) -> Option<String> {
+    None
+}
+
 /// Connects `share` (as returned by [`share_root`]) with the given account.
 #[cfg(windows)]
 pub fn connect(share: &str, username: &str, password: &str) -> Result<(), String> {
@@ -390,6 +421,13 @@ mod tests {
             assert_eq!(list_error(code).message, connect_error_text(1222));
         }
         assert!(list_error(9999).message.contains("9999"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_local_drive_is_not_a_mapped_drive() {
+        assert_eq!(mapped_drive_root('C'), None);
+        assert_eq!(mapped_drive_root('1'), None);
     }
 
     #[cfg(not(windows))]
