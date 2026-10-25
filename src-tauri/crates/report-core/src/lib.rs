@@ -19,6 +19,7 @@ pub use kinds::{
     CleanReport, CleanedItem, CompareReport, DuplicateItem, DuplicateTotals, FileItem, FolderItem,
     MissingFile, OwnerItem, OwnerTotals, Removed, StaleFolder, StaleTotals, TypeItem, UsageReport,
 };
+pub use kinds::{RunbookPart, RunbookReport};
 pub use migrate_core::ReadinessReport;
 
 use serde::{Deserialize, Serialize};
@@ -72,7 +73,7 @@ impl JobInfo {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ReportKind {
     Compare,
@@ -80,6 +81,7 @@ pub enum ReportKind {
     DiskUsage,
     Cleanup,
     Readiness,
+    Runbook,
 }
 
 /// A saved Compare or Disk Cleanup report.
@@ -106,6 +108,7 @@ pub enum Body {
     DiskUsage(UsageReport),
     Cleanup(CleanReport),
     Readiness(ReadinessReport),
+    Runbook(RunbookReport),
 }
 
 impl Body {
@@ -115,6 +118,7 @@ impl Body {
             Body::DiskUsage(_) => ReportKind::DiskUsage,
             Body::Cleanup(_) => ReportKind::Cleanup,
             Body::Readiness(_) => ReportKind::Readiness,
+            Body::Runbook(_) => ReportKind::Runbook,
         }
     }
 }
@@ -135,6 +139,9 @@ pub struct Entry {
     /// Something went wrong or is missing; the row shows in red.
     pub problem: bool,
     pub job: JobInfo,
+    /// Other CSV layouts this report can export (`layout` of `report_export`): `permissions`
+    /// for a readiness report saved with the permissions audit.
+    pub csv_layouts: Vec<String>,
 }
 
 /// Saves a new report and returns it with its id.
@@ -149,6 +156,7 @@ pub fn save(root: &Path, job: JobInfo, body: Body) -> Result<Saved, String> {
         ReportKind::Compare => "compare",
         ReportKind::DiskUsage => "usage",
         ReportKind::Readiness => "readiness",
+        ReportKind::Runbook => "runbook",
         ReportKind::Cleanup | ReportKind::Record => "cleanup",
     };
     let base = format!("{prefix}-{}-{:03}", stamp, created_at_ms % 1000);
@@ -208,7 +216,8 @@ fn report_path(root: &Path, id: &str) -> Result<PathBuf, String> {
 pub fn save_record_job(records: &Path, run_id: &str, job: &JobInfo) -> Result<(), String> {
     let store = RunStore::open(records, run_id).map_err(|err| err.to_string())?;
     let json = serde_json::to_vec_pretty(job).map_err(|err| err.to_string())?;
-    fs::write(store.dir().join(JOB_FILE), json).map_err(|err| err.to_string())
+    transfer_core::store::write_atomic(&store.dir().join(JOB_FILE), &json)
+        .map_err(|err| err.to_string())
 }
 
 pub fn record_job(store: &RunStore) -> JobInfo {
@@ -243,6 +252,32 @@ pub fn list(reports: &Path, records: &Path) -> Vec<Entry> {
             .then_with(|| b.id.cmp(&a.id))
     });
     entries
+}
+
+/// The Reports page row of a report that is already loaded.
+pub fn entry_of(saved: &Saved) -> Entry {
+    kinds::entry(saved)
+}
+
+/// Saves a runbook for `parts` (readiness, record and compare reports that exist), in the order
+/// a runbook reads: before the copy, the copy, after it. It holds ids only; the parts stay
+/// independent reports.
+pub fn create_runbook(
+    reports: &Path,
+    records: &Path,
+    job: JobInfo,
+    parts: Vec<RunbookPart>,
+) -> Result<Saved, String> {
+    let parts = kinds::order_parts(parts)?;
+    for part in &parts {
+        if !kinds::part_exists(reports, records, part) {
+            return Err(format!(
+                "A report picked for the runbook is no longer there ({}).",
+                part.id
+            ));
+        }
+    }
+    save(reports, job, Body::Runbook(RunbookReport { parts }))
 }
 
 /// Deletes a report, or a record run with all its files.
@@ -293,6 +328,10 @@ pub fn document(
 ) -> Result<Document, String> {
     match kind {
         ReportKind::Record => kinds::record_document(records, id),
+        ReportKind::Runbook => {
+            let saved = load(reports, id)?;
+            kinds::runbook_document(reports, records, &saved)
+        }
         _ => Ok(kinds::document(&load(reports, id)?)),
     }
 }
@@ -536,6 +575,181 @@ mod tests {
         delete(&reports, &records, ReportKind::DiskUsage, &first.id).unwrap();
         assert_eq!(list(&reports, &records).len(), 1);
         assert!(load(&reports, &first.id).is_err());
+    }
+
+    /// A completed run with no files, for tests that need a run folder `RunStore::open` accepts.
+    fn finished_run(store: &RunStore) -> transfer_core::RunSummary {
+        use transfer_core::{
+            ConflictPolicy, RunState, RunSummary, RunTotals, TransferMode, TransferSettings,
+            VerifyLevel,
+        };
+        RunSummary {
+            id: store.id(),
+            settings: TransferSettings {
+                source: r"C:\src".into(),
+                destination: r"D:\dst".into(),
+                mode: TransferMode::Copy,
+                verify: VerifyLevel::SizeAndTime,
+                conflict: ConflictPolicy::Skip,
+                ignore_junk: false,
+                download_cloud: false,
+                preserve: Default::default(),
+            },
+            state: RunState::Completed,
+            created_at_ms: 1,
+            started_at_ms: None,
+            finished_at_ms: Some(2),
+            machine: "PC1".into(),
+            user: "sam".into(),
+            totals: RunTotals::default(),
+            error: None,
+            previous_run_id: None,
+        }
+    }
+
+    #[test]
+    fn a_runbook_ties_the_parts_of_a_migration_together_and_leaves_them_alone() {
+        use migrate_core::{AuditStatus, PermissionsReport};
+        let temp = tempfile::tempdir().unwrap();
+        let reports = temp.path().join("Reports");
+        let records = temp.path().join("Records");
+        let job = JobInfo {
+            client: "Acme".into(),
+            ticket: "T-7".into(),
+            technician: "Sam".into(),
+        };
+        let readiness = save(
+            &reports,
+            job.clone(),
+            Body::Readiness(ReadinessReport {
+                source: r"F:\Finance".into(),
+                permission_issues: 2,
+                permissions: PermissionsReport {
+                    status: AuditStatus::Checked,
+                    issues: 2,
+                    ..PermissionsReport::default()
+                },
+                ..ReadinessReport::default()
+            }),
+        )
+        .unwrap();
+        let compare = save(
+            &reports,
+            job.clone(),
+            Body::Compare(CompareReport {
+                source: r"F:\Finance".into(),
+                destination: r"D:\Finance".into(),
+                ..CompareReport::default()
+            }),
+        )
+        .unwrap();
+        let first = RunStore::create(&records).unwrap();
+        first.save_summary(&finished_run(&first)).unwrap();
+        let second = RunStore::create(&records).unwrap();
+        let mut delta = finished_run(&second);
+        delta.created_at_ms = 5;
+        delta.previous_run_id = Some(first.id());
+        second.save_summary(&delta).unwrap();
+        let part = |kind, id: &str| RunbookPart {
+            kind,
+            id: id.to_string(),
+        };
+
+        let made = create_runbook(
+            &reports,
+            &records,
+            job.clone(),
+            vec![
+                part(ReportKind::Compare, &compare.id),
+                part(ReportKind::Record, &second.id()),
+                part(ReportKind::Record, &first.id()),
+                part(ReportKind::Readiness, &readiness.id),
+            ],
+        )
+        .unwrap();
+        let Body::Runbook(saved) = &made.body else {
+            panic!("a runbook")
+        };
+        let order: Vec<&str> = saved.parts.iter().map(|part| part.id.as_str()).collect();
+        assert_eq!(
+            order,
+            [
+                readiness.id.as_str(),
+                second.id().as_str(),
+                first.id().as_str(),
+                compare.id.as_str()
+            ],
+            "before, the copy (in the order picked), after"
+        );
+
+        // Listed with the job it was made for.
+        let listed = list(&reports, &records);
+        let row = listed
+            .iter()
+            .find(|row| row.kind == ReportKind::Runbook)
+            .expect("the runbook is listed");
+        assert_eq!(row.id, made.id);
+        assert_eq!(row.job, job);
+        assert_eq!(row.headline, "4 parts");
+
+        // The delta run shows the chain it belongs to; the readiness part its permissions.
+        let doc = document(&reports, &records, ReportKind::Runbook, &made.id).unwrap();
+        let html = doc.html("", "now");
+        assert!(html.contains("Runs in this copy, oldest first"));
+        assert!(html.contains(&format!("{} (this run)", second.id())));
+        assert!(html.contains("2 issues"), "the permissions summary");
+        assert!(!html.contains("Report no longer available"));
+
+        // A part that is not there, or not what the runbook says, is refused up front.
+        let missing = create_runbook(
+            &reports,
+            &records,
+            job.clone(),
+            vec![part(ReportKind::Compare, "compare-nope")],
+        );
+        assert!(missing.is_err());
+        let wrong_kind = create_runbook(
+            &reports,
+            &records,
+            job.clone(),
+            vec![part(ReportKind::Compare, &readiness.id)],
+        );
+        assert!(wrong_kind.is_err());
+        assert!(create_runbook(&reports, &records, job.clone(), Vec::new()).is_err());
+
+        // Deleting a part leaves the runbook, which says so; deleting the runbook leaves the rest.
+        delete(&reports, &records, ReportKind::Compare, &compare.id).unwrap();
+        let doc = document(&reports, &records, ReportKind::Runbook, &made.id).unwrap();
+        assert!(doc.html("", "now").contains("Report no longer available"));
+        assert!(doc.csv().contains("Report no longer available"));
+        delete(&reports, &records, ReportKind::Runbook, &made.id).unwrap();
+        assert!(load(&reports, &readiness.id).is_ok());
+        assert!(RunStore::open(&records, &first.id()).is_ok());
+        assert!(RunStore::open(&records, &second.id()).is_ok());
+    }
+
+    #[test]
+    fn the_job_file_is_written_atomically() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = temp.path().join("Records");
+        let store = RunStore::create(&records).unwrap();
+        store.save_summary(&finished_run(&store)).unwrap();
+        let job = |client: &str| JobInfo {
+            client: client.into(),
+            ..JobInfo::default()
+        };
+        save_record_job(&records, &store.id(), &job("Acme")).unwrap();
+        assert_eq!(record_job(&store).client, "Acme");
+        assert!(
+            !store.dir().join("job.json.tmp").exists(),
+            "the tmp file is renamed away"
+        );
+
+        // A write that cannot start (the tmp path is taken by a folder) fails and leaves the old
+        // file as it was; a plain fs::write would have replaced it in place.
+        fs::create_dir(store.dir().join("job.json.tmp")).unwrap();
+        assert!(save_record_job(&records, &store.id(), &job("Other")).is_err());
+        assert_eq!(record_job(&store).client, "Acme");
     }
 
     #[test]

@@ -9,18 +9,23 @@ import {
   HardDrive,
   ListChecks,
   LoaderCircle,
+  NotebookText,
+  Plus,
   Search,
+  ShieldCheck,
   Trash2,
 } from '@lucide/vue'
 import { isTauri } from '@tauri-apps/api/core'
 import { computed, onBeforeUnmount, onMounted, ref, type Component } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
+import RunbookDialog from '@/components/RunbookDialog.vue'
 import { errorMessage } from '@/lib/errors'
 import { formatDateTime } from '@/lib/format'
 import { useToast } from '@/lib/useToast'
 import { jobLabel } from '@/lib/job'
 import {
+  csvChoices,
   deleteReport,
   exportReport,
   kindLabels,
@@ -45,6 +50,7 @@ const icons: Record<ReportKind, Component> = {
   diskUsage: HardDrive,
   cleanup: Brush,
   readiness: ListChecks,
+  runbook: NotebookText,
 }
 
 const filters: { value: ReportKind | 'all'; label: string }[] = [
@@ -54,6 +60,7 @@ const filters: { value: ReportKind | 'all'; label: string }[] = [
   { value: 'diskUsage', label: 'Disk usage' },
   { value: 'cleanup', label: 'Cleanup' },
   { value: 'readiness', label: 'Readiness' },
+  { value: 'runbook', label: 'Runbook' },
 ]
 
 const shown = computed(() => {
@@ -107,15 +114,22 @@ async function open(entry: ReportEntry): Promise<void> {
   }
 }
 
-async function save(entry: ReportEntry, format: ExportFormat): Promise<void> {
+async function save(entry: ReportEntry, format: ExportFormat, layout?: string): Promise<void> {
   try {
-    const path = await exportReport(entry, format)
+    const path = await exportReport(entry, format, layout)
     if (path) {
       showToast(`Saved ${path}`)
     }
   } catch (err) {
     showToast(errorMessage(err))
   }
+}
+
+const runbookEl = ref<InstanceType<typeof RunbookDialog> | null>(null)
+
+function runbookMade(entry: ReportEntry): void {
+  entries.value = [entry, ...entries.value]
+  showToast('Runbook made')
 }
 
 const confirmEl = ref<HTMLDialogElement | null>(null)
@@ -177,6 +191,15 @@ onMounted(async () => {
           {{ option.label }}
         </button>
       </div>
+      <button
+        type="button"
+        class="flex h-8 items-center gap-1.5 rounded-md border border-stroke bg-card px-3 text-[13px] hover:bg-card-hover"
+        title="Put a readiness report, the copy runs and the compare reports of one job in a single document"
+        @click="runbookEl?.open()"
+      >
+        <Plus class="size-4" />
+        New runbook
+      </button>
       <label class="relative min-w-48 flex-1">
         <span class="sr-only">Search reports</span>
         <Search class="pointer-events-none absolute top-2 left-2.5 size-4 text-faint" />
@@ -273,13 +296,22 @@ onMounted(async () => {
             <FileText class="size-4" />
           </button>
           <button
+            v-for="choice in csvChoices(entry)"
+            :key="choice.layout ?? 'default'"
             type="button"
             class="grid size-8 place-items-center rounded-md hover:bg-subtle-strong"
-            title="Save the list as CSV for Excel"
-            aria-label="Export as CSV"
-            @click="save(entry, 'csv')"
+            :title="choice.title"
+            :aria-label="choice.label"
+            @click="save(entry, 'csv', choice.layout)"
           >
-            <FileSpreadsheet class="size-4" />
+            <ShieldCheck
+              v-if="choice.layout"
+              class="size-4"
+            />
+            <FileSpreadsheet
+              v-else
+              class="size-4"
+            />
           </button>
           <button
             type="button"
@@ -315,6 +347,12 @@ onMounted(async () => {
       </div>
     </div>
 
+    <RunbookDialog
+      ref="runbookEl"
+      :entries="entries"
+      @created="runbookMade"
+    />
+
     <dialog
       ref="confirmEl"
       class="m-auto w-[min(28rem,90vw)] rounded-lg border border-stroke-strong bg-app p-5 text-fg shadow-xl backdrop:bg-fg/20"
@@ -330,7 +368,9 @@ onMounted(async () => {
           {{
             pending.kind === 'record'
               ? 'This deletes the record and its file lists, which are your proof of the copy. It cannot be undone.'
-              : 'It cannot be undone. Export it first if the client may need it.'
+              : pending.kind === 'runbook'
+                ? 'Only the runbook goes. The reports it was made from stay where they are.'
+                : 'It cannot be undone. Export it first if the client may need it.'
           }}
         </p>
         <div class="mt-5 flex justify-end gap-2">

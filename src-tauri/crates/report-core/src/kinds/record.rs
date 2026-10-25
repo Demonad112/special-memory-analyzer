@@ -40,6 +40,7 @@ pub(crate) fn record_entry(run: &RunSummary, job: JobInfo) -> Entry {
         headline,
         problem,
         job,
+        csv_layouts: Vec::new(),
     }
 }
 

@@ -8,6 +8,8 @@ vi.mock('@tauri-apps/plugin-dialog', () => dialog)
 import { brand, csvJobDetails } from './job'
 import {
   clearLogo,
+  createRunbook,
+  csvChoices,
   deleteReport,
   exportFileName,
   exportReport,
@@ -16,6 +18,9 @@ import {
   pickLogo,
   pruneReports,
   retentionDays,
+  runbookCandidates,
+  runbookJob,
+  runbookProblem,
   type ReportEntry,
 } from './reports'
 
@@ -28,6 +33,7 @@ const entry: ReportEntry = {
   headline: 'Nothing missing',
   problem: false,
   job: { client: 'Acme: West', ticket: '', technician: '' },
+  csvLayouts: [],
 }
 
 beforeEach(() => {
@@ -135,5 +141,99 @@ describe('reports', () => {
     core.invoke.mockRejectedValueOnce(new Error('locked'))
     expect(await pruneReports()).toBe(0)
     retentionDays.value = 0
+  })
+})
+
+describe('csv choices', () => {
+  it('offers only the default list for reports without other layouts', () => {
+    expect(csvChoices({ csvLayouts: [] }).map((choice) => choice.layout)).toEqual([undefined])
+  })
+
+  it('adds the permissions CSV for a readiness report saved with the audit', () => {
+    const choices = csvChoices({ csvLayouts: ['permissions'] })
+    expect(choices.map((choice) => choice.layout)).toEqual([undefined, 'permissions'])
+    expect(choices[1]?.label).toBe('Export the permissions as CSV')
+  })
+
+  it('ignores a layout this version does not know', () => {
+    expect(csvChoices({ csvLayouts: ['somethingNewer'] })).toHaveLength(1)
+  })
+
+  it('exports the permissions layout from the Reports page choice', async () => {
+    dialog.save.mockResolvedValueOnce('C:\\out\\p.csv')
+    const readiness = { ...entry, kind: 'readiness' as const, title: 'Migration readiness' }
+    const choice = csvChoices({ csvLayouts: ['permissions'] })[1]
+    await exportReport(readiness, 'csv', choice?.layout)
+    expect(core.invoke).toHaveBeenLastCalledWith(
+      'report_export',
+      expect.objectContaining({ kind: 'readiness', format: 'csv', layout: 'permissions' }),
+    )
+  })
+})
+
+describe('runbooks', () => {
+  const row = (id: string, kind: ReportEntry['kind'], ticket: string): ReportEntry => ({
+    ...entry,
+    id,
+    kind,
+    job: { client: 'Acme', ticket, technician: '' },
+  })
+  const entries = [
+    row('c-new', 'compare', 'T-2'),
+    row('u-1', 'diskUsage', 'T-1'),
+    row('r-new', 'record', 't-1 '),
+    row('rb-1', 'runbook', 'T-1'),
+    row('d-old', 'readiness', 'T-1'),
+    row('r-other', 'record', ''),
+  ]
+
+  it('lists only readiness, record and compare reports', () => {
+    const ids = runbookCandidates(entries, null).map((candidate) => candidate.entry.id)
+    expect(ids).toEqual(['c-new', 'r-new', 'd-old', 'r-other'])
+  })
+
+  it('suggests reports with the first pick’s ticket first, ignoring case and spaces', () => {
+    const first = entries.find((candidate) => candidate.id === 'd-old')
+    const rows = runbookCandidates(entries, first ?? null)
+    expect(rows.map((candidate) => candidate.entry.id)).toEqual([
+      'r-new',
+      'd-old',
+      'c-new',
+      'r-other',
+    ])
+    expect(rows.map((candidate) => candidate.suggested)).toEqual([true, true, false, false])
+  })
+
+  it('suggests nothing when the first pick has no ticket', () => {
+    const first = entries.find((candidate) => candidate.id === 'r-other')
+    expect(runbookCandidates(entries, first ?? null).some((candidate) => candidate.suggested)).toBe(
+      false,
+    )
+  })
+
+  it('says why a pick cannot be a runbook', () => {
+    expect(runbookProblem([])).toBe('Pick at least one report.')
+    expect(runbookProblem([{ kind: 'readiness' }, { kind: 'readiness' }])).toBe(
+      'A runbook has one readiness report.',
+    )
+    expect(runbookProblem([{ kind: 'readiness' }, { kind: 'record' }, { kind: 'record' }])).toBe('')
+    expect(runbookProblem(Array.from({ length: 25 }, () => ({ kind: 'record' as const })))).toMatch(
+      /at most 24/,
+    )
+  })
+
+  it('takes its job from the first report and sends ids only', async () => {
+    const first = row('d-old', 'readiness', 'T-1')
+    expect(runbookJob(first)).toEqual(first.job)
+    expect(runbookJob(undefined).ticket).toBe('')
+    core.invoke.mockResolvedValueOnce({ ...first, id: 'runbook-1', kind: 'runbook' })
+    await createRunbook(first.job, [first, row('r-new', 'record', 'T-1')])
+    expect(core.invoke).toHaveBeenLastCalledWith('runbook_create', {
+      job: first.job,
+      parts: [
+        { kind: 'readiness', id: 'd-old' },
+        { kind: 'record', id: 'r-new' },
+      ],
+    })
   })
 })

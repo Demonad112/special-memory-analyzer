@@ -99,6 +99,7 @@ pub fn run() {
             cleanup::app_restart_admin,
             app_exit,
             reports::reports_list,
+            reports::runbook_create,
             reports::report_delete,
             reports::reports_prune,
             reports::report_export,

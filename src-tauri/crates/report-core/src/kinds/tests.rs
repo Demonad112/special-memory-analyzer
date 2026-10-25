@@ -20,6 +20,7 @@ fn every_report_body_loads_from_an_empty_object() {
         r#"{"kind":"diskUsage","data":{}}"#,
         r#"{"kind":"cleanup","data":{}}"#,
         r#"{"kind":"readiness","data":{}}"#,
+        r#"{"kind":"runbook","data":{}}"#,
     ] {
         serde_json::from_str::<Body>(body).unwrap();
     }
@@ -1269,4 +1270,281 @@ fn saved_permissions_read_back_and_older_reports_load_as_off() {
         r#"{"permissions":{"status":"somethingNewer","counts":[{"status":"alsoNew","count":2}]}}"#;
     let loaded: CompareReport = serde_json::from_str(newer).unwrap();
     assert_eq!(loaded.permissions.status, migrate_core::AuditStatus::Other);
+}
+
+// ---- Migration runbook ----
+
+use runbook::{order_parts, PartDoc, Parts};
+
+fn part(kind: ReportKind, id: &str) -> RunbookPart {
+    RunbookPart {
+        kind,
+        id: id.into(),
+    }
+}
+
+/// Parts served from memory, by id.
+struct Fake(Vec<(String, PartDoc)>);
+
+impl Parts for Fake {
+    fn part(&self, wanted: &RunbookPart) -> Option<PartDoc> {
+        self.0
+            .iter()
+            .find(|(id, _)| *id == wanted.id)
+            .map(|(_, found)| PartDoc {
+                entry: found.entry.clone(),
+                document: found.document.clone(),
+            })
+    }
+}
+
+fn fake_part(id: &str, body: Body) -> (String, PartDoc) {
+    let saved = saved(body);
+    (
+        id.into(),
+        PartDoc {
+            entry: entry(&saved),
+            document: document(&saved),
+        },
+    )
+}
+
+fn clean_compare() -> CompareReport {
+    CompareReport {
+        source: r"C:\Data".into(),
+        destination: r"E:\Data".into(),
+        ..CompareReport::default()
+    }
+}
+
+fn runbook_of(parts: &[(ReportKind, &str)]) -> RunbookReport {
+    RunbookReport {
+        parts: parts.iter().map(|(kind, id)| part(*kind, id)).collect(),
+    }
+}
+
+fn build_runbook(report: &RunbookReport, parts: &dyn Parts) -> Document {
+    runbook::build(report, Vec::new(), parts)
+}
+
+#[test]
+fn runbook_parts_are_ordered_before_copy_after_and_checked() {
+    let ordered = order_parts(vec![
+        part(ReportKind::Compare, "c1"),
+        part(ReportKind::Record, "r1"),
+        part(ReportKind::Readiness, "d1"),
+        part(ReportKind::Record, "r2"),
+    ])
+    .unwrap();
+    let ids: Vec<&str> = ordered.iter().map(|part| part.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["d1", "r1", "r2", "c1"],
+        "records keep the order given"
+    );
+
+    assert!(order_parts(Vec::new()).is_err());
+    assert!(order_parts(vec![part(ReportKind::DiskUsage, "u")]).is_err());
+    assert!(order_parts(vec![part(ReportKind::Runbook, "b")]).is_err());
+    assert!(order_parts(vec![
+        part(ReportKind::Compare, "c"),
+        part(ReportKind::Compare, "c")
+    ])
+    .is_err());
+    assert!(
+        order_parts(vec![
+            part(ReportKind::Readiness, "a"),
+            part(ReportKind::Readiness, "b")
+        ])
+        .is_err(),
+        "one readiness report"
+    );
+    let many = (0..=runbook::MAX_PARTS)
+        .map(|index| part(ReportKind::Compare, &format!("c{index}")))
+        .collect();
+    assert!(order_parts(many).is_err());
+}
+
+#[test]
+fn a_runbook_renders_its_sections_in_order_with_a_verdict_each() {
+    let parts = Fake(vec![
+        fake_part("d1", Body::Readiness(permissions_report())),
+        fake_part("r1", Body::Compare(clean_compare())),
+        fake_part("r2", Body::Compare(clean_compare())),
+        fake_part(
+            "c1",
+            Body::Compare(CompareReport {
+                missing: 1,
+                missing_bytes: 5,
+                missing_paths: vec![MissingFile {
+                    path: "a.txt".into(),
+                    size: 5,
+                }],
+                ..compared_with_permissions()
+            }),
+        ),
+    ]);
+    // The ids stand for a readiness report, two copies and a compare; the fake does not care
+    // which kind serves them.
+    let report = runbook_of(&[
+        (ReportKind::Readiness, "d1"),
+        (ReportKind::Record, "r1"),
+        (ReportKind::Record, "r2"),
+        (ReportKind::Compare, "c1"),
+    ]);
+    let doc = build_runbook(&report, &parts);
+    assert_eq!(doc.title, "Migration runbook");
+    assert_eq!(doc.subtitle, "Readiness · 2 copies · 1 compare");
+    // The readiness report has problems and the compare has permission differences.
+    assert_eq!(doc.verdict, Some(Verdict::Bad));
+    let tiles: Vec<(&str, &str)> = doc
+        .tiles
+        .iter()
+        .map(|tile| (tile.label.as_str(), tile.value.as_str()))
+        .collect();
+    assert_eq!(
+        tiles,
+        [
+            ("Before the copy", "Needs attention"),
+            ("The copy", "All clear"),
+            ("After the copy", "Needs attention"),
+        ]
+    );
+    assert_eq!(doc.tables[0].heading, "Stages");
+    assert_eq!(doc.tables[0].rows.len(), 4);
+    // The compare's permission totals reach the summary row.
+    assert!(
+        doc.tables[0].rows[3][5].contains("3 differences"),
+        "{:?}",
+        doc.tables[0].rows[3]
+    );
+    // The readiness report's permissions summary too.
+    assert!(
+        doc.tables[0].rows[0][5].contains("issue"),
+        "{:?}",
+        doc.tables[0].rows[0]
+    );
+
+    let html = doc.html("", "now");
+    let at = |needle: &str| {
+        html.find(needle)
+            .unwrap_or_else(|| panic!("{needle} in the page"))
+    };
+    assert!(at("1. Before the copy: Migration readiness") < at("2. The copy: Compare"));
+    assert!(at("2. The copy: Compare") < at("3. The copy: Compare"));
+    assert!(at("3. The copy: Compare") < at("4. After the copy: Compare"));
+    // A verdict tile for each part, and the page keeps its own Content-Security-Policy.
+    assert_eq!(html.matches("<p class=\"label\">Verdict</p>").count(), 4);
+    assert!(html.contains("Content-Security-Policy"));
+    // The compare's recovery block is not repeated in a runbook (its ids belong to one page).
+    assert!(!html.contains("id=\"rec\""));
+    assert!(html.contains("copy missing files again are in the compare report"));
+}
+
+#[test]
+fn a_missing_part_shows_a_placeholder_and_the_runbook_still_exports() {
+    let parts = Fake(vec![fake_part("c1", Body::Compare(clean_compare()))]);
+    let report = runbook_of(&[(ReportKind::Record, "gone"), (ReportKind::Compare, "c1")]);
+    let doc = build_runbook(&report, &parts);
+    assert_eq!(
+        doc.verdict,
+        Some(Verdict::Bad),
+        "an incomplete runbook is not all clear"
+    );
+    assert_eq!(doc.tiles[1].value, "Missing");
+    let html = doc.html("", "now");
+    assert!(html.contains("Report no longer available"));
+    assert!(html.contains("1 report is no longer available"));
+    assert!(html.contains("2. After the copy: Compare"));
+    let csv = parse_csv(&doc.csv());
+    assert!(csv
+        .iter()
+        .any(|row| row[1] == "Report no longer available" && row[2] == "gone"));
+
+    // With nothing readable at all it is still a page, not an error.
+    let nothing = build_runbook(&report, &runbook::NoParts);
+    assert_eq!(nothing.verdict, Some(Verdict::Bad));
+    assert!(nothing
+        .html("", "now")
+        .contains("Report no longer available"));
+}
+
+#[test]
+fn a_runbook_is_all_clear_when_every_part_is() {
+    let parts = Fake(vec![
+        fake_part("r1", Body::Compare(clean_compare())),
+        fake_part("c1", Body::Compare(clean_compare())),
+    ]);
+    let doc = build_runbook(
+        &runbook_of(&[(ReportKind::Record, "r1"), (ReportKind::Compare, "c1")]),
+        &parts,
+    );
+    assert_eq!(doc.verdict, Some(Verdict::Good));
+    assert_eq!(doc.tiles[0].value, "Not included");
+    assert_eq!(doc.tiles[1].value, "All clear");
+}
+
+#[test]
+fn the_runbook_csv_has_a_section_column_and_every_parts_rows() {
+    let parts = Fake(vec![
+        fake_part("d1", Body::Readiness(readiness_report())),
+        fake_part("c1", Body::Compare(compared_with_permissions())),
+    ]);
+    let doc = build_runbook(
+        &runbook_of(&[(ReportKind::Readiness, "d1"), (ReportKind::Compare, "c1")]),
+        &parts,
+    );
+    let rows = parse_csv(&doc.csv());
+    assert_eq!(rows[0], ["Section", "Item", "Details"]);
+    // Summary rows come first, one per part.
+    assert_eq!(rows[1][0], "Summary");
+    assert_eq!(rows[2][0], "Summary");
+    assert!(rows[1][1].starts_with("1. Before the copy: Migration readiness"));
+    let readiness: Vec<&Vec<String>> = rows
+        .iter()
+        .filter(|row| row[0] == "1. Before the copy: Migration readiness")
+        .collect();
+    // The column names, then the three problems the readiness CSV lists.
+    assert_eq!(readiness.len(), 1 + 3);
+    assert!(readiness.iter().any(|row| row[2].contains(r"a\CON.txt")));
+    assert!(rows
+        .iter()
+        .any(|row| row[0].starts_with("2. After the copy")));
+}
+
+#[test]
+fn a_runbook_row_says_what_it_holds_and_old_builds_skip_it() {
+    let saved = saved(Body::Runbook(runbook_of(&[
+        (ReportKind::Readiness, "d1"),
+        (ReportKind::Record, "r1"),
+        (ReportKind::Record, "r2"),
+        (ReportKind::Compare, "c1"),
+    ])));
+    let row = entry(&saved);
+    assert_eq!(row.kind, ReportKind::Runbook);
+    assert_eq!(row.title, "Migration runbook");
+    assert_eq!(row.subject, "Readiness · 2 copies · 1 compare");
+    assert_eq!(row.headline, "4 parts");
+    assert!(!row.problem);
+    // Saved ids only: nothing of the parts is copied into the file.
+    let text = serde_json::to_string(&saved.body).unwrap();
+    assert_eq!(
+        text,
+        r#"{"kind":"runbook","data":{"parts":[{"kind":"readiness","id":"d1"},{"kind":"record","id":"r1"},{"kind":"record","id":"r2"},{"kind":"compare","id":"c1"}]}}"#
+    );
+    // Every kind this build has is a kind the old header reader knows or refuses whole, which
+    // `list` turns into "skip the file": see the header tests.
+    let again: Body = serde_json::from_str(&text).unwrap();
+    assert_eq!(again, saved.body);
+}
+
+#[test]
+fn a_readiness_row_offers_the_permissions_csv_only_when_the_audit_ran() {
+    let with = entry(&saved(Body::Readiness(permissions_report())));
+    assert_eq!(with.csv_layouts, ["permissions"]);
+    let without = entry(&saved(Body::Readiness(readiness_report())));
+    assert!(without.csv_layouts.is_empty());
+    assert!(entry(&saved(Body::Compare(clean_compare())))
+        .csv_layouts
+        .is_empty());
 }

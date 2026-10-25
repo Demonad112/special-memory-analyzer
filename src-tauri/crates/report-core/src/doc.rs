@@ -74,6 +74,8 @@ pub enum Section {
         body: Vec<Section>,
     },
     Table(Table),
+    /// A row of summary tiles (a runbook part's own).
+    Tiles(Vec<Tile>),
     Code(CodeBlock),
     Note(String),
     /// The Compare "copy the missing files again" block; see `recovery.rs`.
@@ -260,19 +262,7 @@ impl Document {
         }
         out.push_str("</header>\n");
 
-        if !self.tiles.is_empty() {
-            out.push_str("<section class=\"tiles\">");
-            for tile in &self.tiles {
-                out.push_str(&format!(
-                    "<div class=\"tile {}\"><p class=\"label\">{}</p><p class=\"value\">{}</p><p class=\"detail\">{}</p></div>",
-                    tone_class(tile.tone),
-                    esc(&tile.label),
-                    esc(&tile.value),
-                    esc(&tile.detail)
-                ));
-            }
-            out.push_str("</section>\n");
-        }
+        render_tiles(&mut out, &self.tiles);
         if let Some(share) = &self.share {
             out.push_str(&format!(
                 "<section class=\"share {}\"><div class=\"head\"><strong>{}</strong><span>{}</span></div><div class=\"bar\"><i style=\"width:{:.1}%\"></i></div></section>\n",
@@ -393,6 +383,23 @@ impl Document {
     }
 }
 
+fn render_tiles(out: &mut String, tiles: &[Tile]) {
+    if tiles.is_empty() {
+        return;
+    }
+    out.push_str("<section class=\"tiles\">");
+    for tile in tiles {
+        out.push_str(&format!(
+            "<div class=\"tile {}\"><p class=\"label\">{}</p><p class=\"value\">{}</p><p class=\"detail\">{}</p></div>",
+            tone_class(tile.tone),
+            esc(&tile.label),
+            esc(&tile.value),
+            esc(&tile.detail)
+        ));
+    }
+    out.push_str("</section>\n");
+}
+
 fn render_table(out: &mut String, table: &Table, ids: &mut usize) {
     *ids += 1;
     let id = format!("t{ids}");
@@ -479,6 +486,7 @@ fn render_section(out: &mut String, section: &Section, ids: &mut usize) {
             out.push_str("</details>\n");
         }
         Section::Table(table) => render_table(out, table, ids),
+        Section::Tiles(tiles) => render_tiles(out, tiles),
         Section::Code(block) => {
             *ids += 1;
             let id = format!("c{ids}");
