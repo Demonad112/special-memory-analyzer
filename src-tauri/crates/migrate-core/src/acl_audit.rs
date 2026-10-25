@@ -734,7 +734,7 @@ impl Audit {
 
 /// The system calls behind the audit, for the app.
 pub fn system_read(path: &Path, what: What) -> io::Result<Descriptor> {
-    security::read(path, what)
+    security::read_unless_changed(path, what)
 }
 
 #[cfg(test)]

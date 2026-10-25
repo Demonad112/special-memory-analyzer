@@ -448,7 +448,7 @@ pub fn run(root: &Path, options: &Options, state: &ReadinessState) -> Result<Rea
         },
         cap: HOLDER_CAP,
         deadline: HOLDER_DEADLINE,
-        read: &security::read,
+        read: &security::read_unless_changed,
         names: &SidNames::default(),
     };
     run_with(root, options, state, &probes)

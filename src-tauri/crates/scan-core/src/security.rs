@@ -427,21 +427,25 @@ fn read_u32(bytes: &[u8], at: usize) -> io::Result<u32> {
 
 /// Reads the owner (and the DACL) of `path` without following a reparse point: a link or junction
 /// reports its own descriptor, not its target's.
-///
-/// The scan's view of the item can be old: a folder may have become a link, or a file may have
-/// gone online-only, since. The item is checked again right before it is opened (the DSA-085
-/// rule) and an item that changed is refused with [`ChangedSinceScan`], so callers count it as
-/// skipped instead of reading what it now points to.
 pub fn read(path: &Path, what: What) -> io::Result<Descriptor> {
+    imp::read(path, what)
+}
+
+/// [`read`] for a pass that decided from a scan which items to read. The scan's view can be old:
+/// a folder may have become a link, or a file may have gone online-only, since. The item is
+/// checked again right before it is opened (the DSA-085 rule) and one that changed is refused
+/// with [`ChangedSinceScan`], so the caller counts it as skipped instead of describing what it
+/// now is.
+pub fn read_unless_changed(path: &Path, what: What) -> io::Result<Descriptor> {
     if let Some((is_link, is_dir, attributes)) = current_state(path) {
         if changed_since_scan(is_link, is_dir, attributes) {
             return Err(io::Error::other(ChangedSinceScan));
         }
     }
-    imp::read(path, what)
+    read(path, what)
 }
 
-/// The error [`read`] gives for an item that is a link or online-only now. Test for it with
+/// The error [`read_unless_changed`] gives for an item that is a link or online-only now. Test for it with
 /// [`is_changed_since_scan`].
 #[derive(Debug)]
 pub struct ChangedSinceScan;
@@ -454,7 +458,7 @@ impl std::fmt::Display for ChangedSinceScan {
 
 impl std::error::Error for ChangedSinceScan {}
 
-/// True for the error [`read`] gives when an item changed since the scan.
+/// True for the error [`read_unless_changed`] gives when an item changed since the scan.
 pub fn is_changed_since_scan(error: &io::Error) -> bool {
     error
         .get_ref()
@@ -1269,11 +1273,12 @@ mod tests {
         std::fs::create_dir(&real).unwrap();
         let link = temp.path().join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        let err = super::read(&link, What::OwnerAndDacl).unwrap_err();
+        let err = super::read_unless_changed(&link, What::OwnerAndDacl).unwrap_err();
         assert!(super::is_changed_since_scan(&err), "{err}");
         assert!(err.to_string().contains("after the scan"));
         // Any other failure is not that marker.
-        let other = super::read(&temp.path().join("missing"), What::Owner).unwrap_err();
+        let other =
+            super::read_unless_changed(&temp.path().join("missing"), What::Owner).unwrap_err();
         assert!(!super::is_changed_since_scan(&other));
     }
 
@@ -1291,9 +1296,11 @@ mod tests {
             .output()
             .unwrap();
         assert!(made.status.success(), "mklink /J failed");
-        let err = super::read(&link, What::OwnerAndDacl).unwrap_err();
+        let err = super::read_unless_changed(&link, What::OwnerAndDacl).unwrap_err();
         assert!(super::is_changed_since_scan(&err), "{err}");
         // A plain folder is still read.
-        assert!(super::read(&real, What::OwnerAndDacl).is_ok());
+        assert!(super::read_unless_changed(&real, What::OwnerAndDacl).is_ok());
+        // Plain `read` still reports a link's own descriptor.
+        assert!(super::read(&link, What::OwnerAndDacl).is_ok());
     }
 }

@@ -959,7 +959,7 @@ pub fn compare_permissions_with_limit(
 
 /// The system read, for the app.
 pub fn system_read(path: &Path, what: What) -> io::Result<Descriptor> {
-    scan_core::security::read(path, what)
+    scan_core::security::read_unless_changed(path, what)
 }
 
 #[cfg(test)]
