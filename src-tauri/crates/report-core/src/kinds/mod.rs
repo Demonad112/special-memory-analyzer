@@ -247,12 +247,12 @@ impl CleanReport {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn entry(saved: &Saved) -> Entry {
     header_entry(Header::of(saved))
 }
 
 pub(crate) fn header_entry(header: Header) -> Entry {
+    let mut csv_layouts = Vec::new();
     let (kind, title, subject, headline, problem) = match header.body {
         BodyHeader::Compare(report) => (
             ReportKind::Compare,
@@ -307,13 +307,28 @@ pub(crate) fn header_entry(header: Header) -> Entry {
             ),
             false,
         ),
-        BodyHeader::Readiness(report) => (
-            ReportKind::Readiness,
-            "Migration readiness".to_string(),
-            readiness::subject(&report.source, &report.destination_root),
-            readiness::headline(&report),
-            report.has_problems(),
-        ),
+        BodyHeader::Readiness(report) => {
+            if report.permissions.status == migrate_core::AuditStatus::Checked {
+                csv_layouts.push(readiness::PERMISSIONS_LAYOUT.to_string());
+            }
+            (
+                ReportKind::Readiness,
+                "Migration readiness".to_string(),
+                readiness::subject(&report.source, &report.destination_root),
+                readiness::headline(&report),
+                report.has_problems(),
+            )
+        }
+        BodyHeader::Runbook(report) => {
+            let kinds: Vec<ReportKind> = report.parts.iter().map(|part| part.kind).collect();
+            (
+                ReportKind::Runbook,
+                "Migration runbook".to_string(),
+                runbook::parts_summary(&kinds),
+                plural(kinds.len() as u64, "part"),
+                false,
+            )
+        }
     };
     Entry {
         id: header.id,
@@ -324,6 +339,7 @@ pub(crate) fn header_entry(header: Header) -> Entry {
         headline,
         problem,
         job: header.job,
+        csv_layouts,
     }
 }
 
@@ -366,12 +382,15 @@ pub(crate) fn document(saved: &Saved) -> Document {
         Body::DiskUsage(report) => usage::disk_usage(report, meta),
         Body::Cleanup(report) => usage::cleanup(report, meta),
         Body::Readiness(report) => readiness::document(report, meta),
+        // Without the folders no part can be read; `runbook_document` is the real builder.
+        Body::Runbook(report) => runbook::build(report, meta, &runbook::NoParts),
     }
 }
 
 mod compare;
 mod readiness;
 mod record;
+mod runbook;
 #[cfg(test)]
 mod tests;
 mod usage;
@@ -379,3 +398,5 @@ mod usage;
 #[cfg(test)]
 use record::{check_label, record_verdict, status_label};
 pub(crate) use record::{record_document, record_entry};
+pub(crate) use runbook::{order_parts, part_exists, runbook_document};
+pub use runbook::{RunbookPart, RunbookReport};

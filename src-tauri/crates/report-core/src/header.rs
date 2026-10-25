@@ -5,8 +5,8 @@
 //! that field; anything it cannot be sure of falls back to a full parse that skips the field.
 
 use crate::JobInfo;
-#[cfg(test)]
-use crate::{Body, Saved};
+use crate::{Body, ReportKind, Saved};
+use migrate_core::AuditStatus;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, Visitor};
 use serde::Deserialize;
 use std::cell::RefCell;
@@ -35,6 +35,31 @@ pub(crate) enum BodyHeader {
     DiskUsage(UsageHeader),
     Cleanup(CleanHeader),
     Readiness(ReadinessHeader),
+    Runbook(RunbookHeader),
+}
+
+impl BodyHeader {
+    pub(crate) fn kind(&self) -> ReportKind {
+        match self {
+            BodyHeader::Compare(_) => ReportKind::Compare,
+            BodyHeader::DiskUsage(_) => ReportKind::DiskUsage,
+            BodyHeader::Cleanup(_) => ReportKind::Cleanup,
+            BodyHeader::Readiness(_) => ReportKind::Readiness,
+            BodyHeader::Runbook(_) => ReportKind::Runbook,
+        }
+    }
+}
+
+/// Which parts a runbook holds; their ids are not needed for the row.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct RunbookHeader {
+    pub parts: Vec<PartHeader>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PartHeader {
+    pub kind: ReportKind,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -73,6 +98,14 @@ pub(crate) struct ReadinessHeader {
     pub links: u64,
     pub permission_issues: u64,
     pub in_use: InUseHeader,
+    pub permissions: PermissionsHeader,
+}
+
+/// Whether the permissions audit ran: the permissions CSV exists only when it did.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct PermissionsHeader {
+    pub status: AuditStatus,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -108,7 +141,6 @@ pub(crate) struct CleanedHeader {
     pub freed: u64,
 }
 
-#[cfg(test)]
 impl Header {
     /// The header of a report that is already fully loaded.
     pub(crate) fn of(saved: &Saved) -> Self {
@@ -151,6 +183,16 @@ impl Header {
                     in_use: report.in_use.in_use,
                     unreadable: report.in_use.unreadable,
                 },
+                permissions: PermissionsHeader {
+                    status: report.permissions.status,
+                },
+            }),
+            Body::Runbook(report) => BodyHeader::Runbook(RunbookHeader {
+                parts: report
+                    .parts
+                    .iter()
+                    .map(|part| PartHeader { kind: part.kind })
+                    .collect(),
             }),
         };
         Self {
@@ -310,6 +352,12 @@ impl<'de> DeserializeSeed<'de> for DataSeed<'_> {
             "readiness" => {
                 let data = ReadinessHeader::deserialize(deserializer)?;
                 self.found.borrow_mut().body = Some(BodyHeader::Readiness(data));
+                Ok(())
+            }
+            // Small: only ids and kinds.
+            "runbook" => {
+                let data = RunbookHeader::deserialize(deserializer)?;
+                self.found.borrow_mut().body = Some(BodyHeader::Runbook(data));
                 Ok(())
             }
             "compare" | "diskUsage" => deserializer.deserialize_map(self),
@@ -509,6 +557,30 @@ mod tests {
         assert_eq!(row.kind, crate::ReportKind::Readiness);
         assert_eq!(row.subject, r"S → D:\x");
         assert!(row.problem);
+    }
+
+    #[test]
+    fn a_runbook_row_is_read_from_its_ids_and_a_readiness_row_knows_its_audit() {
+        let text = format!(
+            r#"{{{ENVELOPE},"body":{{"kind":"runbook","data":{{"parts":[{{"kind":"readiness","id":"a"}},{{"kind":"record","id":"b"}}]}}}}}}"#
+        );
+        let row = header_entry(read_text(&text).unwrap());
+        assert_eq!(row.kind, crate::ReportKind::Runbook);
+        assert_eq!(row.subject, "Readiness · 1 copy");
+        assert_eq!(row.headline, "2 parts");
+
+        let audited = format!(
+            r#"{{{ENVELOPE},"body":{{"kind":"readiness","data":{{"source":"S","permissions":{{"status":"checked","items":[{{"path":"a"}}]}}}}}}}}"#
+        );
+        assert_eq!(
+            header_entry(read_text(&audited).unwrap()).csv_layouts,
+            ["permissions"]
+        );
+        let off =
+            format!(r#"{{{ENVELOPE},"body":{{"kind":"readiness","data":{{"source":"S"}}}}}}"#);
+        assert!(header_entry(read_text(&off).unwrap())
+            .csv_layouts
+            .is_empty());
     }
 
     /// A build without the readiness kind (1.2.0, or this one reverted) skips such a report in

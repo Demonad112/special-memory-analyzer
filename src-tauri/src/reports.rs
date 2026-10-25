@@ -2,7 +2,7 @@
 //! company logo the exports carry (Settings).
 
 use cleanup_core::Protected;
-use report_core::{branding, Branding, Entry, ReportKind};
+use report_core::{branding, Branding, Entry, JobInfo, ReportKind, RunbookPart};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -112,6 +112,20 @@ pub async fn reports_list() -> Result<Vec<Entry>, String> {
     })
     .await
     .map_err(|err| err.to_string())
+}
+
+/// Makes a runbook from the picked reports: ids only, checked against the reports and records
+/// folders here, never paths. Returns its row for the list.
+#[tauri::command]
+pub async fn runbook_create(job: JobInfo, parts: Vec<RunbookPart>) -> Result<Entry, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (reports, records) = roots();
+        report_core::create_runbook(&reports, &records, job, parts)
+            .map(|saved| report_core::entry_of(&saved))
+            .inspect_err(|err| report_core::applog::error(&format!("runbook_create: {err}")))
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
