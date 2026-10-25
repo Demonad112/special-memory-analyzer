@@ -208,7 +208,8 @@ fn report_path(root: &Path, id: &str) -> Result<PathBuf, String> {
 pub fn save_record_job(records: &Path, run_id: &str, job: &JobInfo) -> Result<(), String> {
     let store = RunStore::open(records, run_id).map_err(|err| err.to_string())?;
     let json = serde_json::to_vec_pretty(job).map_err(|err| err.to_string())?;
-    fs::write(store.dir().join(JOB_FILE), json).map_err(|err| err.to_string())
+    transfer_core::store::write_atomic(&store.dir().join(JOB_FILE), &json)
+        .map_err(|err| err.to_string())
 }
 
 pub fn record_job(store: &RunStore) -> JobInfo {
@@ -536,6 +537,60 @@ mod tests {
         delete(&reports, &records, ReportKind::DiskUsage, &first.id).unwrap();
         assert_eq!(list(&reports, &records).len(), 1);
         assert!(load(&reports, &first.id).is_err());
+    }
+
+    /// A completed run with no files, for tests that need a run folder `RunStore::open` accepts.
+    fn finished_run(store: &RunStore) -> transfer_core::RunSummary {
+        use transfer_core::{
+            ConflictPolicy, RunState, RunSummary, RunTotals, TransferMode, TransferSettings,
+            VerifyLevel,
+        };
+        RunSummary {
+            id: store.id(),
+            settings: TransferSettings {
+                source: r"C:\src".into(),
+                destination: r"D:\dst".into(),
+                mode: TransferMode::Copy,
+                verify: VerifyLevel::SizeAndTime,
+                conflict: ConflictPolicy::Skip,
+                ignore_junk: false,
+                download_cloud: false,
+                preserve: Default::default(),
+            },
+            state: RunState::Completed,
+            created_at_ms: 1,
+            started_at_ms: None,
+            finished_at_ms: Some(2),
+            machine: "PC1".into(),
+            user: "sam".into(),
+            totals: RunTotals::default(),
+            error: None,
+            previous_run_id: None,
+        }
+    }
+
+    #[test]
+    fn the_job_file_is_written_atomically() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = temp.path().join("Records");
+        let store = RunStore::create(&records).unwrap();
+        store.save_summary(&finished_run(&store)).unwrap();
+        let job = |client: &str| JobInfo {
+            client: client.into(),
+            ..JobInfo::default()
+        };
+        save_record_job(&records, &store.id(), &job("Acme")).unwrap();
+        assert_eq!(record_job(&store).client, "Acme");
+        assert!(
+            !store.dir().join("job.json.tmp").exists(),
+            "the tmp file is renamed away"
+        );
+
+        // A write that cannot start (the tmp path is taken by a folder) fails and leaves the old
+        // file as it was; a plain fs::write would have replaced it in place.
+        fs::create_dir(store.dir().join("job.json.tmp")).unwrap();
+        assert!(save_record_job(&records, &store.id(), &job("Other")).is_err());
+        assert_eq!(record_job(&store).client, "Acme");
     }
 
     #[test]
