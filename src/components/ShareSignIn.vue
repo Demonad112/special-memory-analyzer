@@ -3,13 +3,20 @@ import { computed, ref, watch } from 'vue'
 import { errorMessage } from '@/lib/errors'
 import { connectShare, shareOf } from '@/lib/record'
 
-const props = defineProps<{ paths: string[] }>()
+const props = defineProps<{
+  paths: string[]
+  /** Pre-fills the user name (a server profile's account). Nothing else is remembered. */
+  username?: string
+  /** Opens the form without the user clicking the summary (after an access denied). */
+  open?: boolean
+}>()
+const emit = defineEmits<{ signedIn: [share: string] }>()
 
 const shares = computed(() => [
   ...new Set(props.paths.map(shareOf).filter((share): share is string => share !== null)),
 ])
 const share = ref('')
-const username = ref('')
+const username = ref(props.username ?? '')
 const password = ref('')
 const busy = ref(false)
 const message = ref('')
@@ -25,6 +32,13 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => props.username,
+  (name) => {
+    username.value = name ?? ''
+  },
+)
+
 async function connect() {
   busy.value = true
   message.value = ''
@@ -32,6 +46,7 @@ async function connect() {
   try {
     const connected = await connectShare(share.value, username.value.trim(), password.value)
     message.value = `Signed in to ${connected}. It stays signed in until you sign out of Windows.`
+    emit('signedIn', connected)
   } catch (error) {
     failed.value = true
     message.value = errorMessage(error)
@@ -47,6 +62,7 @@ async function connect() {
   <details
     v-if="shares.length > 0"
     class="mt-3 text-[13px]"
+    :open="open || undefined"
   >
     <summary class="w-fit cursor-pointer text-muted hover:text-fg">
       Network share asks for a sign-in?
