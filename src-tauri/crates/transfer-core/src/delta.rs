@@ -464,4 +464,51 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert_eq!(Dest::read(&link), Dest::Other);
     }
+
+    /// A junction needs no administrator rights, so this runs on the Windows CI job.
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_at_the_destination_is_not_followed() {
+        let dir = crate::test_support::TempDir::new("delta-junction");
+        let target = dir.path("target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("inside.txt"), b"hello").unwrap();
+        let junction = dir.path("junction");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .output()
+            .expect("mklink should run")
+            .status;
+        assert!(status.success(), "mklink /J failed");
+        assert_eq!(Dest::read(&junction), Dest::Other);
+        // Nothing was read through it.
+        assert!(target.join("inside.txt").is_file());
+        let _ = std::fs::remove_dir(&junction);
+    }
+
+    /// NTFS keeps 100 ns ticks; a time set on a file reads back within the tolerance after the
+    /// round trip through the milliseconds a run saves.
+    #[cfg(windows)]
+    #[test]
+    fn an_ntfs_time_survives_the_saved_millisecond_format() {
+        let dir = crate::test_support::TempDir::new("delta-ticks");
+        let path = dir.write("f.txt", b"x");
+        let time = UNIX_EPOCH + std::time::Duration::from_nanos(1_790_000_000_123_456_700);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+        let read = match Dest::read(&path) {
+            Dest::File { modified_ms, .. } => modified_ms,
+            other => panic!("{other:?}"),
+        };
+        let saved = serde_json::to_string(&read).unwrap();
+        let back: Option<u64> = serde_json::from_str(&saved).unwrap();
+        assert_eq!(back, to_ms(time));
+        assert!(!times_differ(back, read));
+    }
 }
