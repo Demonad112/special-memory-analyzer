@@ -476,6 +476,7 @@ fn record_verdict_matrix() {
             ..RunTotals::default()
         },
         error: error.map(str::to_string),
+        previous_run_id: None,
     };
     assert_eq!(
         record_verdict(&run(RunState::Completed, 0, None)),

@@ -1,7 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { reactive } from 'vue'
 import { trackJob } from './busy'
-import { formatBytes, formatReportDateTime, plural } from './format'
+import { formatBytes, formatCount, formatDateTime, formatReportDateTime, plural } from './format'
 import { currentJob, type JobInfo } from './job'
 
 /** Copy: Deep Server Analyzer copies. Watch: another program copies and Deep Server Analyzer checks what arrives. */
@@ -61,6 +61,15 @@ export interface RunTotals {
   skippedIdentical: number
   notCopied: number
   notCopiedBytes: number
+  /** A delta run's plan; all 0 for any other run. */
+  changed: number
+  new: number
+  retried: number
+  unchanged: number
+  /** Edited at the destination after the previous run: left alone and listed. */
+  changedAtDestination: number
+  /** Only at the destination, left in place. */
+  destinationOnly: number
 }
 
 export interface RunSummary {
@@ -81,6 +90,24 @@ export interface RunSummary {
   user: string
   totals: RunTotals
   error: string | null
+  /** The run this one follows ("Copy changes since this run"); null for an ordinary run. */
+  previousRunId: string | null
+}
+
+/** The run a delta run follows. The times are null once that run has been removed. */
+export interface PreviousRun {
+  id: string
+  createdAtMs: number | null
+  finishedAtMs: number | null
+}
+
+/** A file a delta run left alone because it was edited at the destination. */
+export interface LeftBehind {
+  relativePath: string
+  size: number
+  sourceModifiedMs: number | null
+  destSize: number
+  destModifiedMs: number | null
 }
 
 export type FailureReason =
@@ -141,6 +168,10 @@ export interface RunDetails {
   /** Client, ticket and technician typed when it started. */
   job: JobInfo
   folder: string
+  /** Set on a delta run. */
+  previousRun: PreviousRun | null
+  /** A delta run's files left alone at the destination; `totals.changedAtDestination` counts all. */
+  leftAtDestination: LeftBehind[]
 }
 
 export interface RecoveryResult {
@@ -214,6 +245,41 @@ export function copyMissingRecord(
       onEvent: channel(onProgress),
     }),
   )
+}
+
+/**
+ * "Copy changes since this run": a new Copy run with the same folders and settings that copies
+ * only what changed since `runId`, and never removes anything at the destination.
+ */
+export function deltaRecord(
+  runId: string,
+  onProgress: (progress: RecordProgress) => void,
+): Promise<RunDetails> {
+  return trackJob(() => invoke<RunDetails>('record_delta', { runId, onEvent: channel(onProgress) }))
+}
+
+/** Whether a run can be followed by a delta run: a finished Copy run (not a Watch run). */
+export function canCopyChanges(
+  run: Pick<RunSummary, 'state'> & { settings: { mode: RecordMode } },
+): boolean {
+  return run.settings.mode === 'copy' && (run.state === 'completed' || run.state === 'cancelled')
+}
+
+/** "Changes since run of Oct 21, 2026, 6:02 PM", or the id once that run is gone. */
+export function chainText(previous: PreviousRun): string {
+  return previous.createdAtMs === null
+    ? `Changes since run ${previous.id} (no longer on this computer)`
+    : `Changes since run of ${formatDateTime(previous.createdAtMs)}`
+}
+
+/** "3 changed · 2 new · 1 retried · 40 unchanged", the chain's totals line. */
+export function deltaTotalsText(totals: RunTotals): string {
+  return [
+    `${formatCount(totals.changed)} changed`,
+    `${formatCount(totals.new)} new`,
+    `${formatCount(totals.retried)} retried`,
+    `${formatCount(totals.unchanged)} unchanged`,
+  ].join(' · ')
 }
 
 /** Copies the not-copied files again: `paths` and/or one `reason`, or all of them when neither. */

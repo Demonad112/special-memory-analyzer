@@ -120,6 +120,7 @@ pub fn run() {
             readiness::readiness_reveal,
             record::record_start,
             record::record_retry,
+            record::record_delta,
             record::record_copy_missing,
             record::record_finish,
             record::record_cancel,

@@ -573,6 +573,7 @@ mod tests {
                     ..RunTotals::default()
                 },
                 error: None,
+                previous_run_id: None,
             })
             .unwrap();
         let job = JobInfo {
@@ -638,6 +639,7 @@ mod tests {
                     ..RunTotals::default()
                 },
                 error: None,
+                previous_run_id: None,
             })
             .unwrap();
         let item = |path: &str, size: u64, status: ItemStatus| ItemResult {
@@ -675,6 +677,102 @@ mod tests {
                 "raw {bytes} missing in {csv}"
             );
         }
+    }
+
+    #[test]
+    fn a_delta_record_shows_its_chain_and_lists_what_it_left_alone() {
+        use transfer_core::delta::LeftBehind;
+        use transfer_core::{
+            ConflictPolicy, RunState, RunSummary, RunTotals, TransferMode, TransferSettings,
+            VerifyLevel,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let records = temp.path().join("Records");
+        let summary_for = |store: &RunStore, previous: Option<String>, totals: RunTotals| {
+            let summary = RunSummary {
+                id: store.id(),
+                settings: TransferSettings {
+                    source: r"C:\src".into(),
+                    destination: r"D:\dst".into(),
+                    mode: TransferMode::Copy,
+                    verify: VerifyLevel::SizeAndTime,
+                    conflict: ConflictPolicy::Skip,
+                    ignore_junk: false,
+                    download_cloud: false,
+                    preserve: Default::default(),
+                },
+                state: RunState::Completed,
+                created_at_ms: 1_790_000_000_000,
+                started_at_ms: None,
+                finished_at_ms: Some(1_790_000_100_000),
+                machine: "PC1".into(),
+                user: "sam".into(),
+                totals,
+                error: None,
+                previous_run_id: previous,
+            };
+            store.save_summary(&summary).unwrap();
+        };
+        let first = RunStore::create(&records).unwrap();
+        summary_for(&first, None, RunTotals::default());
+        let second = RunStore::create(&records).unwrap();
+        summary_for(
+            &second,
+            Some(first.id()),
+            RunTotals {
+                changed: 3,
+                new: 2,
+                retried: 1,
+                unchanged: 40,
+                changed_at_destination: 1,
+                destination_only: 12,
+                ..RunTotals::default()
+            },
+        );
+        let mut writer = second.delta_left_writer().unwrap();
+        writer
+            .write(&LeftBehind {
+                relative_path: "docs/edited.txt".into(),
+                size: 1234,
+                source_modified_ms: Some(1),
+                dest_size: 4321,
+                dest_modified_ms: Some(1_790_000_200_000),
+            })
+            .unwrap();
+        writer.finish().unwrap();
+
+        let doc = document(temp.path(), &records, ReportKind::Record, &second.id()).unwrap();
+        let notes = doc.notes.join("\n");
+        assert!(
+            notes.contains("Changes since the run of 2026-09-2"),
+            "{notes}"
+        );
+        assert!(
+            notes.contains("3 files changed, 2 files new, 1 file retried, 40 files unchanged"),
+            "{notes}"
+        );
+        assert!(
+            notes.contains("12 files only at the destination, left in place"),
+            "{notes}"
+        );
+        let left = doc
+            .tables
+            .iter()
+            .find(|table| table.heading == "Changed at the destination since the last run")
+            .expect("the left-alone table");
+        assert_eq!(left.rows[0][0], "docs/edited.txt");
+        assert!(left.rows[0][2].starts_with("4.22 KB"), "{:?}", left.rows[0]);
+        let csv = doc.csv();
+        assert!(csv.contains("docs/edited.txt"), "{csv}");
+        assert!(csv.contains("Left alone"), "{csv}");
+
+        // The first run, and any run saved before delta sync, shows no chain and no table.
+        let plain = document(temp.path(), &records, ReportKind::Record, &first.id()).unwrap();
+        assert!(!plain
+            .notes
+            .iter()
+            .any(|note| note.contains("Changes since")));
+        assert_eq!(plain.tables.len(), 1);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Step 2: copy the files of a prepared run, and later retry what was not copied.
 
 use crate::copy::{copy_file_with_retry, ConflictPolicy, CopyOptions, CopyOutcome};
+use crate::delta::{self, Dest, Source};
 use crate::prepare::{destination_path, safe_relative, ManifestEntry};
 use crate::reason::{classify, FailureReason, Side};
 use crate::store::{JsonlWriter, LogStatus, PathKey, RunStore};
@@ -60,6 +61,7 @@ pub fn run_copy(
     store.audit("start", LogStatus::Started, "Copy started", &[]);
 
     let settings = summary.settings.clone();
+    let destination = PathBuf::from(&settings.destination);
     let mut options = copy_options(&settings);
     if let Some(delays) = retry_delays {
         options.retry_delays = delays;
@@ -82,6 +84,27 @@ pub fn run_copy(
             }
             match row.kind {
                 ItemKind::Folder => copier.make_folder(&row.relative_path)?,
+                ItemKind::File if row.replace => {
+                    // A delta run replaces a different file at the destination, on purpose. Only
+                    // if nobody has edited it since this run was planned.
+                    let source = Source {
+                        size: row.size,
+                        modified_ms: row.modified_at_ms,
+                    };
+                    if delta::edited_since(
+                        Dest::read(&destination_path(&destination, &row.relative_path)),
+                        source,
+                        summary.created_at_ms,
+                    ) {
+                        copier.edited_at_destination(&row.relative_path, row.size)?;
+                    } else {
+                        copier.copy(
+                            &row.relative_path,
+                            row.size,
+                            Some(ConflictPolicy::Overwrite),
+                        )?;
+                    }
+                }
                 ItemKind::File => copier.copy(&row.relative_path, row.size, None)?,
             }
         }
@@ -354,6 +377,20 @@ impl<'a> Copier<'a> {
             self.record(item)?;
         }
         Ok(())
+    }
+
+    /// A file the run meant to replace was edited at the destination in the meantime: left as it
+    /// is and listed, so Retry can still replace it when the user decides to.
+    fn edited_at_destination(&mut self, relative_path: &str, size: u64) -> Result<()> {
+        self.progress.files_done += 1;
+        self.record(ItemResult::not_copied(
+            relative_path,
+            ItemKind::File,
+            size,
+            FailureReason::TargetExistsDifferent,
+            Some(Side::Destination),
+            "The file was edited at the destination after this run was planned, so it was not replaced.",
+        ))
     }
 
     pub(crate) fn copy(

@@ -391,6 +391,11 @@ function when(ms: number): string {
                   :class="run.totals.notCopied > 0 ? 'text-danger' : 'text-success'"
                   >{{ stateText(run) }}</span
                 >
+                <span
+                  v-if="run.previousRunId"
+                  class="block text-muted"
+                  >Changes since an earlier run</span
+                >
                 <span class="block text-muted">{{ when(run.createdAtMs) }}</span>
               </span>
             </RouterLink>

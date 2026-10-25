@@ -13,6 +13,7 @@
 
 pub mod copy;
 mod csv;
+pub mod delta;
 pub mod meta;
 pub mod prepare;
 pub mod reason;
@@ -109,6 +110,26 @@ pub struct RunTotals {
     pub skipped_identical: u64,
     pub not_copied: u64,
     pub not_copied_bytes: u64,
+    /// Present, with `changed_at_destination` and `destination_only`, only on a delta run
+    /// ([`RunSummary::previous_run_id`]): what the planning found, set once before the copy.
+    /// Files changed in the source since the previous run and already at the destination.
+    #[serde(default)]
+    pub changed: u64,
+    /// Files the previous run did not have at the destination.
+    #[serde(default)]
+    pub new: u64,
+    /// Files the previous run listed as not copied, tried again.
+    #[serde(default)]
+    pub retried: u64,
+    /// Files already at the destination with the same size and date, left alone.
+    #[serde(default)]
+    pub unchanged: u64,
+    /// Files edited at the destination after the previous run finished, left alone and listed.
+    #[serde(default)]
+    pub changed_at_destination: u64,
+    /// Files only at the destination, left in place. A delta run never removes anything.
+    #[serde(default)]
+    pub destination_only: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +146,10 @@ pub struct RunSummary {
     pub totals: RunTotals,
     /// Set when the run stopped on an error that is not about one file.
     pub error: Option<String>,
+    /// The run this one follows ("Copy changes since this run"). Runs saved before delta sync
+    /// have none and show no chain.
+    #[serde(default)]
+    pub previous_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

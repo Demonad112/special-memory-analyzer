@@ -175,6 +175,11 @@ pub struct RunDetails {
     job: report_core::JobInfo,
     /// Where the run's files are kept.
     folder: String,
+    /// The run a delta run follows; `None` for an ordinary run.
+    previous_run: Option<transfer_core::delta::PreviousRun>,
+    /// A delta run's files left alone at the destination (the first [`MAX_NOT_COPIED_ROWS`]);
+    /// `summary.totals.changed_at_destination` counts all of them.
+    left_at_destination: Vec<transfer_core::delta::LeftBehind>,
 }
 
 fn load(run_id: &str) -> Result<RunDetails, String> {
@@ -185,8 +190,11 @@ fn load(run_id: &str) -> Result<RunDetails, String> {
         .into_values()
         .take(MAX_NOT_COPIED_ROWS)
         .collect();
+    let summary = store.summary().map_err(to_text)?;
     Ok(RunDetails {
-        summary: store.summary().map_err(to_text)?,
+        previous_run: transfer_core::delta::previous_run(&store, &summary),
+        left_at_destination: transfer_core::delta::left_behind(&store, MAX_NOT_COPIED_ROWS),
+        summary,
         preflight: store.preflight().ok(),
         not_copied,
         job: report_core::record_job(&store),
@@ -384,6 +392,42 @@ pub async fn record_copy_missing(
         .map_err(to_text)?;
         if !job.is_empty() {
             let _ = report_core::save_record_job(&root, &summary.id, &job);
+        }
+        check_copy_preflight(&preflight)?;
+        let finished =
+            transfer_core::run::run_copy(&root, &summary.id, None, &control.cancel, &mut sink);
+        sink.flush();
+        finished.map(|summary| summary.id).map_err(to_text)
+    })
+    .await
+}
+
+/// "Copy changes since this run": a new Copy run with the same source, destination and settings
+/// as a finished one, copying only what changed since (missing, a different size or date, or not
+/// copied last time). Files edited at the destination after the last run are left and listed.
+/// Nothing is ever removed at the destination. Watched runs have no delta run.
+#[tauri::command]
+pub async fn record_delta(
+    state: State<'_, RecordState>,
+    run_id: String,
+    on_event: Channel<TransferProgress>,
+) -> Result<RunDetails, String> {
+    job(&state, move |control| {
+        let root = transfer_core::records_root();
+        let mut sink = ChannelSink::new(&on_event);
+        // The job slot is ours, so a run still saying Running was left by a dead app.
+        if let Ok(store) = RunStore::open(&root, &run_id) {
+            let _ = transfer_core::run::recover_interrupted(&store);
+        }
+        let (summary, preflight) =
+            transfer_core::prepare::prepare_delta(&root, &run_id, &control.cancel, &mut sink)
+                .map_err(to_text)?;
+        // The same client, ticket and technician as the run it follows.
+        if let Ok(previous) = RunStore::open(&root, &run_id) {
+            let job = report_core::record_job(&previous);
+            if !job.is_empty() {
+                let _ = report_core::save_record_job(&root, &summary.id, &job);
+            }
         }
         check_copy_preflight(&preflight)?;
         let finished =

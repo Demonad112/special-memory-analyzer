@@ -8,11 +8,13 @@ import {
   FileText,
   FolderInput,
   FolderOpen,
+  GitCompareArrows,
   LoaderCircle,
   RotateCcw,
   TriangleAlert,
 } from '@lucide/vue'
 import { computed, onMounted, ref, shallowRef, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import { copyText } from '@/lib/clipboard'
 import { pickFolder } from '@/lib/compare'
@@ -20,8 +22,12 @@ import { errorMessage } from '@/lib/errors'
 import { formatBytes, formatCount, formatDateTime, plural } from '@/lib/format'
 import { exportReport, openReport, type ExportFormat } from '@/lib/reports'
 import {
+  canCopyChanges,
   cancelRecord,
+  chainText,
   countByReason,
+  deltaRecord,
+  deltaTotalsText,
   formatNotCopiedList,
   isCancelled,
   loadRecord,
@@ -66,6 +72,8 @@ watch(() => props.id, load)
 
 const summary = computed(() => details.value?.summary)
 const totals = computed(() => summary.value?.totals)
+const isDelta = computed(() => details.value?.previousRun != null)
+const canFollowUp = computed(() => (summary.value ? canCopyChanges(summary.value) : false))
 const reasons = computed(() => countByReason(details.value?.notCopied ?? []))
 const finishedOk = computed(
   () => summary.value?.state === 'completed' && totals.value?.notCopied === 0,
@@ -146,6 +154,34 @@ async function retry(reason: FailureReason | null = null): Promise<void> {
     await load()
   } finally {
     job.running = false
+  }
+}
+
+/** "Copy changes since this run": a new run that copies only what changed, then opens its report. */
+const router = useRouter()
+const following = ref(false)
+async function copyChanges(): Promise<void> {
+  notice.value = ''
+  error.value = ''
+  following.value = true
+  job.running = true
+  job.mode = 'copy'
+  job.progress = null
+  job.copyStartedAt = Date.now()
+  job.finishing = false
+  const from = props.id
+  try {
+    const result = await deltaRecord(from, (progress) => (job.progress = progress))
+    if (from === props.id) {
+      await router.push(`/compare/record/${result.summary.id}`)
+    }
+  } catch (err) {
+    if (!isCancelled(err)) {
+      error.value = errorMessage(err)
+    }
+  } finally {
+    job.running = false
+    following.value = false
   }
 }
 
@@ -238,8 +274,53 @@ async function reveal(relativePath: string, side: RevealSide): Promise<void> {
       </button>
     </p>
 
+    <div
+      v-if="following"
+      class="mb-3 flex items-center gap-3 rounded-lg border border-stroke bg-card px-4 py-2 text-[13px]"
+      aria-live="polite"
+    >
+      <LoaderCircle class="size-4 animate-spin text-accent" />
+      <span class="flex-1 tabular-nums">
+        <template v-if="job.progress?.phase === 'scanning'">
+          Looking for changes… {{ formatCount(job.progress.filesDone) }} files listed
+        </template>
+        <template v-else-if="job.progress">
+          Copying changes {{ formatCount(job.progress.filesDone) }} of
+          {{ formatCount(job.progress.filesTotal) }}
+          <span
+            v-if="job.progress.current"
+            class="text-muted"
+          >
+            · {{ job.progress.current }}</span
+          >
+        </template>
+        <template v-else>Starting…</template>
+      </span>
+      <button
+        type="button"
+        class="h-7 rounded-md border border-stroke px-3 hover:bg-card-hover"
+        @click="cancelRecord"
+      >
+        Cancel
+      </button>
+    </div>
+
     <template v-if="summary && totals">
-      <div class="mb-3 flex justify-end gap-2">
+      <div class="mb-3 flex flex-wrap justify-end gap-2">
+        <button
+          v-if="canFollowUp"
+          type="button"
+          class="flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
+          :disabled="busy"
+          title="Start a new run that copies only what changed since this one. Nothing is removed at the destination."
+          @click="copyChanges"
+        >
+          <GitCompareArrows
+            class="size-4"
+            :stroke-width="1.75"
+          />
+          Copy changes since this run
+        </button>
         <button
           type="button"
           class="flex h-8 items-center gap-1.5 rounded-md border border-stroke bg-card px-3 text-[13px] hover:bg-card-hover"
@@ -325,6 +406,88 @@ async function reveal(relativePath: string, side: RevealSide): Promise<void> {
       >
         {{ summary.error }}
       </p>
+
+      <section
+        v-if="details?.previousRun"
+        class="mt-4 rounded-lg border border-stroke bg-card px-4 py-3"
+        aria-label="Delta run"
+      >
+        <p class="font-semibold">
+          {{ chainText(details.previousRun) }}
+          <RouterLink
+            v-if="details.previousRun.createdAtMs !== null"
+            :to="`/compare/record/${details.previousRun.id}`"
+            class="ml-2 text-[13px] font-normal text-accent hover:underline"
+          >
+            Open that run
+          </RouterLink>
+        </p>
+        <p class="mt-1 text-[13px] tabular-nums text-muted">
+          {{ deltaTotalsText(totals) }}
+        </p>
+        <p class="mt-1 text-[13px] text-muted">
+          {{ plural(totals.destinationOnly, 'file') }} only at the destination, left in place.
+          Nothing is removed at the destination.
+        </p>
+      </section>
+
+      <section
+        v-if="isDelta && totals.changedAtDestination > 0"
+        class="mt-4"
+      >
+        <h2 class="mb-1 font-semibold">
+          Changed at the destination since the last run ({{
+            formatCount(totals.changedAtDestination)
+          }})
+        </h2>
+        <p class="mb-2 text-[13px] text-muted">
+          These files were edited at the destination after the previous run finished, so this run
+          left them as they are.
+        </p>
+        <div class="overflow-auto rounded-lg border border-stroke bg-card">
+          <table class="w-full text-left text-[13px]">
+            <thead class="sticky top-0 bg-card text-muted">
+              <tr class="border-b border-stroke">
+                <th class="px-3 py-2 font-normal">File</th>
+                <th class="px-3 py-2 text-right font-normal">Source size</th>
+                <th class="px-3 py-2 text-right font-normal">At the destination</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="item in details?.leftAtDestination.slice(0, shownRows)"
+                :key="item.relativePath"
+                class="border-b border-stroke last:border-0 hover:bg-card-hover"
+                @dblclick="reveal(item.relativePath, 'destination')"
+              >
+                <td class="max-w-0 px-3 py-1.5">
+                  <span
+                    class="block truncate"
+                    :title="item.relativePath"
+                    >{{ item.relativePath.replaceAll('/', '\\') }}</span
+                  >
+                </td>
+                <td class="px-3 py-1.5 text-right whitespace-nowrap tabular-nums">
+                  {{ formatBytes(item.size) }}
+                </td>
+                <td class="px-3 py-1.5 text-right whitespace-nowrap tabular-nums">
+                  {{ formatBytes(item.destSize)
+                  }}<template v-if="item.destModifiedMs">
+                    · {{ formatDateTime(item.destModifiedMs) }}</template
+                  >
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p
+          v-if="totals.changedAtDestination > shownRows"
+          class="mt-2 text-[13px] text-muted"
+        >
+          Showing {{ formatCount(shownRows) }} of {{ formatCount(totals.changedAtDestination) }};
+          the CSV has up to {{ formatCount(details?.leftAtDestination.length ?? 0) }}.
+        </p>
+      </section>
 
       <p
         v-if="finishedOk"

@@ -1,18 +1,19 @@
 //! Step 1 of a run: list the source into `manifest.jsonl` and check, before anything is copied,
 //! what would go wrong (space, names, long paths, write access), so it can be fixed first.
 
-use crate::copy::times_match;
+use crate::copy::{times_match, PART_SUFFIX};
+use crate::delta::{self, Class, Dest, LeftBehind, Source};
 use crate::reason::{classify, FailureReason, Side};
 use crate::store::{LogStatus, PathKey, RunStore};
 use crate::volume::volume_info;
 use crate::walk::{self, Entry};
 use crate::{
-    machine_name, now_ms, user_name, CancelToken, ConflictPolicy, ItemKind, ItemResult, Phase,
-    Result, RunState, RunSummary, RunTotals, TransferError, TransferMode, TransferProgress,
+    machine_name, now_ms, user_name, CancelToken, ConflictPolicy, ItemKind, ItemResult, ItemStatus,
+    Phase, Result, RunState, RunSummary, RunTotals, TransferError, TransferMode, TransferProgress,
     TransferSettings, TransferSink,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
@@ -38,6 +39,9 @@ pub struct ManifestEntry {
     /// opens such a source.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cloud: bool,
+    /// Delta runs: a different file is at the destination and this one replaces it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +151,96 @@ pub fn prepare_only(
     cancel: &CancelToken,
     sink: &mut dyn TransferSink,
 ) -> Result<(RunSummary, PreflightReport)> {
+    prepare_run(root, settings, only, None, cancel, sink)
+}
+
+/// The pre-flight of a delta run: "Copy changes since this run" (decision D-10).
+///
+/// Starts a new run with the same source, destination and settings as `previous_run_id`, whose
+/// manifest holds only the files a second pass has to copy:
+/// - files missing at the destination (new), with a different size or date (changed), or that
+///   the previous run listed as not copied (retried);
+/// - not the files that are unchanged, and not the files edited at the destination after the
+///   previous run finished: those are counted and listed in `delta-left.jsonl`.
+///
+/// Files only at the destination are counted and left. Nothing there is ever removed. The
+/// previous run's folder is only read.
+pub fn prepare_delta(
+    root: &Path,
+    previous_run_id: &str,
+    cancel: &CancelToken,
+    sink: &mut dyn TransferSink,
+) -> Result<(RunSummary, PreflightReport)> {
+    let previous = RunStore::open(root, previous_run_id)?;
+    let before = previous.summary()?;
+    if before.settings.mode != TransferMode::Copy {
+        return Err(TransferError::BadRun(
+            "A watched copy can't be followed up: another tool did that copy.".to_owned(),
+        ));
+    }
+    if !matches!(before.state, RunState::Completed | RunState::Cancelled) {
+        return Err(TransferError::BadRun(
+            "Only a finished run (completed or cancelled) can be followed by a delta run."
+                .to_owned(),
+        ));
+    }
+    let finished_at_ms = before.finished_at_ms.ok_or_else(|| {
+        TransferError::BadRun("The previous run has no finish time to compare against.".to_owned())
+    })?;
+    let retry = previous
+        .latest_results_where(|item| {
+            item.status == ItemStatus::NotCopied && item.kind == ItemKind::File
+        })?
+        .keys()
+        .map(|path| lower_key(path))
+        .collect();
+    let mut left_before = HashMap::new();
+    if let Some(rows) = previous.delta_left::<LeftBehind>()? {
+        for row in rows {
+            let row = row?;
+            left_before.insert(lower_key(&row.relative_path), row);
+        }
+    }
+    let plan = DeltaPlan {
+        previous_run_id: previous_run_id.to_owned(),
+        previous_finished_ms: finished_at_ms,
+        retry,
+        left_before,
+        counts: DeltaCounts::default(),
+        left: Vec::new(),
+    };
+    prepare_run(root, before.settings, None, Some(plan), cancel, sink)
+}
+
+/// What a delta run found while planning, and the files it left alone.
+struct DeltaPlan {
+    previous_run_id: String,
+    previous_finished_ms: u64,
+    /// Lowercased-path fingerprints of the files the previous run did not copy.
+    retry: HashSet<PathKey>,
+    /// What the previous run itself left alone, so a file stays left until it changes again.
+    left_before: HashMap<PathKey, LeftBehind>,
+    counts: DeltaCounts,
+    left: Vec<LeftBehind>,
+}
+
+#[derive(Default)]
+struct DeltaCounts {
+    changed: u64,
+    new: u64,
+    retried: u64,
+    unchanged: u64,
+    changed_at_destination: u64,
+}
+
+fn prepare_run(
+    root: &Path,
+    settings: TransferSettings,
+    only: Option<&OnlyPaths>,
+    delta: Option<DeltaPlan>,
+    cancel: &CancelToken,
+    sink: &mut dyn TransferSink,
+) -> Result<(RunSummary, PreflightReport)> {
     let source = PathBuf::from(&settings.source);
     let destination = PathBuf::from(&settings.destination);
     check_roots(&source, &destination)?;
@@ -163,6 +257,7 @@ pub fn prepare_only(
         user: user_name(),
         totals: RunTotals::default(),
         error: None,
+        previous_run_id: delta.as_ref().map(|plan| plan.previous_run_id.clone()),
     };
     store.save_summary(&summary)?;
 
@@ -189,11 +284,24 @@ pub fn prepare_only(
         &settings,
         &source,
         &destination,
-        only,
+        (only, delta),
         cancel,
         sink,
         &mut report,
-    );
+    )
+    .and_then(|scanned| match scanned.delta {
+        Some(plan) => finish_delta(
+            &store,
+            &settings,
+            &destination,
+            plan,
+            &scanned.source_keys,
+            cancel,
+            sink,
+            &mut summary.totals,
+        ),
+        None => Ok(()),
+    });
     if let Err(error) = scan {
         summary.state = if matches!(error, TransferError::Cancelled) {
             RunState::Cancelled
@@ -285,8 +393,15 @@ struct ScanState<'a> {
     settings: &'a TransferSettings,
     destination: &'a Path,
     only: Option<&'a OnlyPaths>,
+    delta: Option<DeltaPlan>,
     /// Fingerprints of the lowercased paths, to spot names that differ only by case.
     seen: HashSet<PathKey>,
+}
+
+/// What listing the source leaves behind for a delta run to finish with.
+struct Scanned {
+    delta: Option<DeltaPlan>,
+    source_keys: HashSet<PathKey>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -295,11 +410,11 @@ fn scan_source(
     settings: &TransferSettings,
     source: &Path,
     destination: &Path,
-    only: Option<&OnlyPaths>,
+    (only, delta): (Option<&OnlyPaths>, Option<DeltaPlan>),
     cancel: &CancelToken,
     sink: &mut dyn TransferSink,
     report: &mut PreflightReport,
-) -> Result<()> {
+) -> Result<Scanned> {
     let tree = walk::scan_tree(source, settings.ignore_junk, cancel, &mut |scanned| {
         sink.progress(&TransferProgress {
             run_id: store.id(),
@@ -319,6 +434,7 @@ fn scan_source(
         settings,
         destination,
         only,
+        delta,
         seen: HashSet::new(),
     };
     let mut manifest = store.manifest_writer()?;
@@ -335,7 +451,84 @@ fn scan_source(
         Ok(enter)
     })?;
     manifest.finish()?;
-    results.finish()
+    results.finish()?;
+    Ok(Scanned {
+        delta: state.delta,
+        source_keys: state.seen,
+    })
+}
+
+/// The last part of planning a delta run: saves the files left alone, counts the files that are
+/// only at the destination, and puts the counts on the run.
+#[allow(clippy::too_many_arguments)]
+fn finish_delta(
+    store: &RunStore,
+    settings: &TransferSettings,
+    destination: &Path,
+    plan: DeltaPlan,
+    source_keys: &HashSet<PathKey>,
+    cancel: &CancelToken,
+    sink: &mut dyn TransferSink,
+    totals: &mut RunTotals,
+) -> Result<()> {
+    let mut left = store.delta_left_writer()?;
+    for row in &plan.left {
+        left.write(row)?;
+    }
+    left.finish()?;
+    let destination_only = count_destination_only(
+        destination,
+        settings.ignore_junk,
+        source_keys,
+        cancel,
+        &mut |scanned| {
+            sink.progress(&TransferProgress {
+                run_id: store.id(),
+                phase: Phase::Scanning,
+                files_done: scanned.files,
+                files_total: 0,
+                bytes_done: 0,
+                bytes_total: scanned.bytes,
+                copied: 0,
+                skipped: 0,
+                not_copied: 0,
+                current: Some(scanned.current.clone()).filter(|current| !current.is_empty()),
+            });
+        },
+    )?;
+    totals.changed = plan.counts.changed;
+    totals.new = plan.counts.new;
+    totals.retried = plan.counts.retried;
+    totals.unchanged = plan.counts.unchanged;
+    totals.changed_at_destination = plan.counts.changed_at_destination;
+    totals.destination_only = destination_only;
+    Ok(())
+}
+
+/// Files at the destination that the source does not have. Only counted: nothing is touched.
+fn count_destination_only(
+    destination: &Path,
+    ignore_junk: bool,
+    source_keys: &HashSet<PathKey>,
+    cancel: &CancelToken,
+    on_progress: &mut dyn FnMut(&scan_core::ScanProgress),
+) -> Result<u64> {
+    if !destination.is_dir() {
+        return Ok(0);
+    }
+    let tree = walk::scan_tree(destination, ignore_junk, cancel, on_progress)?;
+    let mut only_here = 0;
+    walk::visit(&tree, &mut |entry| {
+        if let Entry::File { relative_path, .. } = entry {
+            // A half-written copy from an interrupted run is not a file of the destination.
+            let partial = relative_path.ends_with(PART_SUFFIX);
+            if !partial && !source_keys.contains(&PathKey::of(&relative_path.to_lowercase())) {
+                only_here += 1;
+            }
+        }
+        Ok(true)
+    })?;
+    Ok(only_here)
 }
 
 impl ScanState<'_> {
@@ -363,6 +556,7 @@ impl ScanState<'_> {
                     modified_at_ms: None,
                     blocked,
                     cloud: false,
+                    replace: false,
                 };
                 // A blocked folder cannot be created, so its contents cannot be copied either.
                 (Some(row), result, blocked.is_none())
@@ -376,6 +570,47 @@ impl ScanState<'_> {
                 if self.only.is_some_and(|only| !only.has_file(&relative_path)) {
                     return (None, None, false);
                 }
+                let mut delta_class = None;
+                let mut replace = false;
+                if self.delta.is_some() {
+                    let source = Source {
+                        size,
+                        modified_ms: modified_at_ms,
+                    };
+                    let (class, dest) = self.delta_class(&relative_path, source);
+                    match class {
+                        Class::Unchanged => {
+                            self.seen.insert(lower_key(&relative_path));
+                            report.already_there += 1;
+                            if let Some(plan) = &mut self.delta {
+                                plan.counts.unchanged += 1;
+                            }
+                            return (None, None, false);
+                        }
+                        Class::ChangedAtDestination => {
+                            self.seen.insert(lower_key(&relative_path));
+                            let (dest_size, dest_modified_ms) = match dest {
+                                Dest::File { size, modified_ms } => (size, modified_ms),
+                                _ => (0, None),
+                            };
+                            if let Some(plan) = &mut self.delta {
+                                plan.counts.changed_at_destination += 1;
+                                plan.left.push(LeftBehind {
+                                    relative_path,
+                                    size,
+                                    source_modified_ms: modified_at_ms,
+                                    dest_size,
+                                    dest_modified_ms,
+                                });
+                            }
+                            return (None, None, false);
+                        }
+                        Class::New | Class::Changed | Class::Retried => {
+                            replace = matches!(dest, Dest::File { .. });
+                            delta_class = Some(class);
+                        }
+                    }
+                }
                 report.files += 1;
                 report.bytes += size;
                 let blocked = self.check_name(&relative_path, report).or_else(|| {
@@ -387,7 +622,17 @@ impl ScanState<'_> {
                 });
                 let target = destination_path(self.destination, &relative_path);
                 if blocked.is_none() {
-                    self.count_space(&target, size, modified_at_ms, report);
+                    match (delta_class, &mut self.delta) {
+                        (Some(class), Some(plan)) => {
+                            report.bytes_needed += size;
+                            match class {
+                                Class::New => plan.counts.new += 1,
+                                Class::Changed => plan.counts.changed += 1,
+                                _ => plan.counts.retried += 1,
+                            }
+                        }
+                        _ => self.count_space(&target, size, modified_at_ms, report),
+                    }
                 }
                 let result = blocked.map(|reason| {
                     report.blocked += 1;
@@ -400,6 +645,7 @@ impl ScanState<'_> {
                     modified_at_ms,
                     blocked,
                     cloud,
+                    replace,
                 };
                 (Some(row), result, false)
             }
@@ -437,6 +683,7 @@ impl ScanState<'_> {
                     modified_at_ms: None,
                     blocked: Some(reason),
                     cloud: false,
+                    replace: false,
                 };
                 (Some(row), Some(result), false)
             }
@@ -461,6 +708,23 @@ impl ScanState<'_> {
                 (None, Some(result), false)
             }
         }
+    }
+
+    /// How a delta run treats a source file, and what the destination held when it looked.
+    fn delta_class(&self, relative_path: &str, source: Source) -> (Class, Dest) {
+        let Some(plan) = &self.delta else {
+            return (Class::New, Dest::Missing);
+        };
+        let key = lower_key(relative_path);
+        let dest = Dest::read(&destination_path(self.destination, relative_path));
+        let class = delta::classify(
+            source,
+            dest,
+            plan.retry.contains(&key),
+            plan.previous_finished_ms,
+            plan.left_before.get(&key),
+        );
+        (class, dest)
     }
 
     /// A blocking name problem, recording issues (a long path is only a warning).
@@ -491,7 +755,7 @@ impl ScanState<'_> {
             );
             return Some(FailureReason::InvalidName);
         }
-        if !self.seen.insert(PathKey::of(&relative_path.to_lowercase())) {
+        if !self.seen.insert(lower_key(relative_path)) {
             add(FailureReason::NameCollision, Severity::Blocker, None);
             return Some(FailureReason::NameCollision);
         }
@@ -531,6 +795,11 @@ impl ScanState<'_> {
             report.bytes_needed += size;
         }
     }
+}
+
+/// The fingerprint of a relative path as `seen` and the delta sets keep it: case-insensitive.
+fn lower_key(relative_path: &str) -> PathKey {
+    PathKey::of(&relative_path.to_lowercase())
 }
 
 fn blocked_result(
@@ -590,8 +859,6 @@ fn probe_write(destination: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
-    #[cfg(windows)]
-    use crate::ItemStatus;
     use crate::{NullSink, VerifyLevel};
 
     pub(crate) fn settings(source: &Path, destination: &Path) -> TransferSettings {
@@ -902,5 +1169,428 @@ mod tests {
         assert_eq!(row.status, ItemStatus::NotCopied);
         assert_eq!(row.kind, ItemKind::Folder);
         assert_eq!(row.reason, Some(FailureReason::AccessDenied));
+    }
+
+    mod delta_runs {
+        use super::*;
+        use crate::delta::LeftBehind;
+        use crate::run::run_copy;
+        use crate::{ItemStatus, TransferError};
+        use std::time::{Duration, SystemTime};
+
+        const DAY: Duration = Duration::from_secs(86_400);
+
+        fn set_time(path: &Path, time: SystemTime) {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(time)
+                .unwrap();
+        }
+
+        /// A finished first run over `src` into `dst`. Returns the run id.
+        fn first_run(dir: &TempDir) -> String {
+            let (summary, _) = prepare(
+                &dir.path("runs"),
+                settings(&dir.path("src"), &dir.path("dst")),
+                &CancelToken::default(),
+                &mut NullSink,
+            )
+            .unwrap();
+            let summary = run_copy(
+                &dir.path("runs"),
+                &summary.id,
+                None,
+                &CancelToken::default(),
+                &mut NullSink,
+            )
+            .unwrap();
+            assert_eq!(summary.state, RunState::Completed);
+            summary.id
+        }
+
+        fn delta(dir: &TempDir, previous: &str) -> (RunSummary, PreflightReport) {
+            prepare_delta(
+                &dir.path("runs"),
+                previous,
+                &CancelToken::default(),
+                &mut NullSink,
+            )
+            .unwrap()
+        }
+
+        fn manifest_paths(dir: &TempDir, run_id: &str) -> Vec<String> {
+            let store = RunStore::open(&dir.path("runs"), run_id).unwrap();
+            store
+                .manifest::<ManifestEntry>()
+                .unwrap()
+                .map(|row| row.unwrap())
+                .filter(|row| row.kind == ItemKind::File)
+                .map(|row| row.relative_path)
+                .collect()
+        }
+
+        fn left_alone(dir: &TempDir, run_id: &str) -> Vec<LeftBehind> {
+            let store = RunStore::open(&dir.path("runs"), run_id).unwrap();
+            store
+                .delta_left::<LeftBehind>()
+                .unwrap()
+                .map(|rows| rows.map(|row| row.unwrap()).collect())
+                .unwrap_or_default()
+        }
+
+        #[test]
+        fn copies_only_what_changed_and_leaves_the_rest() {
+            let dir = TempDir::new("delta-basic");
+            dir.write("src/same.txt", b"same");
+            dir.write("src/size.txt", b"short");
+            dir.write("src/newer.txt", b"newer");
+            dir.write("src/older.txt", b"older");
+            dir.write("src/sub/keep.txt", b"keep");
+            let first = first_run(&dir);
+
+            // After the first run: the source changes.
+            dir.write("src/size.txt", b"much longer now");
+            let touched = SystemTime::now() + DAY;
+            set_time(&dir.path("src/newer.txt"), touched);
+            set_time(&dir.path("src/older.txt"), SystemTime::now() - 30 * DAY);
+            dir.write("src/new.txt", b"brand new");
+            dir.write("src/sub/deeper/new2.txt", b"new in a new folder");
+            // A file the first run could not copy: listed as not copied, and absent.
+            dir.write("src/failed.txt", b"failed before");
+            let store = RunStore::open(&dir.path("runs"), &first).unwrap();
+            let mut results = store.results_writer().unwrap();
+            results
+                .write(&ItemResult::not_copied(
+                    "failed.txt",
+                    ItemKind::File,
+                    13,
+                    FailureReason::FileLocked,
+                    Some(Side::Source),
+                    "in use",
+                ))
+                .unwrap();
+            results.finish().unwrap();
+
+            let (summary, report) = delta(&dir, &first);
+
+            assert_eq!(summary.previous_run_id.as_deref(), Some(first.as_str()));
+            let totals = &summary.totals;
+            assert_eq!(
+                (
+                    totals.changed,
+                    totals.new,
+                    totals.retried,
+                    totals.unchanged,
+                    totals.changed_at_destination,
+                    totals.destination_only
+                ),
+                (3, 2, 1, 2, 0, 0)
+            );
+            assert_eq!(report.already_there, 2);
+            assert_eq!(
+                manifest_paths(&dir, &summary.id),
+                [
+                    "failed.txt",
+                    "new.txt",
+                    "newer.txt",
+                    "older.txt",
+                    "size.txt",
+                    "sub/deeper/new2.txt"
+                ]
+            );
+            assert_eq!(totals.planned_files, 6);
+
+            let done = run_copy(
+                &dir.path("runs"),
+                &summary.id,
+                None,
+                &CancelToken::default(),
+                &mut NullSink,
+            )
+            .unwrap();
+            assert_eq!(
+                (done.state, done.totals.copied, done.totals.not_copied),
+                (RunState::Completed, 6, 0)
+            );
+            assert_eq!(done.totals.new, 2, "the plan survives the recount");
+            let read = |name: &str| fs::read(dir.path(&format!("dst/{name}"))).unwrap();
+            assert_eq!(read("size.txt"), b"much longer now");
+            assert_eq!(read("older.txt"), b"older");
+            assert_eq!(read("failed.txt"), b"failed before");
+            assert_eq!(read("sub/deeper/new2.txt"), b"new in a new folder");
+            let modified = |name: &str| {
+                fs::metadata(dir.path(&format!("dst/{name}")))
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+            };
+            let source_modified = |name: &str| {
+                fs::metadata(dir.path(&format!("src/{name}")))
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+            };
+            assert!(
+                crate::copy::times_match(
+                    Some(modified("older.txt")),
+                    Some(source_modified("older.txt"))
+                ),
+                "an older source date is carried over, so the next delta run sees it as unchanged"
+            );
+
+            // A third pass over the same trees has nothing left to do.
+            let (again, _) = delta(&dir, &done.id);
+            assert_eq!(again.previous_run_id.as_deref(), Some(done.id.as_str()));
+            assert_eq!(
+                (
+                    again.totals.changed,
+                    again.totals.new,
+                    again.totals.retried,
+                    again.totals.unchanged
+                ),
+                (0, 0, 0, 8)
+            );
+            assert!(manifest_paths(&dir, &again.id).is_empty());
+        }
+
+        #[test]
+        fn a_file_edited_at_the_destination_after_the_run_is_left_and_listed() {
+            let dir = TempDir::new("delta-edited");
+            dir.write("src/doc.txt", b"original");
+            dir.write("src/other.txt", b"other");
+            let first = first_run(&dir);
+
+            fs::write(dir.path("dst/doc.txt"), b"edited by the owner").unwrap();
+            set_time(
+                &dir.path("dst/doc.txt"),
+                SystemTime::now() + 3600 * Duration::from_secs(1),
+            );
+            dir.write("src/other.txt", b"other, changed in the source");
+
+            let (summary, _) = delta(&dir, &first);
+            assert_eq!(summary.totals.changed_at_destination, 1);
+            assert_eq!(summary.totals.changed, 1);
+            assert_eq!(manifest_paths(&dir, &summary.id), ["other.txt"]);
+            let left = left_alone(&dir, &summary.id);
+            assert_eq!(left.len(), 1);
+            assert_eq!(left[0].relative_path, "doc.txt");
+            assert_eq!(left[0].dest_size, 19);
+
+            let done = run_copy(
+                &dir.path("runs"),
+                &summary.id,
+                None,
+                &CancelToken::default(),
+                &mut NullSink,
+            )
+            .unwrap();
+            assert_eq!(done.totals.not_copied, 0);
+            assert_eq!(
+                fs::read(dir.path("dst/doc.txt")).unwrap(),
+                b"edited by the owner"
+            );
+            assert_eq!(
+                fs::read(dir.path("dst/other.txt")).unwrap(),
+                b"other, changed in the source"
+            );
+
+            // The next delta run still leaves it, although the edit is now older than the
+            // previous run's end.
+            dir.write("src/doc.txt", b"original, then changed in the source too");
+            let (next, _) = delta(&dir, &done.id);
+            assert_eq!(next.totals.changed_at_destination, 1);
+            assert!(manifest_paths(&dir, &next.id).is_empty());
+            assert_eq!(left_alone(&dir, &next.id).len(), 1);
+        }
+
+        #[test]
+        fn files_only_at_the_destination_are_counted_and_never_removed() {
+            let dir = TempDir::new("delta-dest-only");
+            dir.write("src/a.txt", b"a");
+            let first = first_run(&dir);
+            dir.write("dst/extra.txt", b"only here");
+            dir.write("dst/folder/deeper/more.txt", b"also only here");
+            dir.write("dst/folder/other.txt", b"and here");
+            dir.write("dst/a.txt.dspart", b"half a copy");
+
+            let (summary, _) = delta(&dir, &first);
+            assert_eq!(summary.totals.destination_only, 3);
+            let done = run_copy(
+                &dir.path("runs"),
+                &summary.id,
+                None,
+                &CancelToken::default(),
+                &mut NullSink,
+            )
+            .unwrap();
+            assert_eq!(done.totals.destination_only, 3);
+            for kept in [
+                "extra.txt",
+                "folder/deeper/more.txt",
+                "folder/other.txt",
+                "a.txt",
+            ] {
+                assert!(dir.path(&format!("dst/{kept}")).is_file(), "{kept}");
+            }
+        }
+
+        #[test]
+        fn a_replacement_waits_when_the_file_is_edited_between_planning_and_copying() {
+            let dir = TempDir::new("delta-race");
+            dir.write("src/doc.txt", b"original");
+            let first = first_run(&dir);
+            dir.write("src/doc.txt", b"changed in the source");
+            let (summary, _) = delta(&dir, &first);
+            assert_eq!(summary.totals.changed, 1);
+
+            // Someone saves a different version at the destination before the copy gets there.
+            fs::write(dir.path("dst/doc.txt"), b"saved by a person meanwhile").unwrap();
+            set_time(&dir.path("dst/doc.txt"), SystemTime::now() + DAY);
+
+            let done = run_copy(
+                &dir.path("runs"),
+                &summary.id,
+                None,
+                &CancelToken::default(),
+                &mut NullSink,
+            )
+            .unwrap();
+            assert_eq!((done.totals.copied, done.totals.not_copied), (0, 1));
+            assert_eq!(
+                fs::read(dir.path("dst/doc.txt")).unwrap(),
+                b"saved by a person meanwhile"
+            );
+            let store = RunStore::open(&dir.path("runs"), &summary.id).unwrap();
+            let row = &store.latest_results().unwrap()["doc.txt"];
+            assert_eq!(row.status, ItemStatus::NotCopied);
+            assert_eq!(row.reason, Some(FailureReason::TargetExistsDifferent));
+        }
+
+        #[test]
+        fn cancelling_a_delta_run_leaves_the_previous_run_untouched() {
+            let dir = TempDir::new("delta-cancel");
+            dir.write("src/a.txt", b"a");
+            dir.write("src/b.txt", b"b");
+            let first = first_run(&dir);
+            dir.write("src/a.txt", b"a changed");
+
+            let snapshot = |id: &str| {
+                let mut files: Vec<(String, Vec<u8>)> = fs::read_dir(dir.path("runs").join(id))
+                    .unwrap()
+                    .map(|entry| entry.unwrap())
+                    .map(|entry| {
+                        (
+                            entry.file_name().to_string_lossy().into_owned(),
+                            fs::read(entry.path()).unwrap(),
+                        )
+                    })
+                    .collect();
+                files.sort();
+                files
+            };
+            let before = snapshot(&first);
+            let dest_before = fs::read(dir.path("dst/a.txt")).unwrap();
+
+            let (summary, _) = delta(&dir, &first);
+            let cancel = CancelToken::default();
+            cancel.cancel();
+            let done =
+                run_copy(&dir.path("runs"), &summary.id, None, &cancel, &mut NullSink).unwrap();
+
+            assert_eq!(done.state, RunState::Cancelled);
+            assert_eq!(done.totals.copied, 0);
+            assert_eq!(
+                snapshot(&first),
+                before,
+                "the previous run's files are byte for byte the same"
+            );
+            assert_eq!(fs::read(dir.path("dst/a.txt")).unwrap(), dest_before);
+
+            // A cancelled delta run is a finished run too: the next delta continues from it.
+            let (next, _) = delta(&dir, &done.id);
+            assert_eq!(
+                next.totals.retried, 1,
+                "the file cancelled before its copy is tried again"
+            );
+            assert_eq!(manifest_paths(&dir, &next.id), ["a.txt"]);
+        }
+
+        #[test]
+        fn a_cancel_while_planning_leaves_the_previous_run_untouched() {
+            let dir = TempDir::new("delta-cancel-plan");
+            dir.write("src/a.txt", b"a");
+            let first = first_run(&dir);
+            let before = fs::read(dir.path("runs").join(&first).join("run.json")).unwrap();
+            let cancel = CancelToken::default();
+            cancel.cancel();
+            let error =
+                prepare_delta(&dir.path("runs"), &first, &cancel, &mut NullSink).unwrap_err();
+            assert!(matches!(error, TransferError::Cancelled));
+            assert_eq!(
+                fs::read(dir.path("runs").join(&first).join("run.json")).unwrap(),
+                before
+            );
+        }
+
+        #[test]
+        fn only_a_finished_copy_run_can_be_followed() {
+            let dir = TempDir::new("delta-refuse");
+            dir.write("src/a.txt", b"a");
+            let (prepared, _) = prepare(
+                &dir.path("runs"),
+                settings(&dir.path("src"), &dir.path("dst")),
+                &CancelToken::default(),
+                &mut NullSink,
+            )
+            .unwrap();
+            let error = prepare_delta(
+                &dir.path("runs"),
+                &prepared.id,
+                &CancelToken::default(),
+                &mut NullSink,
+            )
+            .unwrap_err();
+            assert!(matches!(error, TransferError::BadRun(_)), "{error}");
+
+            let store = RunStore::open(&dir.path("runs"), &prepared.id).unwrap();
+            let mut watched = store.summary().unwrap();
+            watched.settings.mode = TransferMode::Watch;
+            watched.state = RunState::Completed;
+            watched.finished_at_ms = Some(1);
+            store.save_summary(&watched).unwrap();
+            let error = prepare_delta(
+                &dir.path("runs"),
+                &prepared.id,
+                &CancelToken::default(),
+                &mut NullSink,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("watched"), "{error}");
+            assert!(prepare_delta(
+                &dir.path("runs"),
+                "nope",
+                &CancelToken::default(),
+                &mut NullSink
+            )
+            .is_err());
+        }
+
+        #[test]
+        fn a_run_saved_before_delta_sync_can_be_followed() {
+            let dir = TempDir::new("delta-old");
+            dir.write("src/a.txt", b"a");
+            let first = first_run(&dir);
+            let path = dir.path("runs").join(&first).join("run.json");
+            let mut json: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            json.as_object_mut().unwrap().remove("previousRunId");
+            fs::write(&path, json.to_string()).unwrap();
+
+            let (summary, _) = delta(&dir, &first);
+            assert_eq!(summary.totals.unchanged, 1);
+            assert_eq!(summary.previous_run_id.as_deref(), Some(first.as_str()));
+        }
     }
 }
