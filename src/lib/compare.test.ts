@@ -60,6 +60,7 @@ describe('compare commands', () => {
       left: 'C:\\a',
       right: 'D:\\b',
       ignoreJunk: true,
+      comparePermissions: false,
       job: { client: '', ticket: '', technician: '' },
       onEvent: core.channels[0],
     })
@@ -77,6 +78,20 @@ describe('compare commands', () => {
       leftDone: true,
       rightDone: false,
     })
+  })
+
+  it('asks for the permissions pass only when told to and forwards its progress', async () => {
+    core.invoke.mockResolvedValue({ rows: [] })
+    const onProgress = vi.fn()
+    const onPermissions = vi.fn()
+    await startCompare('C:\\a', 'D:\\b', true, onProgress, true, onPermissions)
+    expect(core.invoke).toHaveBeenCalledWith(
+      'compare_start',
+      expect.objectContaining({ comparePermissions: true }),
+    )
+    core.channels[0]?.onmessage({ kind: 'permissions', done: 3, total: 9 })
+    expect(onPermissions).toHaveBeenCalledWith({ done: 3, total: 9 })
+    expect(onProgress).not.toHaveBeenCalled()
   })
 
   it('loads children and cancels', async () => {

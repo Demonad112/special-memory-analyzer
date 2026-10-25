@@ -1,13 +1,22 @@
 //! Compare commands: scan both folders in parallel, stream progress over a channel, keep the
 //! result in memory and hand it to the UI one folder level at a time.
 
+use migrate_core::acl_audit::{server_of, Counters};
+use migrate_core::acl_diff::system_read;
+use migrate_core::{
+    compare_permissions, compare_rows as rows, CompareOptions, CompareRow, PermDetail,
+    PermissionsCompare, PermissionsResult,
+};
 use report_core::{Body, CompareReport, JobInfo, MissingFile};
+use scan_core::security::{Descriptor, SidNames, What};
 use scan_core::{
-    check_pair, clean_path, compare, scan, CancelToken, DiffRow, DiffSummary, DiffTree,
+    check_pair, clean_path, compare, scan, CancelToken, DiffSummary, DiffTree, ScanError,
     ScanProgress, ScanState, Side,
 };
 use serde::Serialize;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -30,6 +39,8 @@ struct Compared {
     right: PathBuf,
     diff: DiffTree,
     ignore_junk: bool,
+    /// Set when the compare was asked to compare permissions.
+    permissions: Option<PermissionsResult>,
 }
 
 /// What "Copy missing files" needs from the last compare.
@@ -78,16 +89,22 @@ pub enum CompareEvent {
         left_done: bool,
         right_done: bool,
     },
+    /// The permissions pass after the size compare: pairs read so far of the total.
+    Permissions { done: u64, total: u64 },
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompareResult {
     summary: DiffSummary,
-    rows: Vec<DiffRow>,
+    rows: Vec<CompareRow>,
     elapsed_ms: u64,
     /// The saved report on the Reports page; `None` when it could not be saved.
     report_id: Option<String>,
+    /// What the permissions pass did, without the item details (see `compare_permission_detail`).
+    /// Absent when the compare did not compare permissions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    permissions: Option<PermissionsCompare>,
 }
 
 /// Most missing paths a saved compare report keeps.
@@ -131,6 +148,7 @@ fn save_report(
         .ok()
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn compare_start(
     state: State<'_, CompareState>,
@@ -138,6 +156,7 @@ pub async fn compare_start(
     left: String,
     right: String,
     ignore_junk: bool,
+    compare_permissions: bool,
     job: JobInfo,
     on_event: Channel<CompareEvent>,
 ) -> Result<CompareResult, String> {
@@ -161,25 +180,38 @@ pub async fn compare_start(
     let started = std::time::Instant::now();
     let job_cancel = cancel.clone();
     let (job_left, job_right) = (left.clone(), right.clone());
-    // Diffing and saving the report (which walks every missing entry) both stay off the
-    // async runtime.
-    let (diff, elapsed_ms, report_id) = tauri::async_runtime::spawn_blocking(move || {
-        let diff = run(&job_left, &job_right, ignore_junk, &job_cancel, &on_event)?;
-        // A newer compare (or a cancel) arrived while this one was diffing.
-        if job_cancel.is_cancelled() {
-            return Err(CANCELLED.to_string());
-        }
-        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let report_id = save_report(&job_left, &job_right, &diff, elapsed_ms, job);
-        Ok::<_, String>((diff, elapsed_ms, report_id))
-    })
-    .await
-    .map_err(|err| err.to_string())??;
+    // Diffing, reading permissions and saving the report (which walks every missing entry) all
+    // stay off the async runtime.
+    let (diff, permissions, elapsed_ms, report_id) =
+        tauri::async_runtime::spawn_blocking(move || {
+            let diff = run(&job_left, &job_right, ignore_junk, &job_cancel, &on_event)?;
+            // A newer compare (or a cancel) arrived while this one was diffing.
+            if job_cancel.is_cancelled() {
+                return Err(CANCELLED.to_string());
+            }
+            let permissions = if compare_permissions {
+                Some(read_permissions(
+                    &diff,
+                    &job_left,
+                    &job_right,
+                    &job_cancel,
+                    &on_event,
+                )?)
+            } else {
+                None
+            };
+            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let report_id = save_report(&job_left, &job_right, &diff, elapsed_ms, job);
+            Ok::<_, String>((diff, permissions, elapsed_ms, report_id))
+        })
+        .await
+        .map_err(|err| err.to_string())??;
     let result = CompareResult {
         summary: diff.summary().clone(),
-        rows: diff.children(0).unwrap_or_default(),
+        rows: rows(&diff, 0, permissions.as_ref()).unwrap_or_default(),
         elapsed_ms,
         report_id,
+        permissions: permissions.as_ref().map(|result| result.report().summary()),
     };
     state.store(
         &cancel,
@@ -188,6 +220,7 @@ pub async fn compare_start(
             right,
             diff,
             ignore_junk,
+            permissions,
         },
     )?;
     Ok(result)
@@ -235,14 +268,110 @@ fn run(
     Ok(compare(&left_tree, &right_tree))
 }
 
+/// Reads and compares the permissions of every matched pair, streaming progress about every
+/// 100 ms. Off Windows nothing is read and the result says so.
+fn read_permissions(
+    diff: &DiffTree,
+    left: &Path,
+    right: &Path,
+    cancel: &CancelToken,
+    on_event: &Channel<CompareEvent>,
+) -> Result<PermissionsResult, String> {
+    if !cfg!(windows) {
+        return Ok(PermissionsResult::not_supported());
+    }
+    pass(
+        diff,
+        left,
+        right,
+        cancel,
+        cleanup_core::is_elevated(),
+        &system_read,
+        &|done, total| {
+            // A closed channel (page left) is not an error; the pass still finishes.
+            let _ = on_event.send(CompareEvent::Permissions { done, total });
+        },
+    )
+}
+
+type Reader<'a> = dyn Fn(&Path, What) -> io::Result<Descriptor> + Sync + 'a;
+
+/// [`read_permissions`] with the system read and the progress sink handed in, so it is tested
+/// everywhere.
+fn pass(
+    diff: &DiffTree,
+    left: &Path,
+    right: &Path,
+    cancel: &CancelToken,
+    elevated: bool,
+    read: &Reader,
+    progress: &(dyn Fn(u64, u64) + Sync),
+) -> Result<PermissionsResult, String> {
+    // Each side's names are asked of its own server (D-07).
+    let source_server = server_of(&left.to_string_lossy());
+    let destination_server = server_of(&right.to_string_lossy());
+    let options = CompareOptions {
+        source_server: source_server.clone(),
+        destination_server: destination_server.clone(),
+    };
+    let names = SidNames::default();
+    let counters = Counters::default();
+    let send = || {
+        progress(
+            counters.done.load(Ordering::Relaxed),
+            counters.total.load(Ordering::Relaxed),
+        );
+    };
+    let outcome = thread::scope(|scope| {
+        let job = scope.spawn(|| {
+            compare_permissions(diff, left, right, &options, read, &names, cancel, &counters)
+        });
+        while !job.is_finished() {
+            send();
+            thread::sleep(PROGRESS_INTERVAL);
+        }
+        job.join()
+    });
+    send();
+    match outcome {
+        Err(_) => Err("The permissions check stopped unexpectedly.".to_string()),
+        Ok(Err(ScanError::Cancelled)) => Err(CANCELLED.to_string()),
+        Ok(Err(err)) => Err(err.to_string()),
+        Ok(Ok(result)) => Ok(result.with_context(
+            elevated,
+            source_server.as_deref(),
+            destination_server.as_deref(),
+        )),
+    }
+}
+
 /// Rows below one folder of the last compare.
 #[tauri::command]
-pub fn compare_children(state: State<'_, CompareState>, id: u32) -> Result<Vec<DiffRow>, String> {
+pub fn compare_children(
+    state: State<'_, CompareState>,
+    id: u32,
+) -> Result<Vec<CompareRow>, String> {
     let result = state.result.lock().map_err(|err| err.to_string())?;
     result
         .as_ref()
-        .and_then(|compared| compared.diff.children(id))
+        .and_then(|compared| rows(&compared.diff, id, compared.permissions.as_ref()))
         .ok_or_else(|| NO_RESULT.to_string())
+}
+
+/// What differs on one row's permissions. `None` when the row was not compared or the report
+/// limit left its details out (the row's status is still known).
+#[tauri::command]
+pub fn compare_permission_detail(
+    state: State<'_, CompareState>,
+    id: u32,
+) -> Result<Option<PermDetail>, String> {
+    let result = state.result.lock().map_err(|err| err.to_string())?;
+    let compared = result.as_ref().ok_or(NO_RESULT)?;
+    Ok(compared
+        .permissions
+        .as_ref()
+        .and_then(|permissions| permissions.detail(id))
+        .cloned())
 }
 
 /// Full path of a row on one side of the last compare.
@@ -311,6 +440,7 @@ pub fn compare_cancel(state: State<'_, CompareState>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use migrate_core::PermStatus;
 
     /// A compare of two empty folders, which is all `store` needs to hold.
     fn empty_compare(tag: &str) -> Compared {
@@ -325,6 +455,7 @@ mod tests {
             right: root,
             diff,
             ignore_junk: false,
+            permissions: None,
         }
     }
 
@@ -348,5 +479,112 @@ mod tests {
             .store(&CancelToken::new(), empty_compare("finished"))
             .unwrap();
         assert!(state.missing_to_copy().unwrap().paths.is_empty());
+    }
+
+    /// Two folders with the same layout: `a/f.txt`, `b/` and `top.txt`.
+    fn two_trees(tag: &str) -> (PathBuf, PathBuf, DiffTree) {
+        let base = std::env::temp_dir().join(format!("dsa-compare-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (left, right) = (base.join("left"), base.join("right"));
+        for root in [&left, &right] {
+            std::fs::create_dir_all(root.join("a")).unwrap();
+            std::fs::create_dir_all(root.join("b")).unwrap();
+            std::fs::write(root.join("a").join("f.txt"), b"xx").unwrap();
+            std::fs::write(root.join("top.txt"), b"x").unwrap();
+        }
+        let state = ScanState::new(CancelToken::new());
+        let diff = compare(
+            &scan(&left, &state).unwrap(),
+            &scan(&right, &state).unwrap(),
+        );
+        (left, right, diff)
+    }
+
+    fn descriptor(owner: &str) -> Descriptor {
+        Descriptor {
+            owner: Some(owner.to_string()),
+            ..Descriptor::default()
+        }
+    }
+
+    #[test]
+    fn rows_carry_the_permissions_cell_when_the_compare_looked() {
+        let (left, right, diff) = two_trees("cells");
+        let read = |path: &Path, _: What| -> io::Result<Descriptor> {
+            // The destination's folder `a` has another owner.
+            let other = path.starts_with(&right) && path.ends_with("a");
+            Ok(descriptor(if other { "S-1-5-18" } else { "S-1-5-32-544" }))
+        };
+        let result = pass(
+            &diff,
+            &left,
+            &right,
+            &CancelToken::new(),
+            false,
+            &read,
+            &|_, _| {},
+        )
+        .unwrap();
+        let rows = rows(&diff, 0, Some(&result)).unwrap();
+        let cell = |name: &str| {
+            rows.iter()
+                .find(|row| row.row.name == name)
+                .unwrap()
+                .permissions
+                .clone()
+        };
+        let a = cell("a").unwrap();
+        assert_eq!(a.status, Some(PermStatus::OwnerDiffers));
+        assert_eq!(a.summary, "Owner: S-1-5-32-544 → S-1-5-18");
+        assert_eq!(cell("b").unwrap().status, Some(PermStatus::Same));
+        assert_eq!(
+            cell("top.txt"),
+            None,
+            "a file with no entries of its own is not reported"
+        );
+        // The root was compared too, and one folder below it differs.
+        let root = result.cell(0).unwrap();
+        assert_eq!((root.status, root.below), (Some(PermStatus::Same), 1));
+        let report = result.report().summary();
+        assert!(report.items.is_empty());
+        assert_eq!(report.count_of(PermStatus::OwnerDiffers), 1);
+        let a_id = rows.iter().find(|row| row.row.name == "a").unwrap().row.id;
+        assert_eq!(result.detail(a_id).unwrap().path, "a");
+        // A compare that did not look has no cells at all.
+        assert!(super::rows(&diff, 0, None)
+            .unwrap()
+            .iter()
+            .all(|row| row.permissions.is_none()));
+    }
+
+    #[test]
+    fn the_pass_reports_progress_and_ends_with_everything_done() {
+        let (left, right, diff) = two_trees("progress");
+        let read = |_: &Path, _: What| -> io::Result<Descriptor> { Ok(descriptor("S-1-5-18")) };
+        let last = Mutex::new((0, 0));
+        let result = pass(
+            &diff,
+            &left,
+            &right,
+            &CancelToken::new(),
+            true,
+            &read,
+            &|done, total| *last.lock().unwrap() = (done, total),
+        )
+        .unwrap();
+        // The root, a and b are the folder pairs; top.txt and a/f.txt are file pairs.
+        assert_eq!(*last.lock().unwrap(), (5, 5));
+        assert!(result.report().elevated);
+        assert_eq!(result.report().differences(), 0);
+    }
+
+    #[test]
+    fn a_cancelled_pass_returns_the_cancelled_marker() {
+        let (left, right, diff) = two_trees("cancelled-pass");
+        let read = |_: &Path, _: What| -> io::Result<Descriptor> { Ok(descriptor("S-1-5-18")) };
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let err = pass(&diff, &left, &right, &cancel, false, &read, &|_, _| {}).unwrap_err();
+        assert_eq!(err, CANCELLED);
     }
 }

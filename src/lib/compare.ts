@@ -31,6 +31,26 @@ watch(ignoreJunk, (value) => {
 })
 
 export type EntryKind = 'file' | 'dir' | 'link'
+
+/** How one item's permissions compare between the source and the destination. */
+export type PermStatus =
+  | 'same'
+  | 'ownerDiffers'
+  | 'entriesDiffer'
+  | 'inheritanceDiffers'
+  | 'sameNameDifferentAccount'
+  | 'notReadable'
+  | 'other'
+
+/** What a row shows about its permissions; present only when the compare looked at them. */
+export interface PermCell {
+  /** `null` for a folder that was not itself compared but has differences below it. */
+  status: PermStatus | null
+  /** Items below this row that differ in any way. */
+  below: number
+  /** One line for a tooltip; empty when the report limit left the item's details out. */
+  summary: string
+}
 export type DiffStatus = 'same' | 'different' | 'onlyLeft' | 'onlyRight' | 'kindMismatch'
 
 export interface DiffSide {
@@ -59,6 +79,7 @@ export interface DiffRow {
   /** The name is not valid Unicode, so it is never paired with a name on the other side. */
   lossyName: boolean
   hasChildren: boolean
+  permissions?: PermCell
 }
 
 export interface DiffSummary {
@@ -90,6 +111,20 @@ export interface CompareProgress {
 
 export type Side = 'left' | 'right'
 
+/** What the permissions pass did (the totals; the items stay in the backend). */
+export interface PermissionsSummary {
+  /** `checked`, or `notSupported` off Windows. */
+  status: 'off' | 'checked' | 'notSupported' | 'other'
+  elevated: boolean
+  sourceServer: string
+  destinationServer: string
+  foldersChecked: number
+  filesChecked: number
+  skipped: number
+  counts: { status: PermStatus; count: number }[]
+  itemsTruncated: boolean
+}
+
 export interface CompareResult {
   summary: DiffSummary
   /** Rows directly below the two compared folders. */
@@ -97,9 +132,18 @@ export interface CompareResult {
   elapsedMs: number
   /** The saved report on the Reports page; null when it could not be saved. */
   reportId: string | null
+  /** Only when the compare compared permissions. */
+  permissions?: PermissionsSummary
 }
 
-type CompareEvent = { kind: 'progress' } & CompareProgress
+/** Pairs whose permissions have been read so far, out of the total. */
+export interface PermissionsProgress {
+  done: number
+  total: number
+}
+
+type CompareEvent =
+  ({ kind: 'progress' } & CompareProgress) | ({ kind: 'permissions' } & PermissionsProgress)
 
 /** The error text the backend returns for a cancelled compare. */
 export const CANCELLED = 'cancelled'
@@ -114,9 +158,15 @@ export async function startCompare(
   right: string,
   ignoreJunk: boolean,
   onProgress: (progress: CompareProgress) => void,
+  comparePermissions = false,
+  onPermissions: (progress: PermissionsProgress) => void = () => undefined,
 ): Promise<CompareResult> {
   const onEvent = new Channel<CompareEvent>()
   onEvent.onmessage = (event) => {
+    if (event.kind === 'permissions') {
+      onPermissions({ done: event.done, total: event.total })
+      return
+    }
     onProgress({
       left: event.left,
       right: event.right,
@@ -129,6 +179,7 @@ export async function startCompare(
       left,
       right,
       ignoreJunk,
+      comparePermissions,
       job: currentJob(),
       onEvent,
     }),
