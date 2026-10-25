@@ -524,7 +524,9 @@ mod tests {
         let (left, right, diff) = two_trees("cells");
         let read = |path: &Path, _: What| -> io::Result<Descriptor> {
             // The destination's folder `a` has another owner.
-            let other = path.starts_with(&right) && path.ends_with("a");
+            // On Windows the pass opens the exact `\\?\` form of a path.
+            let plain = PathBuf::from(scan_core::strip_verbatim(&path.to_string_lossy()));
+            let other = plain.starts_with(&right) && plain.ends_with("a");
             Ok(descriptor(if other { "S-1-5-18" } else { "S-1-5-32-544" }))
         };
         let result = pass(

@@ -361,6 +361,9 @@ impl World {
     }
 
     fn key(&self, path: &Path) -> (bool, String) {
+        // On Windows the pass opens the exact `\\?\` form of a path; the roots here are plain.
+        let plain = scan_core::strip_verbatim(&path.to_string_lossy());
+        let path = Path::new(&plain);
         let (source, relative) = match path.strip_prefix(self.left.path()) {
             Ok(relative) => (true, relative),
             Err(_) => (false, path.strip_prefix(self.right.path()).unwrap()),
