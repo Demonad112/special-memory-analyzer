@@ -39,13 +39,14 @@ Run `check` before opening a PR. Scope tests to the touched files while iteratin
   - `pages/` has one file per screen. `components/` holds shared components.
   - `lib/` holds plain TS helpers, each with a `*.test.ts` beside it, plus the shared job state (`cleanupJob`, `recordJob`, `compareJob`).
   - `router.ts`, `styles.css`.
-- `src-tauri/src/`: Tauri commands, one file per area (`compare.rs`, `record.rs`, `cleanup.rs`, `reports.rs`), plus `report_writer.rs`, which batches deleted items into the Disk Cleanup scan's saved report (one write about 2 s after the first of a burst; a new scan and app exit flush first).
+- `src-tauri/src/`: Tauri commands, one file per area (`compare.rs`, `record.rs`, `cleanup.rs`, `reports.rs`, `readiness.rs`, `servers.rs`), `netpath.rs` (which server answers account-name lookups for a folder or mapped drive), plus `report_writer.rs`, which batches deleted items into the Disk Cleanup scan's saved report (one write about 2 s after the first of a burst; a new scan and app exit flush first).
 - `src-tauri/crates/`:
   - `scan-core`: listing, scan, diff and paths. This is the lowest crate.
   - `transfer-core`: Record (prepare, run, copy, watch, store).
-  - `cleanup-core`: Disk Cleanup (`protect`, `bulk`, `quick`, `junk/` for suggested cleanups, `restore`, `log`, `pathsafe` for link and reparse checks).
-  - `report-core`: saved reports, plus HTML and CSV export. `kinds/` has one file per report kind (`compare`, `record`, `usage`); `assets/` holds the explorer and page CSS and JS embedded byte for byte in the HTML reports (their CSP hashes depend on the exact text, so Prettier skips the folder); `applog` writes `Logs\app.log`.
-  - Dependencies point down: report-core uses scan-core and transfer-core; cleanup-core uses scan-core only.
+  - `cleanup-core`: Disk Cleanup (`protect`, `bulk`, `quick`, `junk/` for suggested cleanups, `restore`, `log`, `pathsafe` for link, reparse and network-path checks, plus `dupes`, `stale` and `owners` for the Storage panels).
+  - `migrate-core`: Migration readiness (`readiness`, `acl_audit`, `acl_diff`). Depends on scan-core only.
+  - `report-core`: saved reports, plus HTML and CSV export. `kinds/` has one file per report kind (`compare`, `record`, `usage`, `readiness`, `runbook`); `snapshots` keeps the scan history under `Reports\snapshots\` and `branding` the company logo under `Reports\branding\`, both inside the protected reports folder; `assets/` holds the explorer and page CSS and JS embedded byte for byte in the HTML reports (their CSP hashes depend on the exact text, so Prettier skips the folder); `applog` writes `Logs\app.log`.
+  - Dependencies point down: report-core uses scan-core, transfer-core and migrate-core; cleanup-core and migrate-core use scan-core only.
 - `installer-kit/`: USB kit scripts (`DsaTrust.psm1` is the shared module).
 - `docs/`: notes that outlive a session. `docs/review/` holds the 2026-10 audit and its findings register.
 
@@ -76,13 +77,15 @@ Run `check` before opening a PR. Scope tests to the touched files while iteratin
 ## Safety rules (do / don't)
 
 - **Every delete goes through one pipeline:** `cleanup_core::bulk::run`, then a `deletions.jsonl` line per item. Never call `recycle`/`delete_permanently` directly from a command. Quick cleanups log one summary line per target.
+- **No deletes on the network.** `bulk::run` and quick cleanups refuse UNC paths (including `\\?\UNC`) and mapped network drives (`pathsafe::is_network_path`, D-20), because the Recycle Bin does not cover them. Scans and reports on shares still work, and the UI hides delete there.
+- **Saved server profiles never hold a password** (D-18). The profile type has no secret field; connecting uses the Windows session or a one-time sign-in.
 - **Paths at trust boundaries are canonicalized once** (`scan_core::paths::canonical_root`). Never compare raw path strings for protection.
 - **Link and reparse checks** use the shared helpers (`cleanup_core::pathsafe`). A reparse point is anything with `FILE_ATTRIBUTE_REPARSE_POINT`; a link is a name-surrogate tag. Folder walks never follow reparse points, and that includes parents of a delete target.
 - **Scans and elevated records never overlap.** An elevated record turns on backup privileges in the process token, which would change what a running Compare or Cleanup scan can read. `RecordState::begin` refuses while a scan runs, and scans hold a guard (`scan_guard`) so a record cannot switch on under them.
 - App errors go through `report_core::applog::error` (not `eprintln!`), so they reach `Logs\app.log` (1 MB x 3). The GUI build discards stderr.
 - A run's "copy to recovery folder" location is saved as `recovery.json` beside the run's other files (`transfer-core/src/recovery.rs`). Deleting that file only loses the remembered folder.
 - OneDrive and cloud online-only files are flagged and never opened, hashed or read, in any mode, Watch included.
-- Disk Cleanup deletes go to the Recycle Bin by default. Permanent and big runs need admin and the confirm token.
+- Disk Cleanup deletes go to the Recycle Bin by default. Deleting permanently, or deleting more than one item at a time, needs admin (`NEEDS_ADMIN` in `src-tauri/src/cleanup.rs`; the Quick cleanups for Windows Temp and the update cache need it too, `QuickId::needs_admin`). A big run (200 items or 1 GiB, `bulk::needs_brake`) also needs the confirm token the dry run issues.
 - Every new saved-report, run or log field needs `#[serde(default)]`. Never rename or remove a saved field.
 - Saved files are written atomically (tmp file, `sync_all`, rename). JSONL readers tolerate a torn last line.
 - Long jobs are `async` + `spawn_blocking`, stream progress about every 100 ms, and keep big results in managed state. No heavy work in sync commands (they run on the main thread). The UI loads one folder level at a time.
