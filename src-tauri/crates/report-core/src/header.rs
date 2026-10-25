@@ -70,6 +70,7 @@ pub(crate) struct ReadinessHeader {
     pub long_paths: u64,
     pub unreadable: u64,
     pub links: u64,
+    pub permission_issues: u64,
     pub in_use: InUseHeader,
 }
 
@@ -88,6 +89,7 @@ impl ReadinessHeader {
             + self.unreadable
             + self.in_use.in_use
             + self.in_use.unreadable
+            + self.permission_issues
             > 0
     }
 }
@@ -142,6 +144,7 @@ impl Header {
                 long_paths: report.long_paths,
                 unreadable: report.unreadable,
                 links: report.links,
+                permission_issues: report.permission_issues,
                 in_use: InUseHeader {
                     in_use: report.in_use.in_use,
                     unreadable: report.in_use.unreadable,
@@ -459,6 +462,16 @@ mod tests {
         );
         let row = header_entry(read_text(&text).unwrap());
         assert_eq!(row.headline, "2 files in use");
+        assert!(row.problem);
+    }
+
+    #[test]
+    fn a_readiness_report_with_permission_issues_is_a_problem() {
+        let text = format!(
+            r#"{{{ENVELOPE},"body":{{"kind":"readiness","data":{{"source":"S","permissionIssues":3,"permissions":{{"items":[{{"path":"a"}}]}}}}}}}}"#
+        );
+        let row = header_entry(read_text(&text).unwrap());
+        assert_eq!(row.headline, "3 permission issues");
         assert!(row.problem);
     }
 

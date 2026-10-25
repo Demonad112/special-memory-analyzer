@@ -68,6 +68,68 @@ export interface ReadinessReport {
   elapsedMs: number
   counts: RuleCount[]
   inUse: InUseSummary
+  /** Owners and access lists. The findings stay in Rust: see `loadFindings`. */
+  permissions: PermissionsSummary
+  permissionIssues: number
+}
+
+export type FindingKind =
+  'brokenInheritance' | 'unknownAccount' | 'wideWrite' | 'explicitFile' | 'unreadable'
+
+/** The findings in the order the panel shows them. */
+export const findingHeadings: Record<FindingKind, string> = {
+  brokenInheritance: 'Inheritance broken',
+  unknownAccount: 'Unknown accounts',
+  wideWrite: 'Wide write access',
+  explicitFile: 'Files with their own entries',
+  unreadable: 'Permissions not readable',
+}
+
+export const findingHints: Record<FindingKind, string> = {
+  brokenInheritance:
+    'These folders do not take permissions from their parent. Copy them with their permissions and check the new parent grants what is expected.',
+  unknownAccount:
+    'The account was deleted, or lives in a domain this PC cannot see. The entry does nothing and will not map to anyone at the target.',
+  wideWrite:
+    'Anyone in Everyone, Authenticated Users, Users, Domain Users or Anonymous can change files here.',
+  explicitFile: 'Permissions set on single files are easy to lose or forget in a migration.',
+  unreadable: 'Run as administrator to read more, or fix the folder permissions first.',
+}
+
+/** Findings that call for action; the other two describe how the share is built. */
+export const issueKinds: FindingKind[] = ['unknownAccount', 'wideWrite', 'unreadable']
+
+export interface FindingCount {
+  kind: FindingKind
+  count: number
+}
+
+export interface PermissionsSummary {
+  status: 'off' | 'checked' | 'notSupported' | 'other'
+  everyFile: boolean
+  elevated: boolean
+  /** The server account names were asked of; empty for this PC. */
+  server: string
+  foldersRead: number
+  filesRead: number
+  skipped: number
+  issues: number
+  counts: FindingCount[]
+  itemsTruncated: boolean
+}
+
+export interface Finding {
+  /** Relative to the source; empty for the source folder. */
+  path: string
+  dir: boolean
+  kind: FindingKind
+  detail: string
+  sid: string
+}
+
+export interface FindingsPage {
+  total: number
+  findings: Finding[]
 }
 
 export interface InUseSummary {
@@ -81,12 +143,15 @@ export interface InUseSummary {
 }
 
 export interface ReadinessProgress {
-  phase: 'scan' | 'names' | 'inUse'
+  phase: 'scan' | 'names' | 'inUse' | 'permissions'
   scan: ScanProgress
   /** In-use pass: files to open, opened so far, found in use. */
   toCheck: number
   checked: number
   inUse: number
+  /** Permissions pass: items to read and read so far. */
+  permToCheck: number
+  permChecked: number
 }
 
 export interface ReadinessResult {
@@ -116,6 +181,8 @@ export function startReadiness(
       destination: form.destination,
       target: form.target,
       checkInUse: form.checkInUse,
+      checkPermissions: form.checkPermissions,
+      everyFile: form.everyFile,
       job: currentJob(),
       onEvent,
     }),
@@ -132,6 +199,15 @@ export function loadChildren(id: number, kind: ProblemKind | null): Promise<Read
 
 export function loadRoot(kind: ProblemKind | null): Promise<ReadinessRow> {
   return invoke<ReadinessRow>('readiness_root', { kind })
+}
+
+/** One page of the permission findings of one type. */
+export function loadFindings(
+  kind: FindingKind,
+  offset: number,
+  limit: number,
+): Promise<FindingsPage> {
+  return invoke<FindingsPage>('readiness_permissions', { kind, offset, limit })
 }
 
 export function revealItem(id: number): Promise<void> {
@@ -203,6 +279,10 @@ export interface ReadinessForm {
   target: TargetProfile
   /** Open every file to find the ones in use. On unless turned off. */
   checkInUse: boolean
+  /** Read the owner and access list of every folder. On unless turned off. */
+  checkPermissions: boolean
+  /** Read every file's permissions too, not just folders. Off unless turned on. */
+  everyFile: boolean
 }
 
 const formKey = 'analyzer-readiness'
@@ -211,18 +291,28 @@ export function loadForm(): ReadinessForm {
   try {
     const saved: unknown = JSON.parse(localStorage.getItem(formKey) ?? 'null')
     if (saved && typeof saved === 'object') {
-      const { path, destination, target, checkInUse } = saved as Record<string, unknown>
+      const { path, destination, target, checkInUse, checkPermissions, everyFile } =
+        saved as Record<string, unknown>
       return {
         path: typeof path === 'string' ? path : '',
         destination: typeof destination === 'string' ? destination : '',
         target: target === 'sharePoint' ? 'sharePoint' : 'fileServer',
         checkInUse: checkInUse !== false,
+        checkPermissions: checkPermissions !== false,
+        everyFile: everyFile === true,
       }
     }
   } catch {
     // Unreadable storage: start empty.
   }
-  return { path: '', destination: '', target: 'fileServer', checkInUse: true }
+  return {
+    path: '',
+    destination: '',
+    target: 'fileServer',
+    checkInUse: true,
+    checkPermissions: true,
+    everyFile: false,
+  }
 }
 
 export function saveForm(form: ReadinessForm): void {

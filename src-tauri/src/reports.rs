@@ -136,7 +136,8 @@ pub async fn reports_prune(days: u32) -> Result<u64, String> {
 }
 
 /// Writes the report to `path` (chosen in a save dialog and checked again here), headed with the
-/// company name and logo. `job_details` puts the job rows above a CSV's table.
+/// company name and logo. `job_details` puts the job rows above a CSV's table. `layout` picks another CSV layout of the
+/// report (`permissions` for a readiness report); `None` is the default one.
 #[tauri::command]
 pub async fn report_export(
     kind: ReportKind,
@@ -145,6 +146,7 @@ pub async fn report_export(
     path: String,
     brand: String,
     job_details: bool,
+    layout: Option<String>,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let protected = Protected::for_this_pc().with_extra_inside([
@@ -157,7 +159,7 @@ pub async fn report_export(
         let document = report_core::document(&reports, &records, kind, &id)?;
         let text = match format {
             Format::Html => document.html_branded(&branding_for(brand), &generated()),
-            Format::Csv => document.csv_with(job_details),
+            Format::Csv => document.csv_layout_with(layout.as_deref(), job_details)?,
         };
         fs::write(&target, text).map_err(|err| format!("Could not save {path}: {err}"))
     })

@@ -57,6 +57,18 @@ describe('reports', () => {
     })
   })
 
+  it('exports another CSV layout under its own name', async () => {
+    expect(exportFileName(entry, 'csv', '', 'permissions')).toBe(
+      'Compare permissions 2026-10-03 1405.csv',
+    )
+    dialog.save.mockResolvedValueOnce('C:\\out\\p.csv')
+    await exportReport(entry, 'csv', 'permissions')
+    expect(core.invoke).toHaveBeenCalledWith(
+      'report_export',
+      expect.objectContaining({ format: 'csv', layout: 'permissions' }),
+    )
+  })
+
   it('sends the CSV job details setting', async () => {
     csvJobDetails.value = false
     dialog.save.mockResolvedValueOnce('C:\\out\\r.csv')

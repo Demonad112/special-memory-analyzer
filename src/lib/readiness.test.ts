@@ -22,6 +22,7 @@ import {
   CANCELLED,
   displayName,
   groupCounts,
+  loadFindings,
   loadForm,
   readinessJob,
   runReadinessJob,
@@ -64,6 +65,19 @@ function result(rows: ReadinessRow[] = []): ReadinessResult {
         skipped: 0,
         holdersAsked: 0,
       },
+      permissionIssues: 0,
+      permissions: {
+        status: 'checked',
+        everyFile: false,
+        elevated: false,
+        server: '',
+        foldersRead: 1,
+        filesRead: 0,
+        skipped: 0,
+        issues: 0,
+        counts: [],
+        itemsTruncated: false,
+      },
     },
     root: row(0, 'F:\\Finance', true),
     rows,
@@ -91,7 +105,14 @@ describe('readiness commands', () => {
     core.invoke.mockResolvedValue(result())
     const onProgress = vi.fn()
     await startReadiness(
-      { path: 'F:\\Finance', destination: 'D:\\Shares', target: 'sharePoint', checkInUse: false },
+      {
+        path: 'F:\\Finance',
+        destination: 'D:\\Shares',
+        target: 'sharePoint',
+        checkInUse: false,
+        checkPermissions: false,
+        everyFile: true,
+      },
       onProgress,
     )
     expect(core.invoke).toHaveBeenCalledWith('readiness_start', {
@@ -99,6 +120,8 @@ describe('readiness commands', () => {
       destination: 'D:\\Shares',
       target: 'sharePoint',
       checkInUse: false,
+      checkPermissions: false,
+      everyFile: true,
       job: { client: '', ticket: '', technician: '' },
       onEvent: core.channels[0],
     })
@@ -158,15 +181,44 @@ describe('visibleRows', () => {
   })
 })
 
+describe('permission findings', () => {
+  it('loads one page of one finding type', async () => {
+    const page = { total: 1, findings: [] }
+    core.invoke.mockResolvedValue(page)
+    await expect(loadFindings('wideWrite', 100, 50)).resolves.toBe(page)
+    expect(core.invoke).toHaveBeenCalledWith('readiness_permissions', {
+      kind: 'wideWrite',
+      offset: 100,
+      limit: 50,
+    })
+  })
+
+  it('remembers the permission options and defaults to folders only', () => {
+    localStorage.setItem('analyzer-readiness', '{"checkPermissions":false,"everyFile":true}')
+    expect(loadForm()).toMatchObject({ checkPermissions: false, everyFile: true })
+    localStorage.setItem('analyzer-readiness', '{}')
+    expect(loadForm()).toMatchObject({ checkPermissions: true, everyFile: false })
+  })
+})
+
 describe('the remembered form', () => {
   it('round-trips and falls back to the file server profile', () => {
-    const empty = { path: '', destination: '', target: 'fileServer', checkInUse: true }
+    const empty = {
+      path: '',
+      destination: '',
+      target: 'fileServer',
+      checkInUse: true,
+      checkPermissions: true,
+      everyFile: false,
+    }
     expect(loadForm()).toEqual(empty)
     const form = {
       path: 'F:\\x',
       destination: 'D:\\y',
       target: 'sharePoint',
       checkInUse: false,
+      checkPermissions: false,
+      everyFile: true,
     } as const
     saveForm(form)
     expect(loadForm()).toEqual(form)
@@ -176,7 +228,14 @@ describe('the remembered form', () => {
 })
 
 describe('readinessJob', () => {
-  const form = { path: 'F:\\x', destination: '', target: 'fileServer', checkInUse: true } as const
+  const form = {
+    path: 'F:\\x',
+    destination: '',
+    target: 'fileServer',
+    checkInUse: true,
+    checkPermissions: true,
+    everyFile: false,
+  } as const
 
   it('keeps the result and its top rows', async () => {
     core.invoke.mockResolvedValue(result([row(1, 'a')]))
