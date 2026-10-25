@@ -144,6 +144,8 @@ fn save_report(
         unreadable: summary.left_errors + summary.right_errors,
         elapsed_ms,
         permission_mismatches: permissions.map_or(0, |result| result.report().mismatches()),
+        permissions_checked: permissions
+            .is_some_and(|result| result.report().status == migrate_core::AuditStatus::Checked),
         missing_paths,
         permissions: permissions
             .map(|result| result.report().clone())

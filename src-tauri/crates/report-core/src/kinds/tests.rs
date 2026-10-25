@@ -1550,3 +1550,26 @@ fn a_readiness_row_offers_the_permissions_csv_only_when_the_audit_ran() {
         .csv_layouts
         .is_empty());
 }
+
+#[test]
+fn a_compare_row_offers_the_permissions_csv_only_when_the_check_ran() {
+    // The saved report carries the flag ahead of its long lists; the loaded one derives it.
+    let mut checked = compared_with_permissions();
+    checked.permissions_checked = true;
+    let saved_checked = saved(Body::Compare(checked.clone()));
+    assert_eq!(entry(&saved_checked).csv_layouts, ["permissions"]);
+    let text = serde_json::to_string(&saved_checked.body).unwrap();
+    assert!(
+        text.find("permissionsChecked").unwrap() < text.find("missingPaths").unwrap(),
+        "the flag is written ahead of the long lists"
+    );
+    // Loaded with the check's status but without the flag (older code): still offered.
+    checked.permissions_checked = false;
+    assert_eq!(
+        entry(&saved(Body::Compare(checked))).csv_layouts,
+        ["permissions"]
+    );
+    // No check, no flag in the file, no CSV.
+    let plain = serde_json::to_string(&Body::Compare(clean_compare())).unwrap();
+    assert!(!plain.contains("permissionsChecked"));
+}

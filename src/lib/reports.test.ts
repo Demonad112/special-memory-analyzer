@@ -159,6 +159,26 @@ describe('csv choices', () => {
     expect(csvChoices({ csvLayouts: ['somethingNewer'] })).toHaveLength(1)
   })
 
+  it('adds the permissions CSV for a compare report saved with the permissions check', async () => {
+    const compare = {
+      ...entry,
+      kind: 'compare' as const,
+      title: 'Compare',
+      csvLayouts: ['permissions'],
+    }
+    const choices = csvChoices(compare)
+    expect(choices.map((choice) => choice.layout)).toEqual([undefined, 'permissions'])
+    // A compare saved without the check offers only the default list.
+    expect(csvChoices({ ...compare, csvLayouts: [] })).toHaveLength(1)
+
+    dialog.save.mockResolvedValueOnce('C:\\out\\c.csv')
+    await exportReport(compare, 'csv', choices[1]?.layout)
+    expect(core.invoke).toHaveBeenLastCalledWith(
+      'report_export',
+      expect.objectContaining({ kind: 'compare', format: 'csv', layout: 'permissions' }),
+    )
+  })
+
   it('exports the permissions layout from the Reports page choice', async () => {
     dialog.save.mockResolvedValueOnce('C:\\out\\p.csv')
     const readiness = { ...entry, kind: 'readiness' as const, title: 'Migration readiness' }
