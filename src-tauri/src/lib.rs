@@ -4,6 +4,7 @@ mod readiness;
 mod record;
 mod report_writer;
 mod reports;
+mod servers;
 
 use serde::Serialize;
 use tauri::window::{Effect, EffectsBuilder};
@@ -131,6 +132,7 @@ pub fn run() {
             record::record_list,
             record::record_reveal,
             record::share_connect,
+            servers::servers_list_shares,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Deep Server Analyzer");
