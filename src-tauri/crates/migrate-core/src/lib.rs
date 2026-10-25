@@ -5,11 +5,13 @@
 //! and online-only files are checked by name only; the in-use pass never opens them.
 
 pub mod acl_audit;
+pub mod acl_diff;
 pub mod readiness;
 
 pub use acl_audit::{
     AuditStatus, AuditedItem, EntryRow, Finding, FindingCount, FindingKind, PermissionsReport,
 };
+pub use acl_diff::{diff_descriptors, has_explicit_entries, AclDiff, OwnerChange, PermStatus};
 pub use readiness::{
     rule_label, run, InUseStatus, InUseSummary, Options, Phase, Problem, ProblemKind, Readiness,
     ReadinessProgress, ReadinessReport, ReadinessState, Row, RowProblem, RuleCount, PER_KIND_LIMIT,

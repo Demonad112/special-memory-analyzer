@@ -1015,3 +1015,69 @@ fn a_report_without_the_permissions_pass_says_so() {
     let tile = doc.tiles.iter().find(|t| t.label == "Permissions").unwrap();
     assert_eq!(tile.value, "Not checked");
 }
+
+/// With "Compare permissions" off, a compare saves and renders exactly what 1.2.0 did: the same
+/// JSON, the same CSV, and the same page markup and data island. The files in `tests/fixtures`
+/// were written by 1.2.0's code; `UPDATE_FIXTURES=1` rewrites them, so only do that on purpose.
+#[test]
+// Every field 1.2.0 had is spelled out; the `..default()` is for the ones added since.
+#[allow(clippy::needless_update)]
+fn compare_without_permissions_is_byte_identical_to_1_2_0() {
+    let report = CompareReport {
+        source: r"C:\Data".into(),
+        destination: r"E:\Data".into(),
+        source_size: 5_000,
+        source_files: 4,
+        destination_size: 3_900,
+        destination_files: 3,
+        missing: 2,
+        missing_bytes: 1_100,
+        different: 1,
+        extra: 1,
+        unreadable: 1,
+        elapsed_ms: 1_500,
+        missing_paths: vec![
+            MissingFile {
+                path: "a.txt".into(),
+                size: 1_024,
+            },
+            MissingFile {
+                path: r"it's\</script>.txt".into(),
+                size: 76,
+            },
+        ],
+        ..CompareReport::default()
+    };
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let json = serde_json::to_string_pretty(&Body::Compare(report.clone())).unwrap();
+    let saved = saved(Body::Compare(report));
+    let doc = document(&saved);
+    let csv = doc.csv();
+    let html = doc.html("Fixture", "fixed date");
+    // Markup up to the first script, then the data island: the shared page script and styles
+    // are other batches' to change.
+    let markup = &html[html.find("<body").unwrap()..html.find("<script").unwrap()];
+    let island_from = html.find("<script type=\"application/json\"").unwrap();
+    let island = &html[island_from..island_from + html[island_from..].find("</script>").unwrap()];
+    let page = format!("{markup}\n{island}");
+
+    for (name, text) in [
+        ("compare-1.2.0.json", &json),
+        ("compare-1.2.0.csv", &csv),
+        ("compare-1.2.0.html", &page),
+    ] {
+        let path = fixtures.join(name);
+        if std::env::var_os("UPDATE_FIXTURES").is_some() {
+            std::fs::write(&path, text).unwrap();
+        }
+        let committed = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("tests/fixtures/{name} (run with UPDATE_FIXTURES=1)"))
+            .replace("\r\n", "\n");
+        assert_eq!(
+            committed,
+            text.replace("\r\n", "\n"),
+            "{name} changed: a compare with permissions off must stay byte-identical to 1.2.0"
+        );
+    }
+    assert!(!json.contains("ermission"), "{json}");
+}
