@@ -569,7 +569,9 @@ fn real_folders_are_read_with_their_owner_and_entries() {
     assert!(sub.sddl.starts_with("O:"));
 }
 
-/// `icacls` on a temp tree: a protected folder, Everyone with Modify, and a file with an entry of its own (verified by the Windows CI job only).
+/// `icacls` on a temp tree: a protected folder, Everyone with Modify, and a file with an entry of
+/// its own (verified by the Windows CI job only). `icacls` refuses a SID no account has, so the
+/// unknown-account case is tested with an injected reader.
 #[cfg(windows)]
 #[test]
 fn icacls_made_findings_are_found_in_real_descriptors() {
@@ -589,10 +591,6 @@ fn icacls_made_findings_are_found_in_real_descriptors() {
         assert!(status.success(), "icacls {args:?}");
     };
     icacls(&root.join("locked"), &["/inheritance:d"]);
-    icacls(
-        &root.join("orphan"),
-        &["/grant", "*S-1-5-21-1-2-3-1001:(OI)(CI)R"],
-    );
     icacls(&root.join("wide"), &["/grant", "*S-1-1-0:(OI)(CI)M"]);
     icacls(
         &root.join("plain").join("own.txt"),
