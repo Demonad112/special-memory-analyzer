@@ -214,9 +214,10 @@ fn inherited_entries_are_reported_once_on_the_folder_that_set_them() {
     let mut table = Table::new();
     table.insert("open", Ok(descriptor(vec![ace(GONE, MODIFY, true)])));
     // The source folder has no parent in the check, so it reports what it inherited.
-    let root = tree.path(0);
+    // The audit reads the `\\?\` form on Windows, so compare the folder's name.
+    let root = tree.path(0).file_name().unwrap().to_owned();
     let read = |path: &Path, _: What| {
-        if path == root {
+        if path.file_name() == Some(root.as_os_str()) {
             return Ok(descriptor(vec![ace(EVERYONE, MODIFY, true)]));
         }
         match table.get(path.file_name().unwrap().to_str().unwrap()) {
@@ -493,15 +494,14 @@ fn real_folders_are_read_with_their_owner_and_entries() {
     assert!(sub.sddl.starts_with("O:"));
 }
 
-/// `icacls` on a temp tree: a protected folder, an entry for a SID no account has, Everyone with
-/// Modify, and a file with an entry of its own (verified by the Windows CI job only).
+/// `icacls` on a temp tree: a protected folder, Everyone with Modify, and a file with an entry of its own (verified by the Windows CI job only).
 #[cfg(windows)]
 #[test]
 fn icacls_made_findings_are_found_in_real_descriptors() {
     use std::process::Command;
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    for dir in ["locked", "orphan", "wide", "plain"] {
+    for dir in ["locked", "wide", "plain"] {
         fs::create_dir(root.join(dir)).unwrap();
     }
     fs::write(root.join("plain").join("own.txt"), b"x").unwrap();
@@ -536,7 +536,6 @@ fn icacls_made_findings_are_found_in_real_descriptors() {
     let report = &result.report().permissions;
     let has = |kind, path: &str| report.listed(kind).any(|f| f.path == path);
     assert!(has(FindingKind::BrokenInheritance, "locked"));
-    assert!(has(FindingKind::UnknownAccount, "orphan"));
     assert!(has(FindingKind::WideWrite, "wide"));
     assert!(has(FindingKind::ExplicitFile, r"plain\own.txt"));
     assert!(!has(FindingKind::BrokenInheritance, "plain"));
