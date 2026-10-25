@@ -43,6 +43,10 @@ pub struct Document {
     pub tables: Vec<Table>,
     /// Exported as the CSV instead of the first table (Record: every file with its status).
     pub csv_table: Option<Table>,
+    /// Other CSV layouts of the same report, by name (Readiness: `permissions`). Chosen by the
+    /// export; not part of the page.
+    #[serde(skip)]
+    pub csv_layouts: Vec<(String, Table)>,
     /// Drawn after the tables: collapsible blocks, code blocks.
     pub sections: Vec<Section>,
     /// Machine-readable data for the page script, embedded as a JSON island.
@@ -332,10 +336,31 @@ impl Document {
     /// [`Document::csv`]; with `job_details`, rows naming the report and its job (and the date)
     /// come first, then an empty line. Nothing is added when no job field is set.
     pub fn csv_with(&self, job_details: bool) -> String {
-        let mut out = String::from("\u{feff}");
-        let Some(table) = self.csv_table.as_ref().or(self.tables.first()) else {
-            return out;
+        match self.csv_table.as_ref().or(self.tables.first()) {
+            Some(table) => self.csv_of(table, job_details),
+            None => String::from("\u{feff}"),
+        }
+    }
+
+    /// The CSV in the layout called `layout` (`None`: the default one). An error names a layout
+    /// this report does not have.
+    pub fn csv_layout_with(
+        &self,
+        layout: Option<&str>,
+        job_details: bool,
+    ) -> Result<String, String> {
+        let Some(name) = layout else {
+            return Ok(self.csv_with(job_details));
         };
+        self.csv_layouts
+            .iter()
+            .find(|(candidate, _)| candidate == name)
+            .map(|(_, table)| self.csv_of(table, job_details))
+            .ok_or_else(|| format!("This report has no \"{name}\" CSV."))
+    }
+
+    fn csv_of(&self, table: &Table, job_details: bool) -> String {
+        let mut out = String::from("\u{feff}");
         let mut line = |cells: &[String]| {
             let row: Vec<String> = cells.iter().map(|cell| csv_cell(cell)).collect();
             out.push_str(&row.join(","));

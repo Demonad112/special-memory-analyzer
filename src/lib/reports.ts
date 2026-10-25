@@ -86,11 +86,12 @@ export function exportFileName(
   entry: Pick<ReportEntry, 'title' | 'createdAtMs'>,
   format: ExportFormat,
   client = '',
+  layout = '',
 ): string {
   const date = new Date(entry.createdAtMs)
   const pad = (value: number): string => String(value).padStart(2, '0')
   const stamp = `${String(date.getFullYear())}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}${pad(date.getMinutes())}`
-  const name = [client.trim(), entry.title, stamp].filter(Boolean).join(' ')
+  const name = [client.trim(), entry.title, layout, stamp].filter(Boolean).join(' ')
   return `${name.replace(/[<>:"/\\|?*]+/g, '-')}.${format}`
 }
 
@@ -101,13 +102,14 @@ export function exportFileName(
 export async function exportReport(
   entry: Pick<ReportEntry, 'kind' | 'id' | 'title' | 'createdAtMs' | 'job'>,
   format: ExportFormat,
+  layout?: string,
 ): Promise<string | null> {
   if (!isTauri()) {
     return null
   }
   const path = await save({
     title: format === 'html' ? 'Save the report' : 'Save the list for Excel',
-    defaultPath: exportFileName(entry, format, entry.job.client),
+    defaultPath: exportFileName(entry, format, entry.job.client, layout),
     filters: [
       format === 'html'
         ? { name: 'Web page', extensions: ['html'] }
@@ -124,6 +126,7 @@ export async function exportReport(
     path,
     brand: brand.value,
     jobDetails: csvJobDetails.value,
+    ...(layout ? { layout } : {}),
   })
   return path
 }

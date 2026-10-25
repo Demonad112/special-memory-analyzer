@@ -3,7 +3,7 @@
 //! level at a time.
 
 use migrate_core::{
-    Options, ProblemKind, Readiness, ReadinessProgress, ReadinessReport,
+    Finding, FindingKind, Options, ProblemKind, Readiness, ReadinessProgress, ReadinessReport,
     ReadinessState as CheckState, Row,
 };
 use report_core::{Body, JobInfo};
@@ -126,6 +126,8 @@ pub async fn readiness_start(
     destination: String,
     target: TargetProfile,
     check_in_use: bool,
+    check_permissions: bool,
+    every_file: bool,
     job: JobInfo,
     on_event: Channel<ReadinessEvent>,
 ) -> Result<ReadinessResult, String> {
@@ -134,6 +136,10 @@ pub async fn readiness_start(
         target,
         destination_root: destination_root(&destination)?,
         check_in_use,
+        check_permissions,
+        every_file,
+        // Only recorded in the report: never taken from the webview.
+        elevated: cleanup_core::is_elevated(),
     };
     // Held until the check is done: an elevated record and a scan must not overlap.
     let _scan = record.scan_guard()?;
@@ -163,6 +169,8 @@ pub async fn readiness_start(
     .map_err(|err| err.to_string())??;
     let mut report = result.report().clone();
     report.problems = Vec::new();
+    // The findings stay in Rust too (see `readiness_permissions`); the totals go up front.
+    report.permissions = report.permissions.summary();
     let reply = ReadinessResult {
         report,
         root: root_row(&result, None),
@@ -236,6 +244,38 @@ pub fn readiness_root(
         .as_ref()
         .map(|result| root_row(result, kind))
         .ok_or_else(|| NO_RESULT.to_string())
+}
+
+/// One page of the findings of one type.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingsPage {
+    total: u64,
+    findings: Vec<Finding>,
+}
+
+/// Largest page `readiness_permissions` returns.
+const MAX_PAGE: usize = 500;
+
+/// A page of the permission findings of `kind` from the last check.
+#[tauri::command]
+pub fn readiness_permissions(
+    state: State<'_, ReadinessState>,
+    kind: FindingKind,
+    offset: usize,
+    limit: usize,
+) -> Result<FindingsPage, String> {
+    let result = state.result.lock().map_err(|err| err.to_string())?;
+    let permissions = &result.as_ref().ok_or(NO_RESULT)?.report().permissions;
+    Ok(FindingsPage {
+        total: permissions.count_of(kind),
+        findings: permissions
+            .listed(kind)
+            .skip(offset)
+            .take(limit.min(MAX_PAGE))
+            .cloned()
+            .collect(),
+    })
 }
 
 fn full_path(state: &ReadinessState, id: u32) -> Result<PathBuf, String> {

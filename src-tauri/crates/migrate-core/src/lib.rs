@@ -4,8 +4,12 @@
 //! Everything walks the tree [`scan_core::scan`] builds, so links are listed and never entered
 //! and online-only files are checked by name only; the in-use pass never opens them.
 
+pub mod acl_audit;
 pub mod readiness;
 
+pub use acl_audit::{
+    AuditStatus, AuditedItem, EntryRow, Finding, FindingCount, FindingKind, PermissionsReport,
+};
 pub use readiness::{
     rule_label, run, InUseStatus, InUseSummary, Options, Phase, Problem, ProblemKind, Readiness,
     ReadinessProgress, ReadinessReport, ReadinessState, Row, RowProblem, RuleCount, PER_KIND_LIMIT,

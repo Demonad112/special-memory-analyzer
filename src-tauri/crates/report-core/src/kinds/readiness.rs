@@ -3,7 +3,10 @@
 
 use super::*;
 use crate::header::ReadinessHeader;
-use migrate_core::{rule_label, InUseStatus, Problem, ProblemKind};
+use migrate_core::{
+    rule_label, AuditStatus, Finding, FindingKind, InUseStatus, PermissionsReport, Problem,
+    ProblemKind,
+};
 use scan_core::TargetProfile;
 
 pub(super) fn subject(source: &str, destination_root: &str) -> String {
@@ -33,6 +36,9 @@ pub(super) fn headline(report: &ReadinessHeader) -> String {
             "{} could not be opened",
             plural(report.in_use.unreadable, "file")
         ));
+    }
+    if report.permission_issues > 0 {
+        parts.push(plural(report.permission_issues, "permission issue"));
     }
     if parts.is_empty() {
         parts.push("No problems found".to_string());
@@ -114,6 +120,7 @@ pub(super) fn document(report: &ReadinessReport, mut meta: Vec<(String, String)>
         ));
     }
     notes.push(in_use_note(report));
+    notes.push(permissions_note(&report.permissions));
 
     let rules = Table {
         heading: "Problems by rule".into(),
@@ -191,6 +198,8 @@ pub(super) fn document(report: &ReadinessReport, mut meta: Vec<(String, String)>
         });
     }
 
+    tables.extend(permission_tables(&report.permissions));
+
     let csv_table = Table {
         heading: "Problems".into(),
         columns: vec![
@@ -254,6 +263,7 @@ pub(super) fn document(report: &ReadinessReport, mut meta: Vec<(String, String)>
                 Tone::Warn,
             ),
             in_use_tile(report),
+            permissions_tile(report),
             tile(
                 "Links",
                 if report.links > 0 {
@@ -268,6 +278,9 @@ pub(super) fn document(report: &ReadinessReport, mut meta: Vec<(String, String)>
         notes,
         tables,
         csv_table: Some(csv_table),
+        csv_layouts: permission_layout(&report.permissions)
+            .map(|table| vec![(PERMISSIONS_LAYOUT.to_string(), table)])
+            .unwrap_or_default(),
         ..Document::default()
     }
 }
@@ -318,4 +331,204 @@ fn in_use_tile(report: &ReadinessReport) -> Tile {
         ),
         _ => tile("In use", "Not checked".into(), String::new(), Tone::Plain),
     }
+}
+
+/// The name of the permissions CSV, as `report_export` receives it.
+pub const PERMISSIONS_LAYOUT: &str = "permissions";
+
+fn finding_tone(kind: FindingKind) -> Tone {
+    if kind.is_issue() {
+        Tone::Warn
+    } else {
+        Tone::Plain
+    }
+}
+
+fn permissions_note(permissions: &PermissionsReport) -> String {
+    match permissions.status {
+        AuditStatus::Checked => {
+            let scope = if permissions.every_file {
+                format!(
+                    "{} and {}",
+                    plural(permissions.folders_read, "folder"),
+                    plural(permissions.files_read, "file")
+                )
+            } else {
+                format!(
+                    "{} (files were not read: turn on Check every file to find files with their own entries)",
+                    plural(permissions.folders_read, "folder")
+                )
+            };
+            format!(
+                "Permissions: read for {scope}, read only; nothing was changed. {}{} Entries a folder inherited are listed once, on the folder that sets them.{}",
+                if permissions.elevated {
+                    "Ran as administrator. "
+                } else {
+                    "Ran without administrator rights, so folders this account cannot read are listed as unreadable. "
+                },
+                if permissions.server.is_empty() {
+                    "Account names were looked up on this PC.".to_string()
+                } else {
+                    format!("Account names were looked up on {}.", permissions.server)
+                },
+                if permissions.skipped > 0 {
+                    format!(
+                        " {} (links, online-only files) were not read.",
+                        plural(permissions.skipped, "item")
+                    )
+                } else {
+                    String::new()
+                }
+            )
+        }
+        AuditStatus::NotSupported => "Permissions were not checked on this system.".into(),
+        AuditStatus::Off | AuditStatus::Other => {
+            "Permissions were not checked (turned off for this check).".into()
+        }
+    }
+}
+
+fn permissions_tile(report: &ReadinessReport) -> Tile {
+    let permissions = &report.permissions;
+    match permissions.status {
+        AuditStatus::Checked => count_tile(
+            "Permissions",
+            permissions.issues,
+            "issue",
+            "Unknown accounts, wide write access",
+            Tone::Warn,
+        ),
+        _ => tile(
+            "Permissions",
+            "Not checked".into(),
+            String::new(),
+            Tone::Plain,
+        ),
+    }
+}
+
+fn finding_path(finding: &Finding) -> String {
+    if finding.path.is_empty() {
+        "(the source folder)".into()
+    } else if finding.dir {
+        format!("{}\\", finding.path)
+    } else {
+        finding.path.clone()
+    }
+}
+
+/// A summary table, then one table per finding type that has findings.
+fn permission_tables(permissions: &PermissionsReport) -> Vec<Table> {
+    if permissions.status != AuditStatus::Checked || permissions.counts.is_empty() {
+        return Vec::new();
+    }
+    let mut tables = vec![Table {
+        heading: "Permission findings".into(),
+        columns: vec!["Finding".into(), "Items".into()],
+        numeric: vec![false, true],
+        rows: permissions
+            .counts
+            .iter()
+            .map(|count| vec![count.kind.heading().into(), format_count(count.count)])
+            .collect(),
+        ..Table::default()
+    }];
+    for kind in FindingKind::ALL {
+        let total = permissions.count_of(kind);
+        if total == 0 {
+            continue;
+        }
+        let listed: Vec<&Finding> = permissions.listed(kind).collect();
+        tables.push(Table {
+            heading: kind.heading().into(),
+            columns: vec!["Path (relative to the source)".into(), "Detail".into()],
+            numeric: vec![false, false],
+            rows: listed
+                .iter()
+                .map(|finding| vec![finding_path(finding), finding.detail.clone()])
+                .collect(),
+            row_tone: Some(listed.iter().map(|_| finding_tone(kind)).collect()),
+            footnote: if (listed.len() as u64) < total {
+                format!(
+                    "The first {} of {} are listed. {}",
+                    format_count(listed.len() as u64),
+                    format_count(total),
+                    kind.explanation()
+                )
+            } else {
+                kind.explanation().into()
+            },
+            ..Table::default()
+        });
+    }
+    tables
+}
+
+/// One row per access entry; a folder row also carries the SDDL. An item with no entries still
+/// gets one row so it shows. `None` when no permissions were read.
+fn permission_layout(permissions: &PermissionsReport) -> Option<Table> {
+    if permissions.status != AuditStatus::Checked {
+        return None;
+    }
+    let yes_no = |value: bool| if value { "Yes" } else { "No" }.to_string();
+    let mut rows = Vec::new();
+    for item in &permissions.items {
+        let path = if item.path.is_empty() {
+            "(the source folder)".to_string()
+        } else {
+            item.path.clone()
+        };
+        let lead = |account: [String; 7]| {
+            let mut row = vec![
+                path.clone(),
+                if item.dir { "Folder" } else { "File" }.to_string(),
+                item.owner.clone(),
+                item.owner_sid.clone(),
+                yes_no(item.protected),
+            ];
+            row.extend(account);
+            row.push(if item.dir {
+                item.sddl.clone()
+            } else {
+                String::new()
+            });
+            row
+        };
+        if item.entries.is_empty() {
+            rows.push(lead(Default::default()));
+        }
+        for entry in &item.entries {
+            rows.push(lead([
+                entry.account.clone(),
+                entry.sid.clone(),
+                entry.access.clone(),
+                entry.rights.clone(),
+                format!("0x{:08X}", entry.mask),
+                yes_no(entry.inherited),
+                entry.applies_to.clone(),
+            ]));
+        }
+    }
+    let columns = [
+        "Path",
+        "Item",
+        "Owner",
+        "Owner SID",
+        "Inheritance protected",
+        "Account",
+        "SID",
+        "Allow or deny",
+        "Rights",
+        "Mask (hex)",
+        "Inherited",
+        "Applies to",
+        "SDDL",
+    ];
+    Some(Table {
+        heading: "Permissions".into(),
+        columns: columns.iter().map(ToString::to_string).collect(),
+        numeric: vec![false; columns.len()],
+        rows,
+        ..Table::default()
+    })
 }

@@ -861,3 +861,156 @@ fn usage_report_shows_duplicate_and_stale_sections() {
     );
     assert!(html.contains("setup, v2.iso"));
 }
+
+fn permissions_report() -> ReadinessReport {
+    use migrate_core::{
+        AuditStatus, AuditedItem, EntryRow, Finding, FindingCount, FindingKind, PermissionsReport,
+    };
+    let entry = |account: &str, mask, inherited| EntryRow {
+        account: account.into(),
+        sid: "S-1-1-0".into(),
+        access: "Allow".into(),
+        rights: "Modify".into(),
+        mask,
+        inherited,
+        applies_to: "This folder, subfolders and files".into(),
+    };
+    ReadinessReport {
+        source: r"F:\Finance".into(),
+        permission_issues: 1,
+        permissions: PermissionsReport {
+            status: AuditStatus::Checked,
+            folders_read: 2,
+            issues: 1,
+            counts: vec![FindingCount {
+                kind: FindingKind::WideWrite,
+                count: 1,
+            }],
+            findings: vec![Finding {
+                path: "Payroll".into(),
+                dir: true,
+                kind: FindingKind::WideWrite,
+                detail: "Everyone: Modify".into(),
+                sid: "S-1-1-0".into(),
+            }],
+            items: vec![
+                AuditedItem {
+                    path: String::new(),
+                    dir: true,
+                    owner: "BUILTIN\\Administrators".into(),
+                    owner_sid: "S-1-5-32-544".into(),
+                    protected: true,
+                    sddl: "O:BAD:P(A;;FA;;;WD)".into(),
+                    entries: vec![entry("Everyone", 0x1301BF, false)],
+                },
+                AuditedItem {
+                    path: "Kunden, \"VIP\" Müller".into(),
+                    dir: true,
+                    owner: "=cmd|x".into(),
+                    entries: vec![
+                        entry("CORP\\Zoë, Jr.", 0x1F01FF, true),
+                        entry("S-1-5-21-1-2-3-1001 (account not found)", 0x120089, false),
+                    ],
+                    ..AuditedItem::default()
+                },
+                AuditedItem {
+                    path: "empty".into(),
+                    dir: true,
+                    ..AuditedItem::default()
+                },
+            ],
+            ..PermissionsReport::default()
+        },
+        ..ReadinessReport::default()
+    }
+}
+
+/// Splits CSV text (quotes, commas and line breaks inside quotes) back into cells.
+fn parse_csv(text: &str) -> Vec<Vec<String>> {
+    let (mut rows, mut row, mut cell, mut quoted) = (Vec::new(), Vec::new(), String::new(), false);
+    let mut chars = text.trim_start_matches('\u{feff}').chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, quoted) {
+            ('"', true) if chars.peek() == Some(&'"') => {
+                cell.push('"');
+                chars.next();
+            }
+            ('"', _) => quoted = !quoted,
+            (',', false) => row.push(std::mem::take(&mut cell)),
+            ('\r', false) => {}
+            ('\n', false) => {
+                row.push(std::mem::take(&mut cell));
+                rows.push(std::mem::take(&mut row));
+            }
+            _ => cell.push(c),
+        }
+    }
+    rows
+}
+
+#[test]
+fn the_permissions_csv_has_one_row_per_entry_and_survives_a_round_trip() {
+    let saved = saved(Body::Readiness(permissions_report()));
+    let doc = document(&saved);
+    let csv = doc.csv_layout_with(Some("permissions"), false).unwrap();
+    let rows = parse_csv(&csv);
+    assert_eq!(rows[0].len(), 13);
+    assert_eq!(rows[0][0], "Path");
+    // 1 + 2 entries, and the item without entries still shows.
+    assert_eq!(rows.len(), 1 + 3 + 1);
+    assert!(rows.iter().all(|row| row.len() == 13));
+    assert_eq!(rows[1][0], "(the source folder)");
+    assert_eq!(rows[1][4], "Yes");
+    assert_eq!(rows[1][9], "0x001301BF");
+    assert_eq!(rows[1][12], "O:BAD:P(A;;FA;;;WD)");
+    assert_eq!(rows[2][0], "Kunden, \"VIP\" Müller");
+    assert_eq!(rows[2][5], "CORP\\Zoë, Jr.");
+    assert_eq!(rows[2][10], "Yes");
+    // A formula in a name is defused.
+    assert_eq!(rows[2][2], "'=cmd|x");
+    assert_eq!(rows[4][0], "empty");
+    assert_eq!(rows[4][5], "");
+}
+
+#[test]
+fn the_default_csv_is_unchanged_and_an_unknown_layout_is_refused() {
+    let doc = document(&saved(Body::Readiness(permissions_report())));
+    assert_eq!(
+        doc.csv_layout_with(None, false).unwrap(),
+        doc.csv_with(false)
+    );
+    assert!(doc.csv().contains("Type,Rule,Path"));
+    assert!(doc.csv_layout_with(Some("nope"), false).is_err());
+    // A report without permissions has no permissions CSV.
+    let plain = document(&saved(Body::Readiness(readiness_report())));
+    assert!(plain.csv_layout_with(Some("permissions"), false).is_err());
+}
+
+#[test]
+fn permission_issues_show_in_the_headline_tile_and_tables() {
+    let saved = saved(Body::Readiness(permissions_report()));
+    let row = entry(&saved);
+    assert_eq!(row.headline, "1 permission issue");
+    assert!(row.problem);
+    let doc = document(&saved);
+    let tile = doc.tiles.iter().find(|t| t.label == "Permissions").unwrap();
+    assert_eq!(tile.value, "1 issue");
+    let table = doc
+        .tables
+        .iter()
+        .find(|t| t.heading == "Wide write access")
+        .unwrap();
+    assert_eq!(table.rows[0], ["Payroll\\", "Everyone: Modify"]);
+    assert!(doc.notes.iter().any(|n| n.contains("read only")));
+}
+
+#[test]
+fn a_report_without_the_permissions_pass_says_so() {
+    let doc = document(&saved(Body::Readiness(readiness_report())));
+    assert!(doc
+        .notes
+        .iter()
+        .any(|n| n == "Permissions were not checked (turned off for this check)."));
+    let tile = doc.tiles.iter().find(|t| t.label == "Permissions").unwrap();
+    assert_eq!(tile.value, "Not checked");
+}

@@ -116,6 +116,7 @@ pub fn run() {
             readiness::readiness_cancel,
             readiness::readiness_children,
             readiness::readiness_root,
+            readiness::readiness_permissions,
             readiness::readiness_reveal,
             record::record_start,
             record::record_retry,
