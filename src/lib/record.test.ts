@@ -17,8 +17,12 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 import {
   bytesPerSecond,
+  canCopyChanges,
+  chainText,
   connectShare,
   countByReason,
+  deltaRecord,
+  deltaTotalsText,
   shareOf,
   defaultPreserve,
   formatNotCopiedList,
@@ -31,6 +35,8 @@ import {
   type ItemResult,
   type RecordProgress,
   type RunDetails,
+  type RunState,
+  type RunTotals,
 } from './record'
 
 function item(relativePath: string, reason?: ItemResult['reason']): ItemResult {
@@ -145,6 +151,20 @@ describe('record commands', () => {
     )
   })
 
+  it('starts a delta run from a run id and forwards progress', async () => {
+    core.invoke.mockResolvedValue({ summary: { id: 'r2' } })
+    const seen: RecordProgress[] = []
+
+    const pending = deltaRecord('r1', (progress) => seen.push(progress))
+    expect(core.invoke).toHaveBeenCalledWith('record_delta', {
+      runId: 'r1',
+      onEvent: core.channels[0],
+    })
+    core.channels[0]?.onmessage({ runId: 'r2', phase: 'copying' })
+    await pending
+    expect(seen).toHaveLength(1)
+  })
+
   it('recognises the cancelled error', () => {
     expect(isCancelled('Cancelled')).toBe(true)
     expect(isCancelled('Access is denied')).toBe(false)
@@ -214,5 +234,36 @@ describe('not-copied list', () => {
       'docs\\a.txt\tIn use by another program',
       'b.txt\tAccess denied',
     ])
+  })
+})
+
+describe('delta runs', () => {
+  const copy = (state: RunState, mode: 'copy' | 'watch' = 'copy') => ({
+    state,
+    settings: { mode },
+  })
+
+  it('offers the button for finished Copy runs only', () => {
+    expect(canCopyChanges(copy('completed'))).toBe(true)
+    expect(canCopyChanges(copy('cancelled'))).toBe(true)
+    for (const state of ['prepared', 'running', 'watching', 'failed'] as const) {
+      expect(canCopyChanges(copy(state)), state).toBe(false)
+    }
+    expect(canCopyChanges(copy('completed', 'watch'))).toBe(false)
+    expect(canCopyChanges(copy('cancelled', 'watch'))).toBe(false)
+  })
+
+  it('words the chain, with or without the earlier run on disk', () => {
+    expect(
+      chainText({ id: 'a', createdAtMs: Date.UTC(2026, 9, 21, 18, 2), finishedAtMs: 1 }),
+    ).toMatch(/^Changes since run of .*2026/)
+    expect(chainText({ id: '20261021-180200-000', createdAtMs: null, finishedAtMs: null })).toBe(
+      'Changes since run 20261021-180200-000 (no longer on this computer)',
+    )
+  })
+
+  it('sums up the plan on one line', () => {
+    const totals = { changed: 3, new: 2, retried: 1, unchanged: 1200 } as RunTotals
+    expect(deltaTotalsText(totals)).toBe('3 changed · 2 new · 1 retried · 1,200 unchanged')
   })
 })

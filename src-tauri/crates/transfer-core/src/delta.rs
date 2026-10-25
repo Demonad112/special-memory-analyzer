@@ -5,6 +5,8 @@
 //! anywhere in a delta run) removes anything at the destination.
 
 use crate::copy::TIME_TOLERANCE;
+use crate::store::RunStore;
+use crate::RunSummary;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -83,6 +85,43 @@ pub struct LeftBehind {
     pub dest_size: u64,
     #[serde(default)]
     pub dest_modified_ms: Option<u64>,
+}
+
+/// The run a delta run follows, as the report shows it ("Changes since run of 21 Oct, 18:02").
+/// The times are missing when that run's folder has been removed since.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviousRun {
+    pub id: String,
+    pub created_at_ms: Option<u64>,
+    pub finished_at_ms: Option<u64>,
+}
+
+/// The run `summary` follows, or `None` for an ordinary run (and for every run saved before
+/// delta sync). `store` is any run folder under the same records root.
+pub fn previous_run(store: &RunStore, summary: &RunSummary) -> Option<PreviousRun> {
+    let id = summary.previous_run_id.clone()?;
+    let before = store
+        .dir()
+        .parent()
+        .and_then(|root| RunStore::open(root, &id).ok())
+        .and_then(|previous| previous.summary().ok());
+    Some(PreviousRun {
+        created_at_ms: before.as_ref().map(|run| run.created_at_ms),
+        finished_at_ms: before.and_then(|run| run.finished_at_ms),
+        id,
+    })
+}
+
+/// The files a delta run left alone at the destination, at most `cap` of them; the run's
+/// `changed_at_destination` total counts all of them.
+pub fn left_behind(store: &RunStore, cap: usize) -> Vec<LeftBehind> {
+    store
+        .delta_left::<LeftBehind>()
+        .ok()
+        .flatten()
+        .map(|rows| rows.map_while(|row| row.ok()).take(cap).collect())
+        .unwrap_or_default()
 }
 
 fn tolerance_ms() -> u64 {
@@ -340,6 +379,80 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn the_previous_run_is_found_by_id_and_a_missing_one_keeps_only_its_id() {
+        use crate::{
+            ConflictPolicy, RunState, RunTotals, TransferMode, TransferSettings, VerifyLevel,
+        };
+        let dir = crate::test_support::TempDir::new("delta-previous");
+        let root = dir.path("runs");
+        let summary_for = |store: &RunStore, previous: Option<&str>| RunSummary {
+            id: store.id(),
+            settings: TransferSettings {
+                source: "s".into(),
+                destination: "d".into(),
+                mode: TransferMode::Copy,
+                verify: VerifyLevel::SizeAndTime,
+                conflict: ConflictPolicy::Skip,
+                ignore_junk: false,
+                download_cloud: false,
+                preserve: Default::default(),
+            },
+            state: RunState::Completed,
+            created_at_ms: 1_000,
+            started_at_ms: Some(1_100),
+            finished_at_ms: Some(2_000),
+            machine: String::new(),
+            user: String::new(),
+            totals: RunTotals::default(),
+            error: None,
+            previous_run_id: previous.map(str::to_owned),
+        };
+        let first = RunStore::create(&root).unwrap();
+        let first_summary = summary_for(&first, None);
+        first.save_summary(&first_summary).unwrap();
+        let second = RunStore::create(&root).unwrap();
+        let second_summary = summary_for(&second, Some(&first.id()));
+        second.save_summary(&second_summary).unwrap();
+
+        assert_eq!(previous_run(&first, &first_summary), None);
+        assert_eq!(
+            previous_run(&second, &second_summary),
+            Some(PreviousRun {
+                id: first.id(),
+                created_at_ms: Some(1_000),
+                finished_at_ms: Some(2_000),
+            })
+        );
+        std::fs::remove_dir_all(first.dir()).unwrap();
+        let gone = previous_run(&second, &second_summary).unwrap();
+        assert_eq!((gone.id, gone.created_at_ms), (first.id(), None));
+    }
+
+    #[test]
+    fn the_left_alone_list_is_read_back_and_capped() {
+        let dir = crate::test_support::TempDir::new("delta-left");
+        let store = RunStore::create(&dir.path("runs")).unwrap();
+        assert!(left_behind(&store, 10).is_empty(), "not a delta run");
+        let mut writer = store.delta_left_writer().unwrap();
+        for number in 0..5 {
+            writer
+                .write(&LeftBehind {
+                    relative_path: format!("f{number}.txt"),
+                    size: 1,
+                    source_modified_ms: None,
+                    dest_size: 2,
+                    dest_modified_ms: Some(3),
+                })
+                .unwrap();
+        }
+        writer.finish().unwrap();
+        assert_eq!(left_behind(&store, 10).len(), 5);
+        let capped = left_behind(&store, 2);
+        assert_eq!(capped[1].relative_path, "f1.txt");
+        assert_eq!(capped.len(), 2);
     }
 
     #[cfg(unix)]

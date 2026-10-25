@@ -130,6 +130,65 @@ pub(crate) fn record_document(records: &Path, id: &str) -> Result<Document, Stri
         row_bytes: all_items.iter().map(|item| item.size).collect(),
         ..Table::default()
     };
+    let previous = transfer_core::delta::previous_run(&store, &run);
+    let left = transfer_core::delta::left_behind(&store, MAX_LEFT_ROWS);
+    let left_note = "Changed at the destination since the last run";
+    let csv_table = Table {
+        rows: csv_table
+            .rows
+            .into_iter()
+            .chain(left.iter().map(|item| {
+                vec![
+                    item.relative_path.clone(),
+                    format_bytes(item.size),
+                    "Left alone".into(),
+                    left_note.into(),
+                    left_details(item),
+                ]
+            }))
+            .collect(),
+        row_bytes: csv_table
+            .row_bytes
+            .into_iter()
+            .chain(left.iter().map(|item| item.size))
+            .collect(),
+        ..csv_table
+    };
+    let left_table = (!left.is_empty()).then(|| {
+        Table {
+            heading: left_note.into(),
+            columns: vec![
+                "Path (relative to the source)".into(),
+                "Source size".into(),
+                "At the destination".into(),
+            ],
+            numeric: vec![false, true, false],
+            rows: left
+                .iter()
+                .map(|item| {
+                    vec![
+                        item.relative_path.clone(),
+                        format_bytes(item.size),
+                        left_details(item),
+                    ]
+                })
+                .collect(),
+            size_col: Some(1),
+            row_bytes: left.iter().map(|item| item.size).collect(),
+            footnote: if run.totals.changed_at_destination > left.len() as u64 {
+                format!(
+                    "Showing {} of {}. These files were left as they are.",
+                    format_count(left.len() as u64),
+                    format_count(run.totals.changed_at_destination)
+                )
+            } else {
+                "These files were edited at the destination after the previous run, so this run left them as they are."
+                    .into()
+            },
+            ..Table::default()
+        }
+        .toned(Tone::Warn)
+    });
     let arrived_count = arrived_items.len();
     let totals = &run.totals;
     let job = record_job(&store);
@@ -140,6 +199,30 @@ pub(crate) fn record_document(records: &Path, id: &str) -> Result<Document, Stri
     let mut notes = Vec::new();
     if let Some(error) = &run.error {
         notes.push(format!("The record stopped: {error}"));
+    }
+    if let Some(previous) = &previous {
+        notes.push(match previous.created_at_ms {
+            Some(created) => format!(
+                "Changes since the run of {} (run {}).",
+                format_local(created),
+                previous.id
+            ),
+            None => format!(
+                "Changes since run {} (that run is no longer on this computer).",
+                previous.id
+            ),
+        });
+        notes.push(format!(
+            "{} changed, {} new, {} retried, {} unchanged and left alone. {} left in place at \
+             the destination because they were changed there since the last run. {} only at the \
+             destination, left in place: nothing is removed at the destination.",
+            plural(totals.changed, "file"),
+            plural(totals.new, "file"),
+            plural(totals.retried, "file"),
+            plural(totals.unchanged, "file"),
+            plural(totals.changed_at_destination, "file"),
+            plural(totals.destination_only, "file"),
+        ));
     }
     if run.settings.ignore_junk {
         notes.push(
@@ -203,21 +286,29 @@ pub(crate) fn record_document(records: &Path, id: &str) -> Result<Document, Stri
                 },
             }
         }),
-        tables: vec![Table {
-            heading: "Not copied".into(),
-            columns: vec![
-                "Path (relative to the source)".into(),
-                "Size".into(),
-                "Reason".into(),
-                "Details".into(),
-            ],
-            numeric: vec![false, true, false, false],
-            rows: not_copied,
-            size_col: Some(1),
-            row_bytes,
-            ..Table::default()
-        }
-        .toned(Tone::Bad)],
+        tables: [
+            Some(
+                Table {
+                    heading: "Not copied".into(),
+                    columns: vec![
+                        "Path (relative to the source)".into(),
+                        "Size".into(),
+                        "Reason".into(),
+                        "Details".into(),
+                    ],
+                    numeric: vec![false, true, false, false],
+                    rows: not_copied,
+                    size_col: Some(1),
+                    row_bytes,
+                    ..Table::default()
+                }
+                .toned(Tone::Bad),
+            ),
+            left_table,
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
         csv_table: Some(csv_table),
         sections: vec![Section::Details {
             summary: format!("Arrived ({})", format_count(arrived_count as u64)),
@@ -226,6 +317,17 @@ pub(crate) fn record_document(records: &Path, id: &str) -> Result<Document, Stri
         }],
         ..Document::default()
     })
+}
+
+/// Left-alone rows kept in a report's table and CSV; the run's total counts them all.
+const MAX_LEFT_ROWS: usize = 10_000;
+
+/// What the destination held when a delta run left the file alone.
+fn left_details(item: &transfer_core::delta::LeftBehind) -> String {
+    match item.dest_modified_ms {
+        Some(ms) => format!("{} · {}", format_bytes(item.dest_size), format_local(ms)),
+        None => format_bytes(item.dest_size),
+    }
 }
 
 pub(super) fn status_label(status: ItemStatus) -> &'static str {
