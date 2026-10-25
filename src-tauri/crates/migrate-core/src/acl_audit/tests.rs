@@ -555,6 +555,38 @@ fn items_stop_being_kept_at_the_entry_budget_but_the_counts_go_on() {
 }
 
 #[test]
+fn an_item_that_became_a_link_after_the_scan_is_skipped_not_unreadable() {
+    // DSA-091: the read refuses an item that is a link or online-only now.
+    let (_temp, tree) = wide_tree();
+    let read = |path: &Path, _: What| {
+        if path.ends_with("d01") || path.ends_with("d02") {
+            Err(io::Error::other(security::ChangedSinceScan))
+        } else {
+            Ok(descriptor(vec![ace(ADMINS, MODIFY, false)]))
+        }
+    };
+    let found = audit(
+        &tree,
+        &AuditOptions::default(),
+        &read,
+        &names(),
+        &CancelToken::new(),
+        &Counters::default(),
+    )
+    .unwrap();
+    // 61 folders were targets; two changed and are skipped, the rest were read.
+    assert_eq!(found.skipped, 2);
+    assert_eq!(found.folders_read, 59);
+    assert!(found
+        .findings
+        .iter()
+        .all(|finding| finding.kind != FindingKind::Unreadable));
+    let report = found.into_report(&AuditOptions::default(), false, true);
+    assert_eq!(report.skipped, 2);
+    assert_eq!(report.count_of(FindingKind::Unreadable), 0);
+}
+
+#[test]
 fn nothing_is_truncated_when_everything_fits() {
     let (_temp, tree) = wide_tree();
     let read = |_: &Path, _: What| Ok(descriptor(vec![ace(ADMINS, MODIFY, false)]));

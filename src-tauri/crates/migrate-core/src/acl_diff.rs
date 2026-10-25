@@ -564,6 +564,20 @@ struct Piece {
     dir: bool,
     /// `None` for a file pair with no entry of its own on either side.
     outcome: Option<Outcome>,
+    /// A side became a link or an online-only file after the scan (DSA-091): not read, counted
+    /// as skipped.
+    changed: bool,
+}
+
+/// True when either read refused because the item changed since the scan.
+fn changed_since_scan(
+    source: &io::Result<Descriptor>,
+    destination: &io::Result<Descriptor>,
+) -> bool {
+    [source, destination].into_iter().any(|read| {
+        read.as_ref()
+            .is_err_and(scan_core::security::is_changed_since_scan)
+    })
 }
 
 struct Context<'a> {
@@ -725,10 +739,16 @@ struct Merge {
     entry_limit: usize,
     folders_checked: u64,
     files_checked: u64,
+    /// Pairs found to be links or online-only files when they were about to be read.
+    changed: u64,
 }
 
 impl Merge {
     fn add(&mut self, diff: &DiffTree, piece: Piece) {
+        if piece.changed {
+            self.changed += 1;
+            return;
+        }
         let Some(outcome) = piece.outcome else {
             return;
         };
@@ -833,6 +853,7 @@ pub fn compare_permissions_with_limit(
         entry_limit,
         folders_checked: 0,
         files_checked: 0,
+        changed: 0,
     });
     let turn = Condvar::new();
     let lock = || merge.lock().unwrap_or_else(PoisonError::into_inner);
@@ -859,17 +880,22 @@ pub fn compare_permissions_with_limit(
                     if cancel.is_cancelled() {
                         return;
                     }
+                    let mut changed = false;
                     let outcome = match (
                         side_path(diff, left, target.id, Side::Left),
                         side_path(diff, right, target.id, Side::Right),
                     ) {
-                        (Some(source), Some(destination)) => classify(
-                            read(&exact_path(&source), What::OwnerAndDacl),
-                            read(&exact_path(&destination), What::OwnerAndDacl),
-                            target.dir,
-                            target.id == 0,
-                            &context,
-                        ),
+                        (Some(source), Some(destination)) => {
+                            let source = read(&exact_path(&source), What::OwnerAndDacl);
+                            let destination = read(&exact_path(&destination), What::OwnerAndDacl);
+                            // The read checks the item again right before it opens it.
+                            changed = changed_since_scan(&source, &destination);
+                            if changed {
+                                None
+                            } else {
+                                classify(source, destination, target.dir, target.id == 0, &context)
+                            }
+                        }
                         _ => None,
                     };
                     counters.done.fetch_add(1, Ordering::Relaxed);
@@ -877,6 +903,7 @@ pub fn compare_permissions_with_limit(
                         id: target.id,
                         dir: target.dir,
                         outcome,
+                        changed,
                     });
                 }
                 lock().submit(diff, batch, pieces);
@@ -922,7 +949,7 @@ pub fn compare_permissions_with_limit(
             server_note: String::new(),
             folders_checked: merged.folders_checked,
             files_checked: merged.files_checked,
-            skipped,
+            skipped: skipped + merged.changed,
             counts,
             items: merged.items,
             items_truncated: merged.items_truncated,

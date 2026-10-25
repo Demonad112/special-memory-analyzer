@@ -271,6 +271,9 @@ type Read<'a> = dyn Fn(&Path, What) -> io::Result<Descriptor> + Sync + 'a;
 struct ItemResult {
     findings: Vec<(FindingKind, String, String)>,
     item: Option<AuditedItem>,
+    /// The item became a link or an online-only file after the scan and was not read (DSA-091):
+    /// counted as skipped, not as unreadable.
+    changed: bool,
 }
 
 struct Target {
@@ -343,6 +346,10 @@ struct Merge {
 impl Merge {
     fn add(&mut self, (path, dir, result): Piece) {
         let audit = &mut self.audit;
+        if result.changed {
+            audit.skipped += 1;
+            return;
+        }
         if dir {
             audit.folders_read += 1;
         } else {
@@ -547,10 +554,17 @@ fn classify(
 ) -> ItemResult {
     let descriptor = match read {
         Ok(descriptor) => descriptor,
+        Err(err) if scan_core::security::is_changed_since_scan(&err) => {
+            return ItemResult {
+                changed: true,
+                ..ItemResult::default()
+            }
+        }
         Err(err) => {
             return ItemResult {
                 findings: vec![(FindingKind::Unreadable, err.to_string(), String::new())],
                 item: None,
+                changed: false,
             }
         }
     };
@@ -641,7 +655,11 @@ fn classify(
             .map(|ace| entry_row(ace, &named(&ace.sid)))
             .collect(),
     });
-    ItemResult { findings, item }
+    ItemResult {
+        findings,
+        item,
+        changed: false,
+    }
 }
 
 pub(crate) fn entry_row(ace: &Ace, account: &Account) -> EntryRow {
